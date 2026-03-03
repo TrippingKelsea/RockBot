@@ -160,37 +160,33 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
         true,
     );
     
-    // Render Type selector
-    // Re-fetch type name here to ensure it's correct for the current state
-    let current_type_name = match state.endpoint_type {
-        0 => "Home Assistant",
-        1 => "Generic REST API", 
-        2 => "OAuth2 Service",
-        3 => "API Key Service",
-        4 => "Basic Auth Service",
-        5 => "Bearer Token",
-        _ => "Unknown",
-    };
-    
+    // Render Type selector using the same approach as render_input_field
     let type_active = state.is_type_field();
-    let type_style = if type_active {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
     
-    let type_border = if type_active {
+    let type_border_style = if type_active {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     
-    // Build the type selector text - use owned String to ensure no lifetime issues
-    let type_selector_text: String = format!("Service Type: ◀ {} ▶", current_type_name);
+    let type_label_style = if type_active {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::White)
+    };
     
-    let type_para = Paragraph::new(type_selector_text.as_str())
-        .style(type_style)
-        .block(Block::default().borders(Borders::ALL).border_style(type_border));
+    // Get the type name using the same function as the title
+    let selector_type_name = get_endpoint_type_name(state.endpoint_type);
+    
+    let type_line = Line::from(vec![
+        Span::styled("Service Type: ", type_label_style),
+        Span::styled("◀ ", Style::default().fg(Color::Cyan)),
+        Span::styled(selector_type_name, type_label_style.add_modifier(Modifier::BOLD)),
+        Span::styled(" ▶", Style::default().fg(Color::Cyan)),
+    ]);
+    
+    let type_para = Paragraph::new(type_line)
+        .block(Block::default().borders(Borders::ALL).border_style(type_border_style));
     frame.render_widget(type_para, chunks[1]);
     
     // Render dynamic fields

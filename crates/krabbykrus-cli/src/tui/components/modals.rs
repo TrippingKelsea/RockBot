@@ -21,6 +21,19 @@ pub const ENDPOINT_TYPES: &[(&str, &str)] = &[
     ("bearer_token", "Bearer Token"),
 ];
 
+/// Get display name for endpoint type by index
+fn get_endpoint_type_name(idx: usize) -> &'static str {
+    match idx {
+        0 => "Home Assistant",
+        1 => "Generic REST API",
+        2 => "OAuth2 Service",
+        3 => "API Key Service",
+        4 => "Basic Auth Service",
+        5 => "Bearer Token",
+        _ => "Unknown",
+    }
+}
+
 /// Render the password input modal
 pub fn render_password_modal(
     frame: &mut Frame,
@@ -108,15 +121,12 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
     let modal_area = centered_rect(65, modal_percent_y.max(50), area);
     frame.render_widget(Clear, modal_area);
     
-    let type_name_for_title = ENDPOINT_TYPES
-        .get(state.endpoint_type)
-        .map(|(_, n)| *n)
-        .unwrap_or("Unknown");
+    let title_type_name = get_endpoint_type_name(state.endpoint_type);
     
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
-        .title(format!("Add {} Endpoint", type_name_for_title));
+        .title(format!("Add {} Endpoint", title_type_name));
     
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
@@ -150,27 +160,35 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
         true,
     );
     
-    // Render Type selector - get the name again to avoid any lifetime issues
-    let type_display_name = ENDPOINT_TYPES
-        .get(state.endpoint_type)
-        .map(|(_, n)| n.to_string())
-        .unwrap_or_else(|| "Unknown".to_string());
+    // Render Type selector
+    // Re-fetch type name here to ensure it's correct for the current state
+    let current_type_name = match state.endpoint_type {
+        0 => "Home Assistant",
+        1 => "Generic REST API", 
+        2 => "OAuth2 Service",
+        3 => "API Key Service",
+        4 => "Basic Auth Service",
+        5 => "Bearer Token",
+        _ => "Unknown",
+    };
     
-    let type_style = if state.is_type_field() {
+    let type_active = state.is_type_field();
+    let type_style = if type_active {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
     
-    let type_text = format!("Service Type: ◀ {} ▶", type_display_name);
-    
-    let type_border = if state.is_type_field() {
+    let type_border = if type_active {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     
-    let type_para = Paragraph::new(type_text)
+    // Build the type selector text - use owned String to ensure no lifetime issues
+    let type_selector_text: String = format!("Service Type: ◀ {} ▶", current_type_name);
+    
+    let type_para = Paragraph::new(type_selector_text.as_str())
         .style(type_style)
         .block(Block::default().borders(Borders::ALL).border_style(type_border));
     frame.render_widget(type_para, chunks[1]);

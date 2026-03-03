@@ -108,7 +108,7 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
     let modal_area = centered_rect(65, modal_percent_y.max(50), area);
     frame.render_widget(Clear, modal_area);
     
-    let type_name = ENDPOINT_TYPES
+    let type_name_for_title = ENDPOINT_TYPES
         .get(state.endpoint_type)
         .map(|(_, n)| *n)
         .unwrap_or("Unknown");
@@ -116,7 +116,7 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
-        .title(format!("Add {} Endpoint", type_name));
+        .title(format!("Add {} Endpoint", type_name_for_title));
     
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
@@ -150,19 +150,19 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
         true,
     );
     
-    // Render Type selector
+    // Render Type selector - get the name again to avoid any lifetime issues
+    let type_display_name = ENDPOINT_TYPES
+        .get(state.endpoint_type)
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+    
     let type_style = if state.is_type_field() {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
     
-    let type_text = Line::from(vec![
-        Span::raw("Service Type: "),
-        Span::styled("◀ ", Style::default().fg(Color::Cyan)),
-        Span::styled(type_name, type_style),
-        Span::styled(" ▶", Style::default().fg(Color::Cyan)),
-    ]);
+    let type_text = format!("Service Type: ◀ {} ▶", type_display_name);
     
     let type_border = if state.is_type_field() {
         Style::default().fg(Color::Yellow)
@@ -171,6 +171,7 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
     };
     
     let type_para = Paragraph::new(type_text)
+        .style(type_style)
         .block(Block::default().borders(Borders::ALL).border_style(type_border));
     frame.render_widget(type_para, chunks[1]);
     

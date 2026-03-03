@@ -160,34 +160,19 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
         true,
     );
     
-    // Render Type selector using the same approach as render_input_field
-    let type_active = state.is_type_field();
-    
-    let type_border_style = if type_active {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    
-    let type_label_style = if type_active {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    
-    // Get the type name using the same function as the title
+    // Render Type selector - use render_input_field with arrows in the value
     let selector_type_name = get_endpoint_type_name(state.endpoint_type);
-    
-    let type_line = Line::from(vec![
-        Span::styled("Service Type: ", type_label_style),
-        Span::styled("◀ ", Style::default().fg(Color::Cyan)),
-        Span::styled(selector_type_name, type_label_style.add_modifier(Modifier::BOLD)),
-        Span::styled(" ▶", Style::default().fg(Color::Cyan)),
-    ]);
-    
-    let type_para = Paragraph::new(type_line)
-        .block(Block::default().borders(Borders::ALL).border_style(type_border_style));
-    frame.render_widget(type_para, chunks[1]);
+    let type_value = format!("◀ {} ▶", selector_type_name);
+    render_input_field(
+        frame,
+        chunks[1],
+        "Service Type",
+        &type_value,
+        "",
+        state.is_type_field(),
+        false,
+        false, // not required (it always has a value)
+    );
     
     // Render dynamic fields
     for (i, field) in fields.iter().enumerate() {

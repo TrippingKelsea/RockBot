@@ -2,13 +2,13 @@
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
 
-use crate::tui::state::{AddCredentialField, AddCredentialState};
+use crate::tui::state::{AddCredentialState, get_fields_for_endpoint_type};
 use super::centered_rect;
 
 /// Endpoint types for the add credential modal
@@ -20,9 +20,6 @@ pub const ENDPOINT_TYPES: &[(&str, &str)] = &[
     ("basic_auth_service", "Basic Auth Service"),
     ("bearer_token", "Bearer Token"),
 ];
-
-/// Number of endpoint types (for modulo in selection)
-pub const ENDPOINT_TYPE_COUNT: usize = 6;
 
 /// Render the password input modal
 pub fn render_password_modal(
@@ -98,116 +95,178 @@ pub fn render_confirm_modal(frame: &mut Frame, area: Rect, message: &str) {
     frame.render_widget(para, inner);
 }
 
-/// Render the add credential modal
+/// Render the add credential modal with dynamic fields
 pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCredentialState) {
-    let modal_area = centered_rect(60, 70, area);
+    let fields = get_fields_for_endpoint_type(state.endpoint_type);
+    
+    // Calculate modal height based on number of fields
+    // Name (3) + Type (3) + dynamic fields (3 each) + help (2) + margins (2)
+    let content_height = 3 + 3 + (fields.len() * 3) + 2 + 2;
+    let modal_height = (content_height as u16).min(area.height.saturating_sub(4)).max(20);
+    let modal_percent_y = ((modal_height as f32 / area.height as f32) * 100.0) as u16;
+    
+    let modal_area = centered_rect(65, modal_percent_y.max(50), area);
     frame.render_widget(Clear, modal_area);
     
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title("Add Service Endpoint");
-    
-    let inner = block.inner(modal_area);
-    frame.render_widget(block, modal_area);
-    
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(3), // Name
-            Constraint::Length(3), // Type
-            Constraint::Length(3), // URL
-            Constraint::Length(3), // Secret
-            Constraint::Length(3), // Expiration
-            Constraint::Length(2), // Help
-            Constraint::Min(0),    // Spacer
-        ])
-        .split(inner);
-
-    // Helper to render input field
-    fn render_field(
-        frame: &mut Frame,
-        area: Rect,
-        label: &str,
-        value: &str,
-        active: bool,
-        masked: bool,
-    ) {
-        let style = if active {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        
-        let display_value = if masked && !value.is_empty() {
-            "*".repeat(value.len())
-        } else {
-            value.to_string()
-        };
-        
-        let cursor = if active { "█" } else { "" };
-        
-        let text = format!("{}: {}{}", label, display_value, cursor);
-        let paragraph = Paragraph::new(text)
-            .style(style)
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(paragraph, area);
-    }
-
-    render_field(
-        frame,
-        chunks[0],
-        "Endpoint Name",
-        &state.name,
-        state.field == AddCredentialField::Name,
-        false,
-    );
-    
-    // Service Type selector
-    let type_style = if state.field == AddCredentialField::EndpointType {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::White)
-    };
     let type_name = ENDPOINT_TYPES
         .get(state.endpoint_type)
         .map(|(_, n)| *n)
         .unwrap_or("Unknown");
-    let type_text = format!("Service Type: ◀ {} ▶", type_name);
-    let type_para = Paragraph::new(type_text)
-        .style(type_style)
-        .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(type_para, chunks[1]);
     
-    render_field(
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(format!("Add {} Endpoint", type_name));
+    
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+    
+    // Build constraints dynamically
+    let mut constraints = vec![
+        Constraint::Length(3), // Name
+        Constraint::Length(3), // Type selector
+    ];
+    for _ in &fields {
+        constraints.push(Constraint::Length(3));
+    }
+    constraints.push(Constraint::Length(2)); // Help
+    constraints.push(Constraint::Min(0));    // Spacer
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints(constraints)
+        .split(inner);
+
+    // Render Name field
+    render_input_field(
         frame,
-        chunks[2],
-        "Base URL",
-        &state.url,
-        state.field == AddCredentialField::Url,
+        chunks[0],
+        "Endpoint Name",
+        &state.name,
+        "",
+        state.is_name_field(),
         false,
-    );
-    
-    render_field(
-        frame,
-        chunks[3],
-        "Token/Secret",
-        &state.secret,
-        state.field == AddCredentialField::Secret,
         true,
     );
     
-    render_field(
-        frame,
-        chunks[4],
-        "Expires (opt)",
-        &state.expiration,
-        state.field == AddCredentialField::Expiration,
-        false,
-    );
+    // Render Type selector
+    let type_style = if state.is_type_field() {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
     
-    let help = Paragraph::new("Tab/↑↓: Fields | ←→: Select type | Enter: Next/Submit | Esc: Cancel")
-        .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(help, chunks[5]);
+    let type_text = Line::from(vec![
+        Span::raw("Service Type: "),
+        Span::styled("◀ ", Style::default().fg(Color::Cyan)),
+        Span::styled(type_name, type_style),
+        Span::styled(" ▶", Style::default().fg(Color::Cyan)),
+    ]);
+    
+    let type_border = if state.is_type_field() {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    
+    let type_para = Paragraph::new(type_text)
+        .block(Block::default().borders(Borders::ALL).border_style(type_border));
+    frame.render_widget(type_para, chunks[1]);
+    
+    // Render dynamic fields
+    for (i, field) in fields.iter().enumerate() {
+        let value = state.field_values.get(i).map(|s| s.as_str()).unwrap_or("");
+        let is_active = state.dynamic_field_index() == Some(i);
+        
+        // Add required indicator
+        let label = if field.required {
+            format!("{} *", field.label)
+        } else {
+            field.label.to_string()
+        };
+        
+        render_input_field(
+            frame,
+            chunks[2 + i],
+            &label,
+            value,
+            field.placeholder,
+            is_active,
+            field.masked,
+            field.required,
+        );
+    }
+    
+    // Help text
+    let help_idx = 2 + fields.len();
+    if help_idx < chunks.len() {
+        let help_text = if state.is_type_field() {
+            "←→: Change type | Tab/↑↓: Navigate | Enter: Next | Esc: Cancel"
+        } else if state.is_last_field() {
+            "Tab/↑↓: Navigate | Enter: Submit | Esc: Cancel"
+        } else {
+            "Tab/↑↓: Navigate | Enter: Next | Esc: Cancel"
+        };
+        
+        let help = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(help, chunks[help_idx]);
+    }
+}
+
+/// Render a single input field
+fn render_input_field(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    placeholder: &str,
+    active: bool,
+    masked: bool,
+    required: bool,
+) {
+    let border_style = if active {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    
+    let label_style = if active {
+        Style::default().fg(Color::Yellow)
+    } else if required && value.is_empty() {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    
+    let display_value = if masked && !value.is_empty() {
+        "*".repeat(value.len())
+    } else if value.is_empty() && !active {
+        placeholder.to_string()
+    } else {
+        value.to_string()
+    };
+    
+    let value_style = if value.is_empty() && !active {
+        Style::default().fg(Color::DarkGray) // Placeholder style
+    } else if active {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    
+    let cursor = if active { "█" } else { "" };
+    
+    let text = Line::from(vec![
+        Span::styled(format!("{}: ", label), label_style),
+        Span::styled(display_value, value_style),
+        Span::styled(cursor, Style::default().fg(Color::Yellow)),
+    ]);
+    
+    let paragraph = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).border_style(border_style));
+    
+    frame.render_widget(paragraph, area);
 }

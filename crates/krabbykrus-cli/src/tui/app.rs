@@ -18,7 +18,7 @@ use super::components::{
     render_sessions, render_settings, render_sidebar, render_status_bar,
 };
 use super::state::{
-    AddCredentialField, AddCredentialState, AppState, ConfirmAction, InputMode,
+    AddCredentialState, AppState, ConfirmAction, InputMode,
     MenuItem, Message, PasswordAction, UnlockMethod,
 };
 
@@ -207,7 +207,7 @@ impl App {
     fn handle_add_action(&mut self) {
         match self.state.menu_item {
             MenuItem::Credentials if self.state.vault.initialized && !self.state.vault.locked => {
-                self.state.input_mode = InputMode::AddCredential(AddCredentialState::default());
+                self.state.input_mode = InputMode::AddCredential(AddCredentialState::new());
             }
             _ => {}
         }
@@ -370,63 +370,66 @@ impl App {
     }
 
     fn handle_add_credential(&mut self, key: KeyEvent, mut state: AddCredentialState) -> Result<()> {
+        use super::components::modals::ENDPOINT_TYPES;
+        
         match key.code {
             KeyCode::Esc => {
                 self.state.input_mode = InputMode::Normal;
                 self.state.status_message = Some(("Cancelled".to_string(), false));
             }
             KeyCode::Tab | KeyCode::Down => {
-                state.field = state.field.next();
+                state.next_field();
                 self.state.input_mode = InputMode::AddCredential(state);
             }
             KeyCode::BackTab | KeyCode::Up => {
-                state.field = state.field.prev();
+                state.prev_field();
                 self.state.input_mode = InputMode::AddCredential(state);
             }
             KeyCode::Enter => {
-                if state.field == AddCredentialField::Expiration {
-                    // Submit
-                    if state.name.is_empty() {
-                        self.state.status_message = Some(("Name is required".to_string(), true));
-                    } else if state.url.is_empty() {
-                        self.state.status_message = Some(("URL is required".to_string(), true));
+                if state.is_last_field() {
+                    // Submit - validate all required fields
+                    if let Some(error) = state.validate() {
+                        self.state.status_message = Some((error, true));
                     } else {
                         // TODO: Actually add credential
                         self.state.status_message = Some((format!("Added: {}", state.name), false));
                         self.state.input_mode = InputMode::Normal;
                     }
                 } else {
-                    state.field = state.field.next();
+                    state.next_field();
                     self.state.input_mode = InputMode::AddCredential(state);
                 }
             }
-            KeyCode::Left if state.field == AddCredentialField::EndpointType => {
-                use super::components::modals::ENDPOINT_TYPES;
-                state.endpoint_type = if state.endpoint_type == 0 { ENDPOINT_TYPES.len() - 1 } else { state.endpoint_type - 1 };
+            KeyCode::Left if state.is_type_field() => {
+                let old_type = state.endpoint_type;
+                state.endpoint_type = if state.endpoint_type == 0 { 
+                    ENDPOINT_TYPES.len() - 1 
+                } else { 
+                    state.endpoint_type - 1 
+                };
+                if old_type != state.endpoint_type {
+                    state.reset_fields_for_type();
+                }
                 self.state.input_mode = InputMode::AddCredential(state);
             }
-            KeyCode::Right if state.field == AddCredentialField::EndpointType => {
-                use super::components::modals::ENDPOINT_TYPES;
+            KeyCode::Right if state.is_type_field() => {
+                let old_type = state.endpoint_type;
                 state.endpoint_type = (state.endpoint_type + 1) % ENDPOINT_TYPES.len();
+                if old_type != state.endpoint_type {
+                    state.reset_fields_for_type();
+                }
                 self.state.input_mode = InputMode::AddCredential(state);
             }
             KeyCode::Char(c) => {
-                match state.field {
-                    AddCredentialField::Name => state.name.push(c),
-                    AddCredentialField::Url => state.url.push(c),
-                    AddCredentialField::Secret => state.secret.push(c),
-                    AddCredentialField::Expiration => state.expiration.push(c),
-                    AddCredentialField::EndpointType => {}
+                // Only handle text input for name and dynamic fields
+                if let Some(value) = state.current_value_mut() {
+                    value.push(c);
                 }
                 self.state.input_mode = InputMode::AddCredential(state);
             }
             KeyCode::Backspace => {
-                match state.field {
-                    AddCredentialField::Name => { state.name.pop(); }
-                    AddCredentialField::Url => { state.url.pop(); }
-                    AddCredentialField::Secret => { state.secret.pop(); }
-                    AddCredentialField::Expiration => { state.expiration.pop(); }
-                    AddCredentialField::EndpointType => {}
+                if let Some(value) = state.current_value_mut() {
+                    value.pop();
                 }
                 self.state.input_mode = InputMode::AddCredential(state);
             }

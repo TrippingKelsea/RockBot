@@ -300,18 +300,171 @@ pub enum ConfirmAction {
     DeleteAgent(String),    // agent id
 }
 
-/// Add credential form state
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct AddCredentialState {
-    pub field: AddCredentialField,
-    pub name: String,
-    pub endpoint_type: usize,
-    pub url: String,
-    pub secret: String,
-    pub expiration: String,
+/// Field definition for dynamic form fields
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldDef {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub placeholder: &'static str,
+    pub required: bool,
+    pub masked: bool,
 }
 
+/// Get fields for a given endpoint type index
+pub fn get_fields_for_endpoint_type(endpoint_type: usize) -> Vec<FieldDef> {
+    match endpoint_type {
+        0 => vec![ // Home Assistant
+            FieldDef { id: "url", label: "Home Assistant URL", placeholder: "http://homeassistant.local:8123", required: true, masked: false },
+            FieldDef { id: "token", label: "Long-Lived Access Token", placeholder: "eyJ0eXAi...", required: true, masked: true },
+        ],
+        1 => vec![ // Generic REST API
+            FieldDef { id: "url", label: "Base URL", placeholder: "https://api.example.com", required: true, masked: false },
+            FieldDef { id: "token", label: "Bearer Token", placeholder: "Your token", required: false, masked: true },
+        ],
+        2 => vec![ // OAuth2 Service
+            FieldDef { id: "url", label: "API Base URL", placeholder: "https://api.example.com", required: true, masked: false },
+            FieldDef { id: "auth_url", label: "Authorization URL", placeholder: "https://auth.example.com/authorize", required: true, masked: false },
+            FieldDef { id: "token_url", label: "Token URL", placeholder: "https://auth.example.com/token", required: true, masked: false },
+            FieldDef { id: "client_id", label: "Client ID", placeholder: "", required: true, masked: false },
+            FieldDef { id: "client_secret", label: "Client Secret", placeholder: "", required: true, masked: true },
+            FieldDef { id: "scopes", label: "Scopes", placeholder: "read write offline_access", required: false, masked: false },
+            FieldDef { id: "redirect_uri", label: "Redirect URI", placeholder: "http://localhost:18080/oauth/callback", required: false, masked: false },
+        ],
+        3 => vec![ // API Key Service
+            FieldDef { id: "url", label: "Base URL", placeholder: "https://api.example.com", required: true, masked: false },
+            FieldDef { id: "api_key", label: "API Key", placeholder: "", required: true, masked: true },
+            FieldDef { id: "header_name", label: "Header Name", placeholder: "X-API-Key", required: false, masked: false },
+        ],
+        4 => vec![ // Basic Auth Service
+            FieldDef { id: "url", label: "Base URL", placeholder: "https://api.example.com", required: true, masked: false },
+            FieldDef { id: "username", label: "Username", placeholder: "", required: true, masked: false },
+            FieldDef { id: "password", label: "Password", placeholder: "", required: true, masked: true },
+        ],
+        5 => vec![ // Bearer Token
+            FieldDef { id: "url", label: "Base URL", placeholder: "https://api.example.com", required: true, masked: false },
+            FieldDef { id: "token", label: "Token", placeholder: "", required: true, masked: true },
+        ],
+        _ => vec![
+            FieldDef { id: "url", label: "URL", placeholder: "", required: true, masked: false },
+        ],
+    }
+}
+
+/// Add credential form state with dynamic fields
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AddCredentialState {
+    pub field_index: usize,      // 0 = name, 1 = endpoint_type, 2+ = dynamic fields
+    pub name: String,
+    pub endpoint_type: usize,
+    pub field_values: Vec<String>, // Dynamic field values
+}
+
+impl AddCredentialState {
+    /// Create new state, initializing field values for the default endpoint type
+    pub fn new() -> Self {
+        let fields = get_fields_for_endpoint_type(0);
+        Self {
+            field_index: 0,
+            name: String::new(),
+            endpoint_type: 0,
+            field_values: vec![String::new(); fields.len()],
+        }
+    }
+    
+    /// Reset field values when endpoint type changes
+    pub fn reset_fields_for_type(&mut self) {
+        let fields = get_fields_for_endpoint_type(self.endpoint_type);
+        self.field_values = vec![String::new(); fields.len()];
+        // Reset to endpoint_type selector when type changes
+        self.field_index = 1;
+    }
+    
+    /// Get total number of fields (name + endpoint_type + dynamic fields)
+    pub fn total_fields(&self) -> usize {
+        2 + get_fields_for_endpoint_type(self.endpoint_type).len()
+    }
+    
+    /// Move to next field
+    pub fn next_field(&mut self) {
+        self.field_index = (self.field_index + 1) % self.total_fields();
+    }
+    
+    /// Move to previous field
+    pub fn prev_field(&mut self) {
+        if self.field_index == 0 {
+            self.field_index = self.total_fields() - 1;
+        } else {
+            self.field_index -= 1;
+        }
+    }
+    
+    /// Check if current field is the name field
+    pub fn is_name_field(&self) -> bool {
+        self.field_index == 0
+    }
+    
+    /// Check if current field is the endpoint type selector
+    pub fn is_type_field(&self) -> bool {
+        self.field_index == 1
+    }
+    
+    /// Get the current dynamic field index (if on a dynamic field)
+    pub fn dynamic_field_index(&self) -> Option<usize> {
+        if self.field_index >= 2 {
+            Some(self.field_index - 2)
+        } else {
+            None
+        }
+    }
+    
+    /// Check if on last field (for submit)
+    pub fn is_last_field(&self) -> bool {
+        self.field_index == self.total_fields() - 1
+    }
+    
+    /// Get current field value reference for editing
+    pub fn current_value_mut(&mut self) -> Option<&mut String> {
+        if self.field_index == 0 {
+            Some(&mut self.name)
+        } else if self.field_index >= 2 {
+            let idx = self.field_index - 2;
+            self.field_values.get_mut(idx)
+        } else {
+            None // Type selector doesn't have text input
+        }
+    }
+    
+    /// Validate required fields, returns error message if invalid
+    pub fn validate(&self) -> Option<String> {
+        if self.name.trim().is_empty() {
+            return Some("Name is required".to_string());
+        }
+        
+        let fields = get_fields_for_endpoint_type(self.endpoint_type);
+        for (i, field) in fields.iter().enumerate() {
+            if field.required && self.field_values.get(i).map(|v| v.trim().is_empty()).unwrap_or(true) {
+                return Some(format!("{} is required", field.label));
+            }
+        }
+        
+        None
+    }
+    
+    /// Get field value by id
+    pub fn get_field_value(&self, id: &str) -> Option<&str> {
+        let fields = get_fields_for_endpoint_type(self.endpoint_type);
+        for (i, field) in fields.iter().enumerate() {
+            if field.id == id {
+                return self.field_values.get(i).map(|s| s.as_str());
+            }
+        }
+        None
+    }
+}
+
+// Keep the old enum for backwards compatibility but mark it deprecated
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[deprecated(note = "Use AddCredentialState.field_index instead")]
 pub enum AddCredentialField {
     #[default]
     Name,
@@ -319,28 +472,6 @@ pub enum AddCredentialField {
     Url,
     Secret,
     Expiration,
-}
-
-impl AddCredentialField {
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Name => Self::EndpointType,
-            Self::EndpointType => Self::Url,
-            Self::Url => Self::Secret,
-            Self::Secret => Self::Expiration,
-            Self::Expiration => Self::Name,
-        }
-    }
-    
-    pub fn prev(&self) -> Self {
-        match self {
-            Self::Name => Self::Expiration,
-            Self::EndpointType => Self::Name,
-            Self::Url => Self::EndpointType,
-            Self::Secret => Self::Url,
-            Self::Expiration => Self::Secret,
-        }
-    }
 }
 
 impl AppState {

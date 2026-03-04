@@ -33,6 +33,8 @@ pub struct Agent {
     security_manager: Arc<SecurityManager>,
     /// Session manager
     session_manager: Arc<SessionManager>,
+    /// Credential accessor for tool credential injection
+    credential_accessor: Option<Arc<dyn krabbykrus_tools::CredentialAccessor>>,
     /// Agent state
     state: Arc<RwLock<AgentState>>,
 }
@@ -104,6 +106,7 @@ impl Agent {
         memory_manager: Arc<MemoryManager>,
         security_manager: Arc<SecurityManager>,
         session_manager: Arc<SessionManager>,
+        credential_accessor: Option<Arc<dyn krabbykrus_tools::CredentialAccessor>>,
     ) -> Result<Self> {
         info!("Initializing agent '{}'", config.id);
         
@@ -124,6 +127,7 @@ impl Agent {
             memory_manager,
             security_manager,
             session_manager,
+            credential_accessor,
             state: Arc::new(RwLock::new(AgentState {
                 active_contexts: HashMap::new(),
                 stats: AgentStats::default(),
@@ -362,6 +366,7 @@ impl Agent {
                         security_context: self.security_manager
                             .get_session_context(session_id)
                             .await?,
+                        credential_accessor: self.credential_accessor.clone(),
                     };
                     
                     match self.tool_registry

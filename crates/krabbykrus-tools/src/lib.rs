@@ -1,4 +1,32 @@
 //! Built-in tools for Krabbykrus
+//!
+//! This crate provides the tool system for Krabbykrus agents, including:
+//!
+//! - **Tool Registry**: Profile-based tool loading and capability filtering
+//! - **Built-in Tools**: read, write, edit, exec
+//! - **Credential Injection**: Secure access to credentials from the vault
+//!
+//! # Credential Injection
+//!
+//! Tools can request credentials from the vault via the `CredentialAccessor` trait:
+//!
+//! ```no_run
+//! async fn make_api_call(context: &ToolExecutionContext, url: &str) -> Result<String> {
+//!     if let Some(accessor) = &context.credential_accessor {
+//!         let result = accessor.get_credential("saggyclaw://myapi/token", &context.agent_id).await?;
+//!         match result {
+//!             CredentialResult::Granted { secret, credential_type } => {
+//!                 // Use the credential to make the API call
+//!             }
+//!             CredentialResult::Denied { reason } => {
+//!                 return Err(ToolError::SecurityError { message: reason });
+//!             }
+//!             _ => { /* handle other cases */ }
+//!         }
+//!     }
+//!     Ok("response".to_string())
+//! }
+//! ```
 
 use crate::message::ToolResult;
 use krabbykrus_security::{Capabilities, SecurityContext};
@@ -50,12 +78,76 @@ pub struct ToolConfig {
 }
 
 /// Tool execution context
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolExecutionContext {
     pub session_id: String,
     pub agent_id: String,
     pub workspace_path: PathBuf,
     pub security_context: SecurityContext,
+    /// Optional credential accessor for tools that need API credentials
+    pub credential_accessor: Option<Arc<dyn CredentialAccessor>>,
+}
+
+impl std::fmt::Debug for ToolExecutionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolExecutionContext")
+            .field("session_id", &self.session_id)
+            .field("agent_id", &self.agent_id)
+            .field("workspace_path", &self.workspace_path)
+            .field("security_context", &self.security_context)
+            .field("has_credential_accessor", &self.credential_accessor.is_some())
+            .finish()
+    }
+}
+
+/// Credential accessor trait for tools to request credentials from the vault
+#[async_trait::async_trait]
+pub trait CredentialAccessor: Send + Sync {
+    /// Get a credential for the given path (e.g., "saggyclaw://homeassistant/api")
+    /// Returns the decrypted secret bytes if access is allowed
+    async fn get_credential(&self, path: &str, agent_id: &str) -> Result<CredentialResult>;
+    
+    /// Check if a credential exists without retrieving it
+    async fn has_credential(&self, path: &str) -> Result<bool>;
+}
+
+/// Result of a credential request
+#[derive(Debug, Clone)]
+pub enum CredentialResult {
+    /// Credential was granted
+    Granted {
+        /// The decrypted secret
+        secret: Vec<u8>,
+        /// How to apply the credential (Bearer, Basic, ApiKey, etc.)
+        credential_type: CredentialApplicationType,
+    },
+    /// Access denied
+    Denied {
+        reason: String,
+    },
+    /// Requires human approval (HIL)
+    PendingApproval {
+        request_id: String,
+        message: String,
+    },
+    /// Credential not found
+    NotFound {
+        path: String,
+    },
+}
+
+/// How to apply a credential to a request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CredentialApplicationType {
+    /// Bearer token in Authorization header
+    BearerToken,
+    /// Basic auth
+    BasicAuth { username: String },
+    /// API key in custom header
+    ApiKey { header_name: String },
+    /// Raw secret (tool handles application)
+    Raw,
 }
 
 /// Tool execution result

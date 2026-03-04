@@ -8,3 +8,4 @@ pub mod tool;
 pub mod credentials;
 pub mod doctor;
 pub mod migrate;
+pub mod vault_unlock;

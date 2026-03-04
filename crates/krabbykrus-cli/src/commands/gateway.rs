@@ -1,7 +1,7 @@
 //! Gateway server command implementation
 
 use anyhow::Result;
-use krabbykrus_core::{Config, Gateway, Agent};
+use krabbykrus_core::{Config, Gateway, Agent, VaultCredentialAccessor};
 use krabbykrus_core::config::AgentInstance;
 use krabbykrus_core::session::SessionManager;
 use krabbykrus_tools::ToolRegistry;
@@ -11,9 +11,10 @@ use krabbykrus_llm::LlmProviderRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::process::Command;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::GatewayCommands;
+use crate::commands::vault_unlock::unlock_vault_for_gateway;
 
 /// Run gateway commands
 pub async fn run(command: &GatewayCommands, config_path: &PathBuf) -> Result<()> {
@@ -36,6 +37,40 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     
     // Initialize core components
     info!("Initializing Krabbykrus gateway...");
+    
+    // Determine vault path from config
+    let vault_path = config.credentials.vault_path.clone();
+    
+    // Check if we're running interactively (TTY)
+    let interactive = atty::is(atty::Stream::Stdin);
+    
+    // Only unlock vault if credentials are enabled
+    let vault_result = if config.credentials.enabled {
+        match unlock_vault_for_gateway(
+            &vault_path,
+            interactive,
+            Some(config.credentials.password_env_var.as_str()),
+        ).await {
+            Ok(result) => {
+                info!("Credential vault ready");
+                Some(result)
+            }
+            Err(e) => {
+                warn!("Could not unlock credential vault: {}. Continuing with environment variables only.", e);
+                None
+            }
+        }
+    } else {
+        debug!("Credential management disabled in config");
+        None
+    };
+    
+    // Create credential accessor if vault is available
+    let credential_accessor: Option<Arc<dyn krabbykrus_tools::CredentialAccessor>> = 
+        vault_result.as_ref().map(|r| {
+            Arc::new(VaultCredentialAccessor::new(r.manager.clone())) 
+                as Arc<dyn krabbykrus_tools::CredentialAccessor>
+        });
     
     // Create session manager
     let db_path = dirs::config_dir()
@@ -61,6 +96,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let sm = security_manager.clone();
     let sess = session_manager.clone();
     let llm = llm_registry.clone();
+    let cred_accessor = credential_accessor.clone();
     
     let agent_factory: krabbykrus_core::gateway::AgentFactory = Arc::new(move |agent_config: AgentInstance| {
         let defaults = defaults.clone();
@@ -68,6 +104,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         let sm = sm.clone();
         let sess = sess.clone();
         let llm = llm.clone();
+        let cred_accessor = cred_accessor.clone();
         
         Box::pin(async move {
             let model = agent_config.model.as_ref()
@@ -92,6 +129,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                 memory_manager,
                 sm,
                 sess,
+                cred_accessor,
             ).await.map_err(|e| krabbykrus_core::error::GatewayError::InvalidRequest {
                 message: e.to_string(),
             })?;
@@ -141,6 +179,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
             memory_manager,
             security_manager.clone(),
             session_manager.clone(),
+            credential_accessor.clone(),
         ).await?);
         
         // Register with gateway

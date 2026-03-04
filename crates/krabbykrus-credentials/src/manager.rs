@@ -489,6 +489,12 @@ impl CredentialManager {
         *self.locked.read().await
     }
 
+    /// Get the unlock method for this vault
+    pub async fn get_unlock_method(&self) -> Option<crate::storage::UnlockMethod> {
+        let vault = self.vault.read().await;
+        vault.unlock_method().cloned()
+    }
+
     /// Add a permission policy
     pub async fn add_permission(&self, permission: PathPermission) {
         let mut perms = self.permissions.write().await;

@@ -28,7 +28,9 @@ dirs = { workspace = true }
 reqwest = { workspace = true }
 rpassword = "7"
 getrandom = "0.2"
+atty = "0.2"
 
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
+tachyonfx = "0.7"

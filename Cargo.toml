@@ -88,3 +88,19 @@ strip = true
 [profile.release-small]
 inherits = "release"
 opt-level = "z"
+
+# Documentation settings
+[workspace.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# Package metadata for all crates
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/TrippingKelsea/krabbykrus"
+documentation = "https://docs.rs/krabbykrus"
+keywords = ["ai", "agent", "llm", "credentials", "security"]
+categories = ["command-line-utilities", "cryptography", "development-tools"]

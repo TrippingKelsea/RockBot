@@ -1,7 +1,34 @@
-//! Shared application state and message types
+//! Shared application state and message types for the TUI.
 //!
-//! This module defines the centralized state that all components can read,
-//! and the message types used for async updates.
+//! This module defines the centralized state that all TUI components can read,
+//! and the message types used for async state updates.
+//!
+//! # Architecture
+//!
+//! The TUI follows an Elm-like architecture:
+//!
+//! 1. **State** ([`AppState`]) - Single source of truth for all UI data
+//! 2. **Messages** ([`Message`]) - Events that trigger state changes
+//! 3. **Update** ([`AppState::update`]) - Pure function that applies messages to state
+//! 4. **View** - Components that render state (in `components/` module)
+//!
+//! # Example
+//!
+//! ```no_run
+//! use krabbykrus_cli::tui::state::{AppState, Message};
+//! use tokio::sync::mpsc;
+//!
+//! let (tx, mut rx) = mpsc::unbounded_channel();
+//! let state = AppState::new(config_path, vault_path, tx.clone());
+//!
+//! // Send a navigation message
+//! tx.send(Message::Navigate(MenuItem::Credentials)).unwrap();
+//!
+//! // Process messages
+//! while let Ok(msg) = rx.try_recv() {
+//!     state.update(msg);
+//! }
+//! ```
 
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -300,17 +327,58 @@ pub enum ConfirmAction {
     DeleteAgent(String),    // agent id
 }
 
-/// Field definition for dynamic form fields
+/// Definition of a form field for dynamic credential forms.
+///
+/// Different endpoint types require different fields. This struct defines
+/// the metadata for each field so the UI can render appropriate inputs.
+///
+/// # Example
+///
+/// ```
+/// use krabbykrus_cli::tui::state::FieldDef;
+///
+/// let field = FieldDef {
+///     id: "api_key",
+///     label: "API Key",
+///     placeholder: "sk-...",
+///     required: true,
+///     masked: true,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDef {
+    /// Unique identifier for this field (used for form data extraction).
     pub id: &'static str,
+    /// Human-readable label displayed next to the input.
     pub label: &'static str,
+    /// Placeholder text shown when the field is empty.
     pub placeholder: &'static str,
+    /// Whether this field must be filled before submission.
     pub required: bool,
+    /// Whether to mask input (for passwords/secrets).
     pub masked: bool,
 }
 
-/// Get fields for a given endpoint type index
+/// Returns the form fields required for a given endpoint type.
+///
+/// Each endpoint type has different authentication requirements:
+///
+/// | Index | Type | Fields |
+/// |-------|------|--------|
+/// | 0 | Home Assistant | URL, Long-Lived Token |
+/// | 1 | Generic REST | Base URL, Bearer Token |
+/// | 2 | OAuth2 | Base URL, Auth URL, Token URL, Client ID/Secret, Scopes, Redirect URI |
+/// | 3 | API Key | Base URL, API Key, Header Name |
+/// | 4 | Basic Auth | Base URL, Username, Password |
+/// | 5 | Bearer Token | Base URL, Token |
+///
+/// # Arguments
+///
+/// * `endpoint_type` - Index of the endpoint type (0-5)
+///
+/// # Returns
+///
+/// Vector of [`FieldDef`] describing the required form fields.
 pub fn get_fields_for_endpoint_type(endpoint_type: usize) -> Vec<FieldDef> {
     match endpoint_type {
         0 => vec![ // Home Assistant
@@ -350,13 +418,46 @@ pub fn get_fields_for_endpoint_type(endpoint_type: usize) -> Vec<FieldDef> {
     }
 }
 
-/// Add credential form state with dynamic fields
+/// State for the "Add Credential" modal with dynamic fields.
+///
+/// This state tracks form input for creating new credential endpoints.
+/// Fields are dynamic based on the selected endpoint type—OAuth2 services
+/// need more fields than simple bearer tokens.
+///
+/// # Field Indices
+///
+/// - `0` - Endpoint name (always present)
+/// - `1` - Endpoint type selector (cycles through types)
+/// - `2+` - Dynamic fields from [`get_fields_for_endpoint_type`]
+///
+/// # Example
+///
+/// ```
+/// use krabbykrus_cli::tui::state::AddCredentialState;
+///
+/// let mut state = AddCredentialState::new();
+///
+/// // Navigate to type selector and change type
+/// state.next_field(); // Now on type selector
+/// state.endpoint_type = 2; // OAuth2
+/// state.reset_fields_for_type(); // Updates field_values for OAuth2
+///
+/// // Fill in a field
+/// state.next_field(); // First dynamic field
+/// if let Some(value) = state.current_value_mut() {
+///     value.push_str("https://api.example.com");
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AddCredentialState {
-    pub field_index: usize,      // 0 = name, 1 = endpoint_type, 2+ = dynamic fields
+    /// Current field index (0=name, 1=type, 2+=dynamic fields).
+    pub field_index: usize,
+    /// User-provided name for the endpoint.
     pub name: String,
+    /// Selected endpoint type index (see [`get_fields_for_endpoint_type`]).
     pub endpoint_type: usize,
-    pub field_values: Vec<String>, // Dynamic field values
+    /// Values for dynamic fields (parallel to fields from [`get_fields_for_endpoint_type`]).
+    pub field_values: Vec<String>,
 }
 
 impl AddCredentialState {

@@ -7,14 +7,26 @@
 //! - Message-passing via channels for state updates
 //! - Component-based rendering with shared state
 //! - Background task system for non-blocking data fetching
+//! - Visual effects via tachyonfx for active element indication
+//!
+//! # Navigation
+//!
+//! - **Tab**: Switch between sidebar and content pane
+//! - **↑/↓** or **j/k**: Navigate within pane
+//! - **Shift+[** / **Shift+]**: Switch between tabs within a view
+//! - **1-6**: Quick jump to section
+//! - **Enter**: Select / Confirm
+//! - **Esc**: Cancel / Back
 
 pub mod app;
 pub mod components;
 pub mod credentials;
+pub mod effects;
 pub mod event;
 pub mod state;
 pub mod ui;
 
 pub use app::{App, run_app};
 pub use credentials::CredentialsTui;
+pub use effects::{EffectState, palette};
 pub use state::{AppState, Message};

@@ -17,16 +17,65 @@ use super::components::{
     render_agents, render_credentials, render_models, render_password_modal,
     render_sessions, render_settings, render_sidebar, render_status_bar,
 };
+use super::effects::EffectState;
 use super::state::{
     AddCredentialState, AppState, ConfirmAction, InputMode,
     MenuItem, Message, PasswordAction, UnlockMethod,
 };
 
+/// Content tabs for views that have sub-tabs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialsTab {
+    #[default]
+    Endpoints,
+    Providers,
+    Permissions,
+    Audit,
+}
+
+impl CredentialsTab {
+    pub fn all() -> Vec<Self> {
+        vec![Self::Endpoints, Self::Providers, Self::Permissions, Self::Audit]
+    }
+    
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Endpoints => "Endpoints",
+            Self::Providers => "Providers",
+            Self::Permissions => "Permissions",
+            Self::Audit => "Audit Log",
+        }
+    }
+    
+    pub fn index(&self) -> usize {
+        match self {
+            Self::Endpoints => 0,
+            Self::Providers => 1,
+            Self::Permissions => 2,
+            Self::Audit => 3,
+        }
+    }
+    
+    pub fn from_index(idx: usize) -> Self {
+        match idx % 4 {
+            0 => Self::Endpoints,
+            1 => Self::Providers,
+            2 => Self::Permissions,
+            _ => Self::Audit,
+        }
+    }
+}
+
 /// Main application struct
 pub struct App {
     state: AppState,
     rx: mpsc::UnboundedReceiver<Message>,
-    credentials_tab: usize,
+    /// Effect state for visual animations
+    effect_state: EffectState,
+    /// Current tab within Credentials view
+    credentials_tab: CredentialsTab,
+    /// Current tab within Models view (for future use)
+    models_tab: usize,
 }
 
 impl App {
@@ -36,7 +85,38 @@ impl App {
         Self {
             state: AppState::new(config_path, vault_path, tx),
             rx,
-            credentials_tab: 0,
+            effect_state: EffectState::new(),
+            credentials_tab: CredentialsTab::default(),
+            models_tab: 0,
+        }
+    }
+    
+    /// Navigate to previous content tab (Shift+[)
+    fn prev_content_tab(&mut self) {
+        match self.state.menu_item {
+            MenuItem::Credentials => {
+                let idx = self.credentials_tab.index();
+                let new_idx = if idx == 0 { 3 } else { idx - 1 };
+                self.credentials_tab = CredentialsTab::from_index(new_idx);
+            }
+            MenuItem::Models => {
+                self.models_tab = if self.models_tab == 0 { 2 } else { self.models_tab - 1 };
+            }
+            _ => {}
+        }
+    }
+    
+    /// Navigate to next content tab (Shift+])
+    fn next_content_tab(&mut self) {
+        match self.state.menu_item {
+            MenuItem::Credentials => {
+                let idx = self.credentials_tab.index();
+                self.credentials_tab = CredentialsTab::from_index(idx + 1);
+            }
+            MenuItem::Models => {
+                self.models_tab = (self.models_tab + 1) % 3;
+            }
+            _ => {}
         }
     }
 
@@ -142,28 +222,48 @@ impl App {
             }
             KeyCode::Tab => {
                 self.state.sidebar_focus = !self.state.sidebar_focus;
+                self.effect_state.set_active(!self.state.sidebar_focus);
             }
             
-            // Sidebar navigation
+            // Sidebar navigation (only when sidebar focused)
             KeyCode::Up | KeyCode::Char('k') if self.state.sidebar_focus => {
                 self.state.menu_prev();
             }
             KeyCode::Down | KeyCode::Char('j') if self.state.sidebar_focus => {
                 self.state.menu_next();
             }
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') if self.state.sidebar_focus => {
+            KeyCode::Enter if self.state.sidebar_focus => {
+                // Enter selects and switches to content
                 self.state.sidebar_focus = false;
+                self.effect_state.set_active(true);
             }
             
-            // Content navigation
-            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') if !self.state.sidebar_focus => {
+            // Content navigation (only when content focused)
+            KeyCode::Esc if !self.state.sidebar_focus => {
+                // Esc returns to sidebar
                 self.state.sidebar_focus = true;
+                self.effect_state.set_active(false);
             }
             KeyCode::Up | KeyCode::Char('k') if !self.state.sidebar_focus => {
                 self.state.select_prev();
             }
             KeyCode::Down | KeyCode::Char('j') if !self.state.sidebar_focus => {
                 self.state.select_next();
+            }
+            
+            // Tab navigation within views (Shift+[ and Shift+])
+            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.prev_content_tab();
+            }
+            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.next_content_tab();
+            }
+            // Also support { and } which are Shift+[ and Shift+] on US keyboards
+            KeyCode::Char('{') => {
+                self.prev_content_tab();
+            }
+            KeyCode::Char('}') => {
+                self.next_content_tab();
             }
             
             // Quick nav by number
@@ -194,9 +294,9 @@ impl App {
                 self.handle_lock_action();
             }
             
-            // Credentials tab navigation
-            KeyCode::BackTab if self.state.menu_item == MenuItem::Credentials => {
-                self.credentials_tab = if self.credentials_tab == 0 { 3 } else { self.credentials_tab - 1 };
+            // Shift+Tab for backwards tab navigation
+            KeyCode::BackTab => {
+                self.prev_content_tab();
             }
             
             _ => {}
@@ -494,15 +594,15 @@ impl App {
             .split(chunks[1]);
 
         // Sidebar
-        render_sidebar(frame, chunks[0], &self.state);
+        render_sidebar(frame, chunks[0], &self.state, &self.effect_state);
 
-        // Content area
+        // Content area - pass effect state for active border animation
         match self.state.menu_item {
             MenuItem::Dashboard => render_dashboard(frame, main_chunks[0], &self.state),
-            MenuItem::Credentials => render_credentials(frame, main_chunks[0], &self.state, self.credentials_tab),
+            MenuItem::Credentials => render_credentials(frame, main_chunks[0], &self.state, self.credentials_tab.index(), &self.effect_state),
             MenuItem::Agents => render_agents(frame, main_chunks[0], &self.state),
             MenuItem::Sessions => render_sessions(frame, main_chunks[0], &self.state),
-            MenuItem::Models => render_models(frame, main_chunks[0], &self.state),
+            MenuItem::Models => render_models(frame, main_chunks[0], &self.state, &self.effect_state),
             MenuItem::Settings => render_settings(frame, main_chunks[0], &self.state),
         }
 
@@ -539,20 +639,35 @@ impl App {
         match &self.state.input_mode {
             InputMode::Normal => {
                 if self.state.sidebar_focus {
-                    "q:Quit │ j/k:Navigate │ Enter:Select │ Tab:Focus content".to_string()
+                    "q:Quit │ ↑↓/jk:Navigate │ Enter:Select │ Tab:→Content │ 1-6:Quick".to_string()
                 } else {
                     match self.state.menu_item {
-                        MenuItem::Dashboard => "r:Refresh │ Tab:Focus sidebar │ 1-6:Quick nav".to_string(),
-                        MenuItem::Credentials => "a:Add │ d:Delete │ u:Unlock │ l:Lock │ Tab:Switch tabs".to_string(),
-                        MenuItem::Agents => "r:Reload │ e:Edit │ d:Disable │ Tab:Focus sidebar".to_string(),
-                        MenuItem::Sessions => "c:Chat │ k:Kill │ v:View │ Tab:Focus sidebar".to_string(),
-                        MenuItem::Models => "e:Edit │ t:Test │ Tab:Focus sidebar".to_string(),
-                        MenuItem::Settings => "s:Start │ S:Stop │ r:Restart │ Tab:Focus sidebar".to_string(),
+                        MenuItem::Dashboard => {
+                            "r:Refresh │ Esc/Tab:←Sidebar │ 1-6:Quick nav".to_string()
+                        }
+                        MenuItem::Credentials => {
+                            format!(
+                                "a:Add │ d:Delete │ u:Unlock │ l:Lock │ {{}}:Tabs ({}) │ Esc:←",
+                                self.credentials_tab.label()
+                            )
+                        }
+                        MenuItem::Agents => {
+                            "r:Reload │ e:Edit │ d:Disable │ Esc/Tab:←Sidebar".to_string()
+                        }
+                        MenuItem::Sessions => {
+                            "c:Chat │ k:Kill │ v:View │ Esc/Tab:←Sidebar".to_string()
+                        }
+                        MenuItem::Models => {
+                            "e:Edit │ t:Test │ Esc/Tab:←Sidebar".to_string()
+                        }
+                        MenuItem::Settings => {
+                            "s:Start │ S:Stop │ r:Restart │ Esc/Tab:←Sidebar".to_string()
+                        }
                     }
                 }
             }
             InputMode::PasswordInput { .. } => "Enter:Submit │ Esc:Cancel".to_string(),
-            InputMode::AddCredential(_) => "Tab:Next │ Enter:Submit │ Esc:Cancel".to_string(),
+            InputMode::AddCredential(_) => "↑↓/Tab:Navigate │ ←→:Type │ Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::Confirm { .. } => "y:Yes │ n:No │ Esc:Cancel".to_string(),
             InputMode::ChatInput => "Enter:Send │ Esc:Close".to_string(),
         }

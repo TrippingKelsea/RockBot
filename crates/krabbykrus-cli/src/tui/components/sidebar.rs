@@ -7,10 +7,11 @@ use ratatui::{
     Frame,
 };
 
+use crate::tui::effects::{self, palette, EffectState};
 use crate::tui::state::{AppState, MenuItem};
 
 /// Render the sidebar navigation
-pub fn render_sidebar(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn render_sidebar(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
     let items: Vec<ListItem> = MenuItem::all()
         .iter()
         .map(|item| {
@@ -19,10 +20,22 @@ pub fn render_sidebar(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .collect();
 
+    // Use animated purple border when sidebar is focused
     let border_style = if state.sidebar_focus {
-        Style::default().fg(Color::Cyan)
+        effects::active_border_style(effect_state.elapsed_secs())
     } else {
-        Style::default().fg(Color::DarkGray)
+        effects::inactive_border_style()
+    };
+
+    let highlight_style = if state.sidebar_focus {
+        Style::default()
+            .bg(palette::ACTIVE_PRIMARY)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
     };
 
     let list = List::new(items)
@@ -32,12 +45,8 @@ pub fn render_sidebar(frame: &mut Frame, area: Rect, state: &AppState) {
                 .border_style(border_style)
                 .title("🦀 Krabbykrus"),
         )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
+        .highlight_style(highlight_style)
+        .highlight_symbol("▶ ");
 
     let mut list_state = ListState::default();
     list_state.select(Some(state.menu_index));

@@ -1,7 +1,28 @@
 //! Communication channels for Krabbykrus
-//! 
+//!
 //! This module provides abstractions for different communication channels
 //! like Discord, Telegram, WhatsApp, etc.
+//!
+//! # Supported Channels
+//!
+//! - **Discord** - Full-featured Discord bot integration via Serenity
+//! - *Telegram* - Planned
+//! - *Slack* - Planned
+//!
+//! # Example
+//!
+//! ```no_run
+//! use krabbykrus_channels::{ChannelManager, discord::DiscordChannel};
+//!
+//! let mut manager = ChannelManager::new();
+//!
+//! // Add Discord channel
+//! let discord = DiscordChannel::from_env()?;
+//! manager.register_channel(Box::new(discord));
+//!
+//! // Connect all channels
+//! manager.connect_all().await?;
+//! ```
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -9,6 +30,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
 use thiserror::Error;
+
+// Channel implementations
+#[cfg(feature = "discord")]
+pub mod discord;
 
 /// Channel errors
 #[derive(Debug, Error)]

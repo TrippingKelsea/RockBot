@@ -7,7 +7,7 @@ use crate::error::{AgentError, Result};
 use crate::message::{Message, MessageRole, SystemLevel};
 use crate::session::{Session, SessionManager};
 use crate::config::AgentInstance;
-use krabbykrus_llm::{LlmProvider, ChatCompletionRequest, ChatCompletionResponse};
+use krabbykrus_llm::{LlmProvider, LlmError, ChatCompletionRequest, ChatCompletionResponse};
 use krabbykrus_memory::MemoryManager;
 use krabbykrus_tools::{ToolRegistry, ToolExecutionContext, ToolExecutionResult};
 use krabbykrus_tools::message::ToolResult;
@@ -15,6 +15,7 @@ use krabbykrus_security::SecurityManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -74,6 +75,54 @@ pub struct AgentStats {
     pub avg_response_time_ms: u64,
     /// Error count
     pub error_count: u64,
+    /// Total retry attempts
+    pub retry_attempts: u64,
+    /// Rate limit hits
+    pub rate_limit_hits: u64,
+}
+
+/// Retry configuration for LLM calls
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of retries
+    pub max_retries: u32,
+    /// Base delay in milliseconds
+    pub base_delay_ms: u64,
+    /// Maximum delay in milliseconds
+    pub max_delay_ms: u64,
+    /// Backoff multiplier
+    pub backoff_multiplier: f64,
+    /// Jitter factor (0.0-1.0)
+    pub jitter_factor: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay_ms: 1000,     // Start with 1 second
+            max_delay_ms: 30000,     // Cap at 30 seconds
+            backoff_multiplier: 2.0, // Double each time
+            jitter_factor: 0.1,      // 10% jitter to prevent thundering herd
+        }
+    }
+}
+
+/// Error classification for retry decisions
+#[derive(Debug, Clone, PartialEq)]
+pub enum ErrorCategory {
+    /// Temporary errors that should be retried
+    Retryable,
+    /// Rate limiting errors with potential backoff info
+    RateLimit { retry_after_ms: Option<u64> },
+    /// Authentication/authorization errors
+    Auth,
+    /// Client errors that shouldn't be retried
+    Client,
+    /// Server errors that might be retryable
+    Server,
+    /// Network/connection errors
+    Network,
 }
 
 /// Agent response to a message
@@ -158,9 +207,8 @@ impl Agent {
         // Generate LLM request
         let llm_request = self.build_llm_request(&mut context).await?;
         
-        // Call LLM
-        let llm_response = self.llm_provider.chat_completion(llm_request).await
-            .map_err(|e| AgentError::ModelError { message: e.to_string() })?;
+        // Call LLM with retry logic
+        let llm_response = self.call_llm_with_retry(llm_request).await?;
         
         // Process LLM response and handle tool calls
         let (response_message, tool_results, token_usage) = self.process_llm_response(
@@ -463,6 +511,148 @@ impl Agent {
         Ok(skills_parts.join("\n\n"))
     }
     
+    /// Call LLM with retry logic and exponential backoff
+    async fn call_llm_with_retry(&self, request: ChatCompletionRequest) -> Result<ChatCompletionResponse> {
+        let retry_config = RetryConfig::default();
+        let mut last_error_message = String::new();
+        
+        for attempt in 0..=retry_config.max_retries {
+            debug!("LLM API call attempt {} of {}", attempt + 1, retry_config.max_retries + 1);
+            
+            match self.llm_provider.chat_completion(request.clone()).await {
+                Ok(response) => {
+                    if attempt > 0 {
+                        info!("LLM API call succeeded after {} retries", attempt);
+                        // Update stats
+                        {
+                            let mut state = self.state.write().await;
+                            state.stats.retry_attempts += attempt as u64;
+                        }
+                    }
+                    return Ok(response);
+                }
+                Err(error) => {
+                    last_error_message = error.to_string();
+                    let error_category = self.classify_llm_error(&error);
+                    
+                    debug!("LLM API call failed (attempt {}): {} - Category: {:?}", 
+                           attempt + 1, error, error_category);
+                    
+                    // Update stats
+                    {
+                        let mut state = self.state.write().await;
+                        state.stats.error_count += 1;
+                        if matches!(error_category, ErrorCategory::RateLimit { .. }) {
+                            state.stats.rate_limit_hits += 1;
+                        }
+                    }
+                    
+                    // Check if we should retry
+                    if attempt >= retry_config.max_retries || !self.should_retry_error(&error_category) {
+                        break;
+                    }
+                    
+                    // Calculate delay with exponential backoff and jitter
+                    let delay = self.calculate_retry_delay(&retry_config, attempt, &error_category);
+                    
+                    warn!("Retrying LLM API call in {}ms due to: {}", delay, error);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+            }
+        }
+        
+        // All retries exhausted
+        if last_error_message.is_empty() {
+            last_error_message = "Unknown error during LLM API call".to_string();
+        }
+        
+        error!("LLM API call failed after {} retries: {}", retry_config.max_retries, last_error_message);
+        Err(crate::error::KrabbykrusError::Agent(AgentError::ModelError { 
+            message: format!("LLM API call failed after {} retries: {}", retry_config.max_retries, last_error_message)
+        }))
+    }
+    
+    /// Classify an LLM error for retry decisions
+    fn classify_llm_error(&self, error: &LlmError) -> ErrorCategory {
+        match error {
+            LlmError::RateLimitExceeded => ErrorCategory::RateLimit { retry_after_ms: None },
+            LlmError::AuthenticationFailed => ErrorCategory::Auth,
+            LlmError::ModelNotFound { .. } => ErrorCategory::Client,
+            LlmError::Request(req_error) => {
+                // Classify reqwest errors
+                if req_error.is_timeout() || req_error.is_connect() {
+                    ErrorCategory::Network
+                } else if req_error.is_status() {
+                    if let Some(status) = req_error.status() {
+                        match status.as_u16() {
+                            429 => ErrorCategory::RateLimit { retry_after_ms: None },
+                            401 | 403 => ErrorCategory::Auth,
+                            400..=499 => ErrorCategory::Client,
+                            500..=599 => ErrorCategory::Server,
+                            _ => ErrorCategory::Network,
+                        }
+                    } else {
+                        ErrorCategory::Network
+                    }
+                } else {
+                    ErrorCategory::Network
+                }
+            }
+            LlmError::ApiError { message } => {
+                // Parse message for specific error types
+                let msg_lower = message.to_lowercase();
+                if msg_lower.contains("rate limit") || msg_lower.contains("too many requests") {
+                    ErrorCategory::RateLimit { retry_after_ms: None }
+                } else if msg_lower.contains("auth") || msg_lower.contains("unauthorized") || msg_lower.contains("forbidden") {
+                    ErrorCategory::Auth
+                } else if msg_lower.contains("invalid") || msg_lower.contains("bad request") {
+                    ErrorCategory::Client
+                } else {
+                    ErrorCategory::Server
+                }
+            }
+            LlmError::Json(_) => ErrorCategory::Client,
+        }
+    }
+    
+    /// Determine if an error should be retried
+    fn should_retry_error(&self, error_category: &ErrorCategory) -> bool {
+        match error_category {
+            ErrorCategory::Retryable => true,
+            ErrorCategory::RateLimit { .. } => true,
+            ErrorCategory::Server => true,
+            ErrorCategory::Network => true,
+            ErrorCategory::Auth => false,
+            ErrorCategory::Client => false,
+        }
+    }
+    
+    /// Calculate retry delay with exponential backoff and jitter
+    fn calculate_retry_delay(&self, config: &RetryConfig, attempt: u32, error_category: &ErrorCategory) -> u64 {
+        let base_delay = match error_category {
+            ErrorCategory::RateLimit { retry_after_ms: Some(delay) } => *delay,
+            ErrorCategory::RateLimit { .. } => {
+                // Use longer backoff for rate limits
+                config.base_delay_ms * 2
+            }
+            _ => config.base_delay_ms,
+        };
+        
+        // Calculate exponential backoff
+        let exponential_delay = (base_delay as f64) * config.backoff_multiplier.powi(attempt as i32);
+        
+        // Cap at max delay
+        let capped_delay = exponential_delay.min(config.max_delay_ms as f64);
+        
+        // Add jitter to prevent thundering herd
+        let jitter_range = capped_delay * config.jitter_factor;
+        let jitter = (rand::random::<f64>() - 0.5) * 2.0 * jitter_range;
+        
+        let final_delay = (capped_delay + jitter).max(100.0); // Minimum 100ms
+        
+        final_delay as u64
+    }
+    
     /// Process LLM response and handle any tool calls with multi-turn execution
     async fn process_llm_response(
         &self,
@@ -537,8 +727,8 @@ impl Agent {
             // Generate next LLM request with updated conversation including tool results
             let next_llm_request = self.build_llm_request(context).await?;
             
-            // Get next LLM response
-            match self.llm_provider.chat_completion(next_llm_request).await {
+            // Get next LLM response with retry logic
+            match self.call_llm_with_retry(next_llm_request).await {
                 Ok(response) => {
                     // Accumulate token usage
                     cumulative_token_usage.prompt_tokens += response.usage.prompt_tokens;
@@ -549,7 +739,7 @@ impl Agent {
                 }
                 Err(e) => {
                     error!("LLM error in tool execution loop: {}", e);
-                    return Err(crate::error::KrabbykrusError::Agent(AgentError::ModelError { message: e.to_string() }));
+                    return Err(e);
                 }
             }
         }

@@ -33,6 +33,7 @@ notify = { workspace = true }
 rusqlite = { workspace = true }
 regex = { workspace = true }
 dirs = { workspace = true }
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }

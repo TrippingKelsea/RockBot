@@ -369,39 +369,49 @@ impl LlmProvider for OpenAiProvider {
             });
         }
 
-        // For now, return a simple implementation that creates a single chunk with the full response
-        // This is a temporary solution until we properly implement SSE streaming
+        // Implement proper SSE streaming for OpenAI
         let stream = async_stream::stream! {
-            // Read the entire response for now
-            let body = match response.text().await {
-                Ok(text) => text,
-                Err(e) => {
-                    yield Err(LlmError::Request(e));
-                    return;
+            use futures_util::StreamExt;
+            
+            // Get response stream
+            let mut byte_stream = response.bytes_stream();
+            let mut buffer = String::new();
+            
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(e) => {
+                        yield Err(LlmError::Request(e));
+                        return;
+                    }
+                };
+                
+                let chunk_str = String::from_utf8_lossy(&chunk);
+                buffer.push_str(&chunk_str);
+                
+                // Process complete SSE events
+                while let Some(event_end) = buffer.find("\n\n") {
+                    let event_data = buffer[..event_end].to_string();
+                    buffer = buffer[event_end + 2..].to_string();
+                    
+                    // Parse SSE event
+                    if let Some(data) = parse_openai_sse_event(&event_data) {
+                        if data == "[DONE]" {
+                            // End of stream
+                            return;
+                        }
+                        
+                        match handle_openai_stream_event(&data, &model) {
+                            Ok(Some(chunk)) => yield Ok(chunk),
+                            Ok(None) => continue, // Event handled, but no chunk to yield
+                            Err(e) => {
+                                yield Err(e);
+                                return;
+                            }
+                        }
+                    }
                 }
-            };
-            
-            // For non-streaming response, create a single chunk
-            let chunk = StreamingChunk {
-                id: format!("stream-{}", uuid::Uuid::new_v4()),
-                object: "chat.completion.chunk".to_string(),
-                created: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-                model: model.clone(),
-                choices: vec![StreamingChoice {
-                    index: 0,
-                    delta: StreamingDelta {
-                        role: Some(MessageRole::Assistant),
-                        content: Some(body),
-                        tool_calls: None,
-                    },
-                    finish_reason: Some("stop".to_string()),
-                }],
-            };
-            
-            yield Ok(chunk);
+            }
         };
 
         Ok(Box::pin(stream))
@@ -535,6 +545,35 @@ impl LlmProvider for OpenAiProvider {
                 model: model_id.to_string(),
             })
     }
+}
+
+/// Parse OpenAI Server-Sent Events (SSE) format
+fn parse_openai_sse_event(event_data: &str) -> Option<String> {
+    for line in event_data.lines() {
+        if line.starts_with("data: ") {
+            let data = &line[6..]; // Skip "data: "
+            return Some(data.to_string());
+        }
+    }
+    None
+}
+
+/// Handle OpenAI-specific streaming events
+fn handle_openai_stream_event(
+    data: &str,
+    model: &str,
+) -> std::result::Result<Option<StreamingChunk>, LlmError> {
+    // OpenAI returns complete streaming chunks in JSON format
+    let chunk: StreamingChunk = serde_json::from_str(data)
+        .map_err(|e| LlmError::ApiError {
+            message: format!("Failed to parse OpenAI streaming chunk: {}", e),
+        })?;
+    
+    // Update the model in the chunk to match our request
+    let mut updated_chunk = chunk;
+    updated_chunk.model = model.to_string();
+    
+    Ok(Some(updated_chunk))
 }
 
 #[cfg(test)]

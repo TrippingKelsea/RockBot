@@ -677,39 +677,69 @@ impl LlmProvider for AnthropicProvider {
             });
         }
 
-        // For now, return a simple implementation that creates a single chunk with the full response
-        // This is a temporary solution until we properly implement SSE streaming
+        // Implement proper SSE streaming
         let stream = async_stream::stream! {
-            // Read the entire response for now
-            let body = match response.text().await {
-                Ok(text) => text,
-                Err(e) => {
-                    yield Err(LlmError::Request(e));
-                    return;
+            use futures_util::StreamExt;
+            
+            // Get response stream
+            let mut byte_stream = response.bytes_stream();
+            let mut buffer = String::new();
+            let mut message_id: Option<String> = None;
+            let mut current_content = String::new();
+            
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(e) => {
+                        yield Err(LlmError::Request(e));
+                        return;
+                    }
+                };
+                
+                let chunk_str = String::from_utf8_lossy(&chunk);
+                buffer.push_str(&chunk_str);
+                
+                // Process complete SSE events
+                while let Some(event_end) = buffer.find("\n\n") {
+                    let event_data = buffer[..event_end].to_string();
+                    buffer = buffer[event_end + 2..].to_string();
+                    
+                    // Parse SSE event
+                    if let Some(data) = parse_sse_event(&event_data) {
+                        match handle_anthropic_stream_event(&data, &mut message_id, &mut current_content, &model) {
+                            Ok(Some(chunk)) => yield Ok(chunk),
+                            Ok(None) => continue, // Event handled, but no chunk to yield
+                            Err(e) => {
+                                yield Err(e);
+                                return;
+                            }
+                        }
+                    }
                 }
-            };
+            }
             
-            // For non-streaming response, create a single chunk
-            let chunk = StreamingChunk {
-                id: format!("stream-{}", uuid::Uuid::new_v4()),
-                object: "chat.completion.chunk".to_string(),
-                created: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-                model: model.clone(),
-                choices: vec![StreamingChoice {
-                    index: 0,
-                    delta: StreamingDelta {
-                        role: Some(MessageRole::Assistant),
-                        content: Some(body),
-                        tool_calls: None,
-                    },
-                    finish_reason: Some("stop".to_string()),
-                }],
-            };
-            
-            yield Ok(chunk);
+            // Send final chunk if we have content
+            if !current_content.is_empty() {
+                let final_chunk = StreamingChunk {
+                    id: message_id.unwrap_or_else(|| format!("stream-{}", uuid::Uuid::new_v4())),
+                    object: "chat.completion.chunk".to_string(),
+                    created: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    model: model.clone(),
+                    choices: vec![StreamingChoice {
+                        index: 0,
+                        delta: StreamingDelta {
+                            role: None,
+                            content: None,
+                            tool_calls: None,
+                        },
+                        finish_reason: Some("stop".to_string()),
+                    }],
+                };
+                yield Ok(final_chunk);
+            }
         };
         
         Ok(Box::pin(stream))
@@ -764,6 +794,88 @@ impl LlmProvider for AnthropicProvider {
             .ok_or_else(|| LlmError::ModelNotFound {
                 model: model_id.to_string(),
             })
+    }
+}
+
+/// Parse Server-Sent Events (SSE) format
+fn parse_sse_event(event_data: &str) -> Option<String> {
+    for line in event_data.lines() {
+        if line.starts_with("data: ") {
+            let data = &line[6..]; // Skip "data: "
+            if data == "[DONE]" {
+                return None; // End of stream
+            }
+            return Some(data.to_string());
+        }
+    }
+    None
+}
+
+/// Handle Anthropic-specific streaming events
+fn handle_anthropic_stream_event(
+    data: &str,
+    message_id: &mut Option<String>,
+    current_content: &mut String,
+    model: &str,
+) -> std::result::Result<Option<StreamingChunk>, LlmError> {
+    let event: AnthropicStreamEvent = serde_json::from_str(data)
+        .map_err(|e| LlmError::ApiError {
+            message: format!("Failed to parse streaming event: {}", e),
+        })?;
+    
+    match event {
+        AnthropicStreamEvent::MessageStart { message } => {
+            *message_id = Some(message.id);
+            Ok(None) // No content chunk yet
+        }
+        AnthropicStreamEvent::ContentBlockDelta { delta, .. } => {
+            match delta {
+                AnthropicStreamDelta::TextDelta { text } => {
+                    current_content.push_str(&text);
+                    
+                    let chunk = StreamingChunk {
+                        id: message_id.as_ref()
+                            .unwrap_or(&format!("stream-{}", uuid::Uuid::new_v4()))
+                            .clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                        model: model.to_string(),
+                        choices: vec![StreamingChoice {
+                            index: 0,
+                            delta: StreamingDelta {
+                                role: None,
+                                content: Some(text),
+                                tool_calls: None,
+                            },
+                            finish_reason: None,
+                        }],
+                    };
+                    Ok(Some(chunk))
+                }
+                AnthropicStreamDelta::InputJsonDelta { partial_json } => {
+                    // Handle tool call streaming
+                    // For now, accumulate the JSON
+                    // TODO: Properly handle partial JSON for tool calls
+                    tracing::debug!("Received partial JSON: {}", partial_json);
+                    Ok(None)
+                }
+            }
+        }
+        AnthropicStreamEvent::MessageDelta { .. } => {
+            // Message metadata changes (like stop reason)
+            Ok(None)
+        }
+        AnthropicStreamEvent::MessageStop => {
+            // End of message
+            Ok(None)
+        }
+        _ => {
+            // Other event types (ContentBlockStart, ContentBlockStop, etc.)
+            Ok(None)
+        }
     }
 }
 

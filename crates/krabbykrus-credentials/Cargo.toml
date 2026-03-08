@@ -40,3 +40,8 @@ base64 = "0.22"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[example]]
+name = "test_vault"
+path = "examples/test_vault.rs"
+

@@ -313,8 +313,22 @@ pub fn get_dashboard_html() -> &'static str {
                 <div class="grid">
                     <div class="card" id="provider-anthropic">
                         <div class="card-header"><h3>Anthropic</h3><span class="badge badge-error" id="anthropic-status">Not Configured</span></div>
-                        <p class="text-dim mb-2">Claude models (Opus, Sonnet, Haiku)</p>
-                        <div class="form-group"><label>API Key</label><input type="password" id="anthropic-key" placeholder="sk-ant-..."></div>
+                        <p class="text-dim mb-2">Claude models (Opus 4, Sonnet 4, Haiku 3.5)</p>
+                        <div class="form-group">
+                            <label>Authentication Type</label>
+                            <select id="anthropic-auth-type" onchange="toggleAnthropicAuthFields()">
+                                <option value="session_key">Session Key (Claude Code)</option>
+                                <option value="api_key">API Key</option>
+                            </select>
+                            <p class="hint" id="anthropic-auth-hint">Uses Claude Code credentials (~/.claude/.credentials.json)</p>
+                        </div>
+                        <div class="form-group" id="anthropic-key-group" style="display: none;">
+                            <label>API Key</label>
+                            <input type="password" id="anthropic-key" placeholder="sk-ant-...">
+                        </div>
+                        <div id="anthropic-session-status" class="form-group">
+                            <p id="anthropic-session-info" class="text-dim">Checking Claude Code credentials...</p>
+                        </div>
                         <button class="btn btn-primary btn-sm" onclick="saveProvider('anthropic')">Save</button>
                     </div>
                     <div class="card" id="provider-openai">
@@ -747,11 +761,73 @@ pub fn get_dashboard_html() -> &'static str {
         function formatMessage(t) { return '<p>' + escapeHtml(t).replace(/```([\s\S]*?)```/g,'</p><pre>$1</pre><p>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\n/g,'<br>') + '</p>'; }
         
         // Models
-        async function loadModels() {}
+        async function loadModels() {
+            // Check Anthropic auth status
+            checkAnthropicAuth();
+        }
+        
+        function toggleAnthropicAuthFields() {
+            const authType = document.getElementById('anthropic-auth-type').value;
+            const keyGroup = document.getElementById('anthropic-key-group');
+            const sessionStatus = document.getElementById('anthropic-session-status');
+            const hint = document.getElementById('anthropic-auth-hint');
+            
+            if (authType === 'api_key') {
+                keyGroup.style.display = 'block';
+                sessionStatus.style.display = 'none';
+                hint.textContent = 'Get your API key from console.anthropic.com';
+            } else {
+                keyGroup.style.display = 'none';
+                sessionStatus.style.display = 'block';
+                hint.textContent = 'Uses Claude Code credentials (~/.claude/.credentials.json)';
+                checkAnthropicAuth();
+            }
+        }
+        
+        async function checkAnthropicAuth() {
+            const infoEl = document.getElementById('anthropic-session-info');
+            const statusEl = document.getElementById('anthropic-status');
+            
+            try {
+                const res = await api('/api/providers/anthropic/status');
+                if (res.configured) {
+                    statusEl.className = 'badge badge-success';
+                    statusEl.textContent = 'Configured';
+                    if (res.auth_type === 'session_key') {
+                        infoEl.innerHTML = '<span style="color: var(--success)">✓ Claude Code credentials detected</span>' +
+                            (res.expires_at ? `<br><small>Token expires: ${new Date(res.expires_at).toLocaleString()}</small>` : '');
+                    } else {
+                        infoEl.innerHTML = '<span style="color: var(--success)">✓ API key configured</span>';
+                    }
+                } else {
+                    statusEl.className = 'badge badge-error';
+                    statusEl.textContent = 'Not Configured';
+                    infoEl.innerHTML = '<span style="color: var(--text-dim)">Run <code>claude</code> CLI to authenticate, or switch to API Key</span>';
+                }
+            } catch (e) {
+                infoEl.innerHTML = '<span style="color: var(--error)">Error checking status</span>';
+            }
+        }
+        
         async function saveProvider(provider) {
+            if (provider === 'anthropic') {
+                const authType = document.getElementById('anthropic-auth-type').value;
+                if (authType === 'session_key') {
+                    // Just verify credentials exist
+                    await checkAnthropicAuth();
+                    return;
+                }
+            }
+            
             const key = document.getElementById(`${provider}-key`)?.value || document.getElementById(`${provider}-url`)?.value || document.getElementById(`${provider}-region`)?.value;
             if (!key) { showError('Please enter a value'); return; }
-            alert(`Provider ${provider} saved. Restart gateway to apply.`);
+            
+            try {
+                await api(`/api/providers/${provider}/configure`, 'POST', { key });
+                showSuccess(`Provider ${provider} saved. Restart gateway to apply.`);
+            } catch (e) {
+                showError(e.message);
+            }
         }
         
         // Settings

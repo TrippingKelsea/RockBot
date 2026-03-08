@@ -19,7 +19,10 @@ pub use sessions::render_sessions;
 pub use models::render_models;
 pub use settings::render_settings;
 pub use sidebar::render_sidebar;
-pub use modals::{render_password_modal, render_confirm_modal, render_add_credential_modal};
+pub use modals::{
+    render_password_modal, render_confirm_modal, render_add_credential_modal,
+    render_edit_credential_modal, render_edit_provider_modal, render_view_session_modal,
+};
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},

@@ -59,9 +59,16 @@ pub enum Message {
     VaultLocked,
     VaultError(String),
     EndpointsLoaded(Vec<EndpointInfo>),
+    CredentialAdded(String),  // endpoint name
+    CredentialAddError(String),
     
     // Models
     ModelsLoaded(Vec<ModelProvider>),
+    
+    // Chat
+    ChatResponse(String),       // AI response text
+    ChatError(String),          // Chat error
+    ChatStreamChunk(String),    // Streaming chunk (for future use)
     
     // UI feedback
     SetStatus(String, bool), // (message, is_error)
@@ -191,6 +198,48 @@ pub struct SessionInfo {
     pub message_count: usize,
 }
 
+/// Chat message role
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRole {
+    User,
+    Assistant,
+    System,
+}
+
+/// A message in a chat session
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub role: ChatRole,
+    pub content: String,
+    pub timestamp: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn user(content: String) -> Self {
+        Self {
+            role: ChatRole::User,
+            content,
+            timestamp: Some(chrono::Local::now().format("%H:%M:%S").to_string()),
+        }
+    }
+
+    pub fn assistant(content: String) -> Self {
+        Self {
+            role: ChatRole::Assistant,
+            content,
+            timestamp: Some(chrono::Local::now().format("%H:%M:%S").to_string()),
+        }
+    }
+
+    pub fn system(content: String) -> Self {
+        Self {
+            role: ChatRole::System,
+            content,
+            timestamp: None,
+        }
+    }
+}
+
 /// Vault unlock method
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum UnlockMethod {
@@ -277,13 +326,20 @@ pub struct AppState {
     pub sessions_error: Option<String>,
     pub selected_session: usize,
     
+    // Chat state
+    pub chat_messages: Vec<ChatMessage>,
+    pub chat_loading: bool,
+    pub chat_scroll: usize,  // Scroll position in chat view
+    
     // Vault/Credentials
     pub vault: VaultStatus,
     pub vault_loading: bool,
     pub endpoints: Vec<EndpointInfo>,
     pub selected_endpoint: usize,
-    pub selected_category: usize,  // For Providers tab navigation
-    pub credentials_tab: usize,    // Which tab is active (0=Endpoints, 1=Providers, etc.)
+    pub selected_category: usize,      // For Providers tab - which category
+    pub selected_provider_index: usize, // For Providers tab - which provider within category
+    pub provider_list_focus: bool,     // true = right panel (provider list), false = left panel (categories)
+    pub credentials_tab: usize,        // Which tab is active (0=Endpoints, 1=Providers, etc.)
     
     // Models (5 known providers: Anthropic, OpenAI, Ollama, Bedrock, Google)
     pub providers: Vec<ModelProvider>,
@@ -311,10 +367,16 @@ pub enum InputMode {
     PasswordInput { prompt: String, masked: bool, action: PasswordAction },
     /// Add credential modal
     AddCredential(AddCredentialState),
+    /// Edit credential modal (similar to add but pre-populated)
+    EditCredential(EditCredentialState),
+    /// Edit model provider modal
+    EditProvider(EditProviderState),
     /// Confirmation dialog
     Confirm { message: String, action: ConfirmAction },
     /// Chat input
     ChatInput,
+    /// View session details
+    ViewSession { session_key: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +389,323 @@ pub enum PasswordAction {
 pub enum ConfirmAction {
     DeleteEndpoint(String), // endpoint id
     DeleteAgent(String),    // agent id
+    KillSession(String),    // session key
+    DisableAgent(String),   // agent id (different from delete - actually disables in config)
+}
+
+/// State for the "Edit Credential" modal.
+/// Pre-populated with existing endpoint data for editing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditCredentialState {
+    /// Endpoint UUID being edited
+    pub endpoint_id: String,
+    /// Current field index (0=name, 1+=dynamic fields, no type selector since we don't change type)
+    pub field_index: usize,
+    /// User-provided name for the endpoint
+    pub name: String,
+    /// Endpoint type index (read-only, for field definitions)
+    pub endpoint_type: usize,
+    /// Base URL (editable)
+    pub base_url: String,
+    /// Values for dynamic fields (parallel to fields from get_fields_for_endpoint_type)
+    pub field_values: Vec<String>,
+    /// Whether secret has been modified (to know if we need to rotate)
+    pub secret_modified: bool,
+    /// Original credential ID for rotation
+    pub credential_id: Option<String>,
+}
+
+impl EditCredentialState {
+    /// Create edit state from an existing endpoint
+    pub fn from_endpoint(
+        endpoint_id: &str,
+        name: &str,
+        endpoint_type: usize,
+        base_url: &str,
+        credential_id: Option<&str>,
+    ) -> Self {
+        let fields = get_fields_for_endpoint_type(endpoint_type);
+        let mut field_values = vec![String::new(); fields.len()];
+        
+        // Pre-fill URL field
+        if !field_values.is_empty() {
+            field_values[0] = base_url.to_string();
+        }
+        
+        Self {
+            endpoint_id: endpoint_id.to_string(),
+            field_index: 0,
+            name: name.to_string(),
+            endpoint_type,
+            base_url: base_url.to_string(),
+            field_values,
+            secret_modified: false,
+            credential_id: credential_id.map(String::from),
+        }
+    }
+    
+    /// Pre-fill secret fields with decrypted values
+    pub fn set_secret(&mut self, field_id: &str, value: &str) {
+        let fields = get_fields_for_endpoint_type(self.endpoint_type);
+        for (i, field) in fields.iter().enumerate() {
+            if field.id == field_id {
+                if let Some(fv) = self.field_values.get_mut(i) {
+                    *fv = value.to_string();
+                }
+                break;
+            }
+        }
+    }
+    
+    /// Get total number of fields (name + dynamic fields, no type selector)
+    pub fn total_fields(&self) -> usize {
+        1 + get_fields_for_endpoint_type(self.endpoint_type).len()
+    }
+    
+    /// Move to next field
+    pub fn next_field(&mut self) {
+        self.field_index = (self.field_index + 1) % self.total_fields();
+    }
+    
+    /// Move to previous field
+    pub fn prev_field(&mut self) {
+        if self.field_index == 0 {
+            self.field_index = self.total_fields() - 1;
+        } else {
+            self.field_index -= 1;
+        }
+    }
+    
+    /// Check if current field is the name field
+    pub fn is_name_field(&self) -> bool {
+        self.field_index == 0
+    }
+    
+    /// Get the current dynamic field index (if on a dynamic field)
+    pub fn dynamic_field_index(&self) -> Option<usize> {
+        if self.field_index >= 1 {
+            Some(self.field_index - 1)
+        } else {
+            None
+        }
+    }
+    
+    /// Check if on last field (for submit)
+    pub fn is_last_field(&self) -> bool {
+        self.field_index == self.total_fields() - 1
+    }
+    
+    /// Get current field value reference for editing
+    pub fn current_value_mut(&mut self) -> Option<&mut String> {
+        if self.field_index == 0 {
+            Some(&mut self.name)
+        } else if self.field_index >= 1 {
+            let idx = self.field_index - 1;
+            // Mark secret as modified if editing a masked field
+            let fields = get_fields_for_endpoint_type(self.endpoint_type);
+            if let Some(field) = fields.get(idx) {
+                if field.masked {
+                    self.secret_modified = true;
+                }
+            }
+            self.field_values.get_mut(idx)
+        } else {
+            None
+        }
+    }
+    
+    /// Validate required fields, returns error message if invalid
+    pub fn validate(&self) -> Option<String> {
+        if self.name.trim().is_empty() {
+            return Some("Name is required".to_string());
+        }
+        
+        let fields = get_fields_for_endpoint_type(self.endpoint_type);
+        for (i, field) in fields.iter().enumerate() {
+            if field.required && self.field_values.get(i).map(|v| v.trim().is_empty()).unwrap_or(true) {
+                return Some(format!("{} is required", field.label));
+            }
+        }
+        
+        None
+    }
+    
+    /// Get field value by id
+    pub fn get_field_value(&self, id: &str) -> Option<&str> {
+        let fields = get_fields_for_endpoint_type(self.endpoint_type);
+        for (i, field) in fields.iter().enumerate() {
+            if field.id == id {
+                return self.field_values.get(i).map(|s| s.as_str());
+            }
+        }
+        None
+    }
+}
+
+/// Authentication type for model providers
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProviderAuthType {
+    #[default]
+    ApiKey,
+    SessionKey,
+    None,
+    AwsCredentials,
+}
+
+impl ProviderAuthType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ApiKey => "API Key",
+            Self::SessionKey => "Session Key (Claude Code)",
+            Self::None => "None",
+            Self::AwsCredentials => "AWS Credentials",
+        }
+    }
+    
+    pub fn all_for_provider(provider_index: usize) -> Vec<Self> {
+        match provider_index {
+            0 => vec![Self::SessionKey, Self::ApiKey], // Anthropic
+            1 => vec![Self::ApiKey],                   // OpenAI
+            2 => vec![Self::None],                     // Ollama
+            3 => vec![Self::AwsCredentials],           // Bedrock
+            4 => vec![Self::ApiKey],                   // Google AI
+            _ => vec![Self::ApiKey],
+        }
+    }
+}
+
+/// State for the "Edit Provider" modal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditProviderState {
+    /// Provider index (0=Anthropic, 1=OpenAI, 2=Ollama, 3=Bedrock, 4=Google)
+    pub provider_index: usize,
+    /// Provider name (for display)
+    pub provider_name: String,
+    /// Current field index (0=auth_type, 1+=dynamic fields based on auth type)
+    pub field_index: usize,
+    /// Selected auth type
+    pub auth_type: ProviderAuthType,
+    /// API key or secret (for API key auth)
+    pub api_key: String,
+    /// Base URL (optional override)
+    pub base_url: String,
+    /// AWS region (for Bedrock)
+    pub aws_region: String,
+}
+
+impl EditProviderState {
+    pub fn new(provider_index: usize) -> Self {
+        let provider_names = ["Anthropic", "OpenAI", "Ollama", "AWS Bedrock", "Google AI"];
+        let default_urls = [
+            "https://api.anthropic.com",
+            "https://api.openai.com",
+            "http://localhost:11434",
+            "",
+            "https://generativelanguage.googleapis.com",
+        ];
+        let default_auth = match provider_index {
+            0 => ProviderAuthType::SessionKey, // Anthropic defaults to session key
+            2 => ProviderAuthType::None,       // Ollama doesn't need auth
+            3 => ProviderAuthType::AwsCredentials,
+            _ => ProviderAuthType::ApiKey,
+        };
+        
+        Self {
+            provider_index,
+            provider_name: provider_names.get(provider_index).unwrap_or(&"Unknown").to_string(),
+            field_index: 0,
+            auth_type: default_auth,
+            api_key: String::new(),
+            base_url: default_urls.get(provider_index).unwrap_or(&"").to_string(),
+            aws_region: "us-east-1".to_string(),
+        }
+    }
+    
+    /// Get total number of fields based on auth type
+    pub fn total_fields(&self) -> usize {
+        match self.auth_type {
+            ProviderAuthType::ApiKey => 3,        // auth_type, api_key, base_url
+            ProviderAuthType::SessionKey => 2,    // auth_type, base_url
+            ProviderAuthType::None => 2,          // auth_type, base_url
+            ProviderAuthType::AwsCredentials => 2, // auth_type, region
+        }
+    }
+    
+    pub fn next_field(&mut self) {
+        self.field_index = (self.field_index + 1) % self.total_fields();
+    }
+    
+    pub fn prev_field(&mut self) {
+        if self.field_index == 0 {
+            self.field_index = self.total_fields() - 1;
+        } else {
+            self.field_index -= 1;
+        }
+    }
+    
+    pub fn is_auth_type_field(&self) -> bool {
+        self.field_index == 0
+    }
+    
+    pub fn cycle_auth_type(&mut self, forward: bool) {
+        let options = ProviderAuthType::all_for_provider(self.provider_index);
+        if let Some(pos) = options.iter().position(|&a| a == self.auth_type) {
+            let new_pos = if forward {
+                (pos + 1) % options.len()
+            } else {
+                if pos == 0 { options.len() - 1 } else { pos - 1 }
+            };
+            self.auth_type = options[new_pos];
+        }
+    }
+    
+    /// Get mutable reference to current field value (for text input)
+    pub fn current_value_mut(&mut self) -> Option<&mut String> {
+        match (self.auth_type, self.field_index) {
+            (ProviderAuthType::ApiKey, 1) => Some(&mut self.api_key),
+            (ProviderAuthType::ApiKey, 2) => Some(&mut self.base_url),
+            (ProviderAuthType::SessionKey, 1) => Some(&mut self.base_url),
+            (ProviderAuthType::None, 1) => Some(&mut self.base_url),
+            (ProviderAuthType::AwsCredentials, 1) => Some(&mut self.aws_region),
+            _ => None, // auth_type field is not text input
+        }
+    }
+    
+    /// Get field label for current field
+    pub fn current_field_label(&self) -> &'static str {
+        match (self.auth_type, self.field_index) {
+            (_, 0) => "Auth Type",
+            (ProviderAuthType::ApiKey, 1) => "API Key",
+            (ProviderAuthType::ApiKey, 2) => "Base URL",
+            (ProviderAuthType::SessionKey, 1) => "Base URL",
+            (ProviderAuthType::None, 1) => "Base URL",
+            (ProviderAuthType::AwsCredentials, 1) => "AWS Region",
+            _ => "",
+        }
+    }
+    
+    /// Check if current field should be masked (password-style)
+    pub fn is_current_field_masked(&self) -> bool {
+        matches!((self.auth_type, self.field_index), (ProviderAuthType::ApiKey, 1))
+    }
+    
+    /// Validate the form
+    pub fn validate(&self) -> Option<String> {
+        match self.auth_type {
+            ProviderAuthType::ApiKey => {
+                if self.api_key.trim().is_empty() {
+                    return Some("API key is required".to_string());
+                }
+            }
+            ProviderAuthType::AwsCredentials => {
+                if self.aws_region.trim().is_empty() {
+                    return Some("AWS region is required".to_string());
+                }
+            }
+            _ => {}
+        }
+        None
+    }
 }
 
 /// Definition of a form field for dynamic credential forms.
@@ -474,6 +853,54 @@ impl AddCredentialState {
         }
     }
     
+    /// Create new state pre-filled for a specific provider
+    pub fn new_for_provider(provider: &ProviderInfo) -> Self {
+        // Map provider to endpoint type and pre-fill fields
+        let (endpoint_type, base_url) = match provider.id {
+            // Model providers - use API Key Service (type 3)
+            "anthropic" => (3, "https://api.anthropic.com"),
+            "openai" => (3, "https://api.openai.com"),
+            "google" => (3, "https://generativelanguage.googleapis.com"),
+            "bedrock" => (3, ""), // AWS uses different auth
+            "ollama" => (3, "http://localhost:11434"),
+            
+            // Communication providers - use Bearer Token (type 5)
+            "discord" => (5, "https://discord.com/api/v10"),
+            "telegram" => (5, "https://api.telegram.org"),
+            "signal" => (5, ""),
+            "slack" => (5, "https://slack.com/api"),
+            "whatsapp" => (5, ""),
+            
+            // Tool providers - use specific or API Key Service
+            "home_assistant" => (0, ""), // Home Assistant has its own type
+            "github" => (5, "https://api.github.com"),
+            "gitlab" => (5, "https://gitlab.com/api/v4"),
+            "jira" => (3, ""),
+            "notion" => (5, "https://api.notion.com"),
+            
+            // Default to API Key Service
+            _ => (3, ""),
+        };
+        
+        let fields = get_fields_for_endpoint_type(endpoint_type);
+        let mut field_values = vec![String::new(); fields.len()];
+        
+        // Pre-fill URL field if we have one
+        if !base_url.is_empty() {
+            // URL is typically the first field
+            if !field_values.is_empty() {
+                field_values[0] = base_url.to_string();
+            }
+        }
+        
+        Self {
+            field_index: 0,
+            name: provider.name.to_string(),
+            endpoint_type,
+            field_values,
+        }
+    }
+    
     /// Reset field values when endpoint type changes
     pub fn reset_fields_for_type(&mut self) {
         let fields = get_fields_for_endpoint_type(self.endpoint_type);
@@ -605,11 +1032,17 @@ impl AppState {
             sessions_error: None,
             selected_session: 0,
             
+            chat_messages: Vec::new(),
+            chat_loading: false,
+            chat_scroll: 0,
+            
             vault: VaultStatus::default(),
             vault_loading: true,
             endpoints: Vec::new(),
             selected_endpoint: 0,
             selected_category: 0,
+            selected_provider_index: 0,
+            provider_list_focus: false,
             credentials_tab: 0,
             
             providers: Vec::new(),
@@ -672,6 +1105,12 @@ impl AppState {
             }
             
             Message::VaultStatus(status) => {
+                // Debug: log vault status
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "VaultStatus received: initialized={}, locked={}, method={:?}", 
+                        status.initialized, status.locked, status.unlock_method);
+                }
                 self.vault = status;
                 self.vault_loading = false;
             }
@@ -688,9 +1127,27 @@ impl AppState {
             Message::EndpointsLoaded(endpoints) => {
                 self.endpoints = endpoints;
             }
+            Message::CredentialAdded(name) => {
+                self.status_message = Some((format!("✅ Added: {}", name), false));
+            }
+            Message::CredentialAddError(err) => {
+                self.status_message = Some((format!("❌ Failed: {}", err), true));
+            }
             
             Message::ModelsLoaded(providers) => {
                 self.providers = providers;
+            }
+            
+            Message::ChatResponse(content) => {
+                self.chat_messages.push(ChatMessage::assistant(content));
+                self.chat_loading = false;
+            }
+            Message::ChatError(err) => {
+                self.chat_messages.push(ChatMessage::system(format!("Error: {}", err)));
+                self.chat_loading = false;
+            }
+            Message::ChatStreamChunk(_chunk) => {
+                // TODO: Handle streaming chunks for incremental display
             }
             
             Message::SetStatus(msg, is_error) => {
@@ -721,6 +1178,116 @@ impl AppState {
     /// Number of credential categories (All, Model, Communication, Tools, OAuth2, Generic)
     pub const CREDENTIAL_CATEGORY_COUNT: usize = 6;
     
+    /// Provider counts per category
+    pub const COMMUNICATION_PROVIDER_COUNT: usize = 5;
+    pub const TOOL_PROVIDER_COUNT: usize = 5;
+    
+    /// Get provider count for current category
+    pub fn provider_count_for_category(&self) -> usize {
+        match self.selected_category {
+            0 => Self::MODEL_PROVIDER_COUNT + Self::COMMUNICATION_PROVIDER_COUNT + Self::TOOL_PROVIDER_COUNT, // All
+            1 => Self::MODEL_PROVIDER_COUNT,           // Model Providers
+            2 => Self::COMMUNICATION_PROVIDER_COUNT,   // Communication
+            3 => Self::TOOL_PROVIDER_COUNT,            // Tools
+            4 => 0, // OAuth2 - no predefined list
+            5 => 0, // Generic - no predefined list
+            _ => 0,
+        }
+    }
+    
+    /// Toggle focus between category list and provider list (for Credentials Providers tab)
+    pub fn toggle_provider_focus(&mut self) {
+        if self.credentials_tab == 1 {
+            self.provider_list_focus = !self.provider_list_focus;
+            // Reset provider selection when entering provider list
+            if self.provider_list_focus {
+                self.selected_provider_index = 0;
+            }
+        }
+    }
+    
+    /// Get the currently selected provider info (id, name, description) for the Providers tab
+    /// Returns None if on a category without predefined providers (OAuth2, Generic)
+    pub fn get_selected_provider_info(&self) -> Option<ProviderInfo> {
+        if self.credentials_tab != 1 {
+            return None;
+        }
+        
+        // Provider lists by category
+        const MODEL_PROVIDERS: &[(&str, &str, &str)] = &[
+            ("anthropic", "Anthropic", "Claude API (Opus, Sonnet, Haiku)"),
+            ("openai", "OpenAI", "GPT-4, GPT-4o, o1 models"),
+            ("google", "Google AI", "Gemini models"),
+            ("bedrock", "AWS Bedrock", "Claude, Llama, Titan via AWS"),
+            ("ollama", "Ollama", "Local models (no API key)"),
+        ];
+        
+        const COMMUNICATION_PROVIDERS: &[(&str, &str, &str)] = &[
+            ("discord", "Discord", "Discord bot token"),
+            ("telegram", "Telegram", "Telegram bot token"),
+            ("signal", "Signal", "Signal credentials"),
+            ("slack", "Slack", "Slack bot/app token"),
+            ("whatsapp", "WhatsApp", "WhatsApp Business API"),
+        ];
+        
+        const TOOL_PROVIDERS: &[(&str, &str, &str)] = &[
+            ("home_assistant", "Home Assistant", "Long-lived access token"),
+            ("github", "GitHub", "Personal access token"),
+            ("gitlab", "GitLab", "Personal access token"),
+            ("jira", "Jira", "API token"),
+            ("notion", "Notion", "Integration token"),
+        ];
+        
+        let idx = self.selected_provider_index;
+        
+        match self.selected_category {
+            0 => {
+                // All - combined list: models, then communication, then tools
+                if idx < MODEL_PROVIDERS.len() {
+                    let p = MODEL_PROVIDERS[idx];
+                    Some(ProviderInfo { id: p.0, name: p.1, description: p.2, category: ProviderCategory::Model })
+                } else if idx < MODEL_PROVIDERS.len() + COMMUNICATION_PROVIDERS.len() {
+                    let p = COMMUNICATION_PROVIDERS[idx - MODEL_PROVIDERS.len()];
+                    Some(ProviderInfo { id: p.0, name: p.1, description: p.2, category: ProviderCategory::Communication })
+                } else if idx < MODEL_PROVIDERS.len() + COMMUNICATION_PROVIDERS.len() + TOOL_PROVIDERS.len() {
+                    let p = TOOL_PROVIDERS[idx - MODEL_PROVIDERS.len() - COMMUNICATION_PROVIDERS.len()];
+                    Some(ProviderInfo { id: p.0, name: p.1, description: p.2, category: ProviderCategory::Tool })
+                } else {
+                    None
+                }
+            }
+            1 => MODEL_PROVIDERS.get(idx).map(|p| ProviderInfo { 
+                id: p.0, name: p.1, description: p.2, category: ProviderCategory::Model 
+            }),
+            2 => COMMUNICATION_PROVIDERS.get(idx).map(|p| ProviderInfo { 
+                id: p.0, name: p.1, description: p.2, category: ProviderCategory::Communication 
+            }),
+            3 => TOOL_PROVIDERS.get(idx).map(|p| ProviderInfo { 
+                id: p.0, name: p.1, description: p.2, category: ProviderCategory::Tool 
+            }),
+            _ => None, // OAuth2 and Generic don't have predefined providers
+        }
+    }
+}
+
+/// Provider information for context-aware add credential
+#[derive(Debug, Clone)]
+pub struct ProviderInfo {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub category: ProviderCategory,
+}
+
+/// Provider category for determining form fields
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCategory {
+    Model,
+    Communication,
+    Tool,
+}
+
+impl AppState {
     /// Move selection up in current list
     pub fn select_prev(&mut self) {
         match self.menu_item {
@@ -728,12 +1295,27 @@ impl AppState {
             MenuItem::Credentials => {
                 // Navigate based on which tab is active
                 if self.credentials_tab == 1 {
-                    // Providers tab - navigate categories
-                    self.selected_category = if self.selected_category == 0 {
-                        Self::CREDENTIAL_CATEGORY_COUNT - 1
+                    // Providers tab
+                    if self.provider_list_focus {
+                        // Navigate providers within category
+                        let count = self.provider_count_for_category();
+                        if count > 0 {
+                            self.selected_provider_index = if self.selected_provider_index == 0 {
+                                count - 1
+                            } else {
+                                self.selected_provider_index - 1
+                            };
+                        }
                     } else {
-                        self.selected_category - 1
-                    };
+                        // Navigate categories
+                        self.selected_category = if self.selected_category == 0 {
+                            Self::CREDENTIAL_CATEGORY_COUNT - 1
+                        } else {
+                            self.selected_category - 1
+                        };
+                        // Reset provider selection when category changes
+                        self.selected_provider_index = 0;
+                    }
                 } else if self.credentials_tab == 0 && !self.endpoints.is_empty() {
                     // Endpoints tab
                     self.selected_endpoint = if self.selected_endpoint == 0 {
@@ -780,8 +1362,19 @@ impl AppState {
             MenuItem::Credentials => {
                 // Navigate based on which tab is active
                 if self.credentials_tab == 1 {
-                    // Providers tab - navigate categories
-                    self.selected_category = (self.selected_category + 1) % Self::CREDENTIAL_CATEGORY_COUNT;
+                    // Providers tab
+                    if self.provider_list_focus {
+                        // Navigate providers within category
+                        let count = self.provider_count_for_category();
+                        if count > 0 {
+                            self.selected_provider_index = (self.selected_provider_index + 1) % count;
+                        }
+                    } else {
+                        // Navigate categories
+                        self.selected_category = (self.selected_category + 1) % Self::CREDENTIAL_CATEGORY_COUNT;
+                        // Reset provider selection when category changes
+                        self.selected_provider_index = 0;
+                    }
                 } else if self.credentials_tab == 0 && !self.endpoints.is_empty() {
                     // Endpoints tab
                     self.selected_endpoint = (self.selected_endpoint + 1) % self.endpoints.len();

@@ -18,6 +18,10 @@ krabbykrus-llm = { path = "../krabbykrus-llm" }
 krabbykrus-tools = { path = "../krabbykrus-tools" }
 krabbykrus-memory = { path = "../krabbykrus-memory" }
 krabbykrus-security = { path = "../krabbykrus-security" }
+krabbykrus-credentials = { path = "../krabbykrus-credentials" }
+dirs = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
@@ -30,3 +34,7 @@ tempfile = { workspace = true }
 [[example]]
 name = "demo"
 path = "../../examples/demo.rs"
+
+[[example]]
+name = "test_vault"
+path = "../../examples/test_vault.rs"

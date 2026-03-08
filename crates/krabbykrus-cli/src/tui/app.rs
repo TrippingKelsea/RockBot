@@ -14,13 +14,14 @@ use tokio::sync::mpsc;
 
 use super::components::{
     render_add_credential_modal, render_confirm_modal, render_dashboard,
-    render_agents, render_credentials, render_models, render_password_modal,
-    render_sessions, render_settings, render_sidebar, render_status_bar,
+    render_agents, render_credentials, render_edit_credential_modal, render_edit_provider_modal,
+    render_models, render_password_modal, render_sessions, render_settings, render_sidebar, 
+    render_status_bar, render_view_session_modal,
 };
 use super::effects::EffectState;
 use super::state::{
-    AddCredentialState, AppState, ConfirmAction, InputMode,
-    MenuItem, Message, PasswordAction, UnlockMethod,
+    AddCredentialState, AppState, ChatMessage, ConfirmAction, EditCredentialState, EndpointInfo, 
+    InputMode, MenuItem, Message, PasswordAction, UnlockMethod,
 };
 
 /// Content tabs for views that have sub-tabs
@@ -74,6 +75,8 @@ pub struct App {
     effect_state: EffectState,
     /// Current tab within Models view (for future use)
     models_tab: usize,
+    /// Unlocked vault handle (None if locked or not initialized)
+    vault: Option<krabbykrus_credentials::CredentialVault>,
 }
 
 impl App {
@@ -85,6 +88,7 @@ impl App {
             rx,
             effect_state: EffectState::new(),
             models_tab: 0,
+            vault: None,
         }
     }
     
@@ -177,7 +181,63 @@ impl App {
 
     /// Handle incoming messages from async tasks
     fn handle_message(&mut self, msg: Message) {
+        // Check if this is a VaultStatus message with keyfile unlock
+        // If so, auto-unlock the vault since no password is needed
+        if let Message::VaultStatus(ref status) = msg {
+            if status.initialized && status.locked {
+                if let UnlockMethod::Keyfile { ref path } = status.unlock_method {
+                    // Auto-unlock keyfile vault
+                    self.auto_unlock_keyfile_vault(path.clone());
+                }
+            }
+        }
+        
         self.state.update(msg);
+    }
+    
+    /// Auto-unlock a keyfile-protected vault (no user interaction needed)
+    fn auto_unlock_keyfile_vault(&mut self, path_hint: Option<String>) {
+        let keyfile_path = path_hint.or_else(|| {
+            dirs::config_dir().map(|d| d.join("krabbykrus").join("vault.key").to_string_lossy().to_string())
+        });
+        
+        if let Some(kf_path) = keyfile_path {
+            let kf_pathbuf = std::path::PathBuf::from(&kf_path);
+            if kf_pathbuf.exists() {
+                match krabbykrus_credentials::CredentialVault::open(&self.state.vault_path) {
+                    Ok(mut storage) => {
+                        match storage.unlock_with_keyfile(&kf_pathbuf) {
+                            Ok(()) => {
+                                // Load endpoints after unlocking
+                                let endpoints: Vec<EndpointInfo> = storage.list_endpoints()
+                                    .into_iter()
+                                    .map(|e| EndpointInfo {
+                                        id: e.id.to_string(),
+                                        name: e.name.clone(),
+                                        endpoint_type: format!("{:?}", e.endpoint_type),
+                                        base_url: e.base_url.clone(),
+                                        has_credential: e.credential_id != uuid::Uuid::nil(),
+                                        expiration: None,
+                                    })
+                                    .collect();
+                                
+                                self.vault = Some(storage);
+                                self.state.vault.locked = false;
+                                self.state.vault.endpoint_count = endpoints.len();
+                                self.state.endpoints = endpoints;
+                                self.state.status_message = Some(("✅ Vault auto-unlocked".to_string(), false));
+                            }
+                            Err(e) => {
+                                self.state.status_message = Some((format!("❌ Auto-unlock failed: {}", e), true));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.state.status_message = Some((format!("❌ Failed to open vault: {}", e), true));
+                    }
+                }
+            }
+        }
     }
 
     /// Handle key events
@@ -205,11 +265,20 @@ impl App {
                 let state = state.clone();
                 self.handle_add_credential(key, state)
             }
+            InputMode::EditCredential(state) => {
+                let state = state.clone();
+                self.handle_edit_credential(key, state)
+            }
+            InputMode::EditProvider(state) => {
+                let state = state.clone();
+                self.handle_edit_provider(key, state)
+            }
             InputMode::Confirm { action, .. } => {
                 let action = action.clone();
                 self.handle_confirm(key, action)
             }
             InputMode::ChatInput => self.handle_chat_input(key),
+            InputMode::ViewSession { .. } => self.handle_view_session(key),
         }
     }
 
@@ -239,15 +308,48 @@ impl App {
             
             // Content navigation (only when content focused)
             KeyCode::Esc if !self.state.sidebar_focus => {
-                // Esc returns to sidebar
-                self.state.sidebar_focus = true;
-                self.effect_state.set_active(false);
+                // On Credentials Providers tab, Esc first goes back to category list
+                if self.state.menu_item == MenuItem::Credentials 
+                   && self.state.credentials_tab == 1 
+                   && self.state.provider_list_focus 
+                {
+                    self.state.provider_list_focus = false;
+                } else {
+                    // Esc returns to sidebar
+                    self.state.sidebar_focus = true;
+                    self.effect_state.set_active(false);
+                }
             }
             KeyCode::Up | KeyCode::Char('k') if !self.state.sidebar_focus => {
                 self.state.select_prev();
             }
             KeyCode::Down | KeyCode::Char('j') if !self.state.sidebar_focus => {
                 self.state.select_next();
+            }
+            // Left/Right to switch between panels in Credentials Providers tab
+            KeyCode::Left | KeyCode::Char('h') if !self.state.sidebar_focus => {
+                if self.state.menu_item == MenuItem::Credentials && self.state.credentials_tab == 1 {
+                    self.state.provider_list_focus = false;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') if !self.state.sidebar_focus => {
+                if self.state.menu_item == MenuItem::Credentials && self.state.credentials_tab == 1 {
+                    // Only allow if category has providers
+                    if self.state.provider_count_for_category() > 0 {
+                        self.state.provider_list_focus = true;
+                    }
+                }
+            }
+            // Enter to select/enter provider list
+            KeyCode::Enter if !self.state.sidebar_focus => {
+                if self.state.menu_item == MenuItem::Credentials 
+                   && self.state.credentials_tab == 1 
+                   && !self.state.provider_list_focus 
+                   && self.state.provider_count_for_category() > 0
+                {
+                    self.state.provider_list_focus = true;
+                    self.state.selected_provider_index = 0;
+                }
             }
             
             // Tab navigation within views (Shift+[ and Shift+])
@@ -292,6 +394,27 @@ impl App {
             KeyCode::Char('l') if !self.state.sidebar_focus => {
                 self.handle_lock_action();
             }
+            KeyCode::Char('c') if !self.state.sidebar_focus => {
+                self.handle_chat_action();
+            }
+            KeyCode::Char('e') if !self.state.sidebar_focus => {
+                self.handle_edit_action();
+            }
+            KeyCode::Char('k') if !self.state.sidebar_focus => {
+                self.handle_kill_action();
+            }
+            KeyCode::Char('v') if !self.state.sidebar_focus => {
+                self.handle_view_action();
+            }
+            KeyCode::Char('t') if !self.state.sidebar_focus => {
+                self.handle_test_action();
+            }
+            KeyCode::Char('s') if !self.state.sidebar_focus => {
+                self.handle_start_action();
+            }
+            KeyCode::Char('S') if !self.state.sidebar_focus => {
+                self.handle_stop_action();
+            }
             
             // Shift+Tab for backwards tab navigation
             KeyCode::BackTab => {
@@ -306,7 +429,39 @@ impl App {
     fn handle_add_action(&mut self) {
         match self.state.menu_item {
             MenuItem::Credentials if self.state.vault.initialized && !self.state.vault.locked => {
-                self.state.input_mode = InputMode::AddCredential(AddCredentialState::new());
+                // Context-aware add based on which tab and what's selected
+                if self.state.credentials_tab == 1 {
+                    // Providers tab - use selected provider context
+                    if self.state.provider_list_focus {
+                        // In provider list - use the selected provider
+                        if let Some(provider_info) = self.state.get_selected_provider_info() {
+                            self.state.input_mode = InputMode::AddCredential(
+                                AddCredentialState::new_for_provider(&provider_info)
+                            );
+                            return;
+                        }
+                    } else {
+                        // In category list - check if category has providers
+                        let provider_count = self.state.provider_count_for_category();
+                        if provider_count > 0 {
+                            // Navigate to provider list so user can select which provider
+                            self.state.provider_list_focus = true;
+                            self.state.selected_provider_index = 0;
+                            self.state.status_message = Some((
+                                "Select a provider with ↑↓, then press 'a' to add".to_string(),
+                                false
+                            ));
+                            return;
+                        }
+                        // For OAuth2/Generic categories with no predefined providers,
+                        // fall through to default form
+                    }
+                }
+                // Default: show generic add form (API Key Service is more useful than Home Assistant)
+                let mut default_state = AddCredentialState::new();
+                default_state.endpoint_type = 3; // API Key Service instead of Home Assistant
+                default_state.reset_fields_for_type();
+                self.state.input_mode = InputMode::AddCredential(default_state);
             }
             _ => {}
         }
@@ -335,10 +490,25 @@ impl App {
     }
 
     fn handle_refresh_action(&mut self) {
-        self.state.status_message = Some(("Refreshing...".to_string(), false));
-        self.spawn_gateway_check();
-        self.spawn_agents_load();
-        self.spawn_vault_check();
+        match self.state.menu_item {
+            MenuItem::Settings if !self.state.sidebar_focus => {
+                // On Settings tab, 'r' means restart gateway
+                self.state.status_message = Some(("Restarting gateway...".to_string(), false));
+                self.spawn_gateway_control("restart");
+            }
+            MenuItem::Agents if !self.state.sidebar_focus => {
+                // On Agents tab, reload agents from config
+                self.state.status_message = Some(("Reloading agents...".to_string(), false));
+                self.spawn_agents_load();
+            }
+            _ => {
+                // General refresh
+                self.state.status_message = Some(("Refreshing...".to_string(), false));
+                self.spawn_gateway_check();
+                self.spawn_agents_load();
+                self.spawn_vault_check();
+            }
+        }
     }
 
     fn handle_init_action(&mut self) {
@@ -353,6 +523,13 @@ impl App {
     }
 
     fn handle_unlock_action(&mut self) {
+        // Debug: log unlock attempt
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "handle_unlock_action: initialized={}, locked={}, method={:?}", 
+                self.state.vault.initialized, self.state.vault.locked, self.state.vault.unlock_method);
+        }
+        
         if !self.state.vault.initialized || !self.state.vault.locked {
             return;
         }
@@ -367,16 +544,53 @@ impl App {
                 self.state.input_buffer.clear();
             }
             UnlockMethod::Keyfile { path } => {
+                // Debug: log keyfile unlock attempt
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "Keyfile unlock: path={:?}", path);
+                }
+                
                 // Auto-unlock with keyfile - no password needed
                 let keyfile_path = path.clone().or_else(|| {
                     dirs::config_dir().map(|d| d.join("krabbykrus").join("vault.key").to_string_lossy().to_string())
                 });
                 
                 if let Some(kf_path) = keyfile_path {
-                    if std::path::Path::new(&kf_path).exists() {
-                        // TODO: Actually unlock with keyfile via background task
-                        self.state.vault.locked = false;
-                        self.state.status_message = Some((format!("Unlocked with keyfile: {}", kf_path), false));
+                    let kf_pathbuf = std::path::PathBuf::from(&kf_path);
+                    if kf_pathbuf.exists() {
+                        // Actually unlock with keyfile
+                        match krabbykrus_credentials::CredentialVault::open(&self.state.vault_path) {
+                            Ok(mut storage) => {
+                                match storage.unlock_with_keyfile(&kf_pathbuf) {
+                                    Ok(()) => {
+                                        // Load endpoints after unlocking
+                                        let endpoints: Vec<EndpointInfo> = storage.list_endpoints()
+                                            .into_iter()
+                                            .map(|e| EndpointInfo {
+                                                id: e.id.to_string(),
+                                                name: e.name.clone(),
+                                                endpoint_type: format!("{:?}", e.endpoint_type),
+                                                base_url: e.base_url.clone(),
+                                                has_credential: e.credential_id != uuid::Uuid::nil(),
+                                                expiration: None,
+                                            })
+                                            .collect();
+                                        
+                                        self.vault = Some(storage);
+                                        self.state.vault.locked = false;
+                                        self.state.vault.endpoint_count = endpoints.len();
+                                        self.state.endpoints = endpoints;
+                                        self.state.status_message = Some((format!("✅ Unlocked with keyfile"), false));
+                                    }
+                                    Err(e) => {
+                                        self.state.status_message = Some((format!("❌ Keyfile unlock failed: {}", e), true));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.state.status_message = Some((format!("❌ Failed to open vault: {}", e), true));
+                            }
+                        }
                     } else {
                         self.state.status_message = Some((format!("Keyfile not found: {}", kf_path), true));
                     }
@@ -422,6 +636,284 @@ impl App {
         }
     }
 
+    fn handle_chat_action(&mut self) {
+        // Can chat from Sessions page or anywhere with vault unlocked
+        match self.state.menu_item {
+            MenuItem::Sessions | MenuItem::Dashboard => {
+                // Check if we have Anthropic API key
+                if self.get_anthropic_api_key().is_some() {
+                    self.state.input_mode = InputMode::ChatInput;
+                    self.state.input_buffer.clear();
+                } else if self.state.vault.locked {
+                    self.state.status_message = Some((
+                        "Unlock vault first to access API keys (press 'u')".to_string(),
+                        true
+                    ));
+                } else {
+                    self.state.status_message = Some((
+                        "No Anthropic API key found. Add one in Credentials → Providers".to_string(),
+                        true
+                    ));
+                }
+            }
+            _ => {
+                // Navigate to Sessions and start chat
+                self.state.menu_item = MenuItem::Sessions;
+                if self.get_anthropic_api_key().is_some() {
+                    self.state.input_mode = InputMode::ChatInput;
+                    self.state.input_buffer.clear();
+                }
+            }
+        }
+    }
+
+    fn handle_edit_action(&mut self) {
+        use super::state::EditCredentialState;
+        
+        match self.state.menu_item {
+            MenuItem::Credentials if self.state.vault.initialized && !self.state.vault.locked => {
+                // Edit selected endpoint
+                if let Some(endpoint) = self.state.endpoints.get(self.state.selected_endpoint) {
+                    // Determine endpoint type from the stored string
+                    let endpoint_type = match endpoint.endpoint_type.as_str() {
+                        "HomeAssistant" => 0,
+                        "GenericRest" => 1,
+                        "GenericOAuth2" => 2,
+                        _ => 3, // Default to API Key Service
+                    };
+                    
+                    let mut edit_state = EditCredentialState::from_endpoint(
+                        &endpoint.id,
+                        &endpoint.name,
+                        endpoint_type,
+                        &endpoint.base_url,
+                        if endpoint.has_credential { Some(&endpoint.id) } else { None },
+                    );
+                    
+                    // Try to pre-fill secret if vault is unlocked
+                    if let Some(ref vault) = self.vault {
+                        if let Ok(uuid) = uuid::Uuid::parse_str(&endpoint.id) {
+                            if let Ok(secret_bytes) = vault.decrypt_credential_for_endpoint(uuid) {
+                                if let Ok(secret_str) = String::from_utf8(secret_bytes) {
+                                    // Set the appropriate secret field based on endpoint type
+                                    match endpoint_type {
+                                        0 | 1 | 5 => edit_state.set_secret("token", &secret_str),
+                                        3 => edit_state.set_secret("api_key", &secret_str),
+                                        4 => edit_state.set_secret("password", &secret_str),
+                                        2 => edit_state.set_secret("client_secret", &secret_str),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    self.state.input_mode = InputMode::EditCredential(edit_state);
+                } else {
+                    self.state.status_message = Some(("No endpoint selected".to_string(), true));
+                }
+            }
+            MenuItem::Agents => {
+                if let Some(agent) = self.state.agents.get(self.state.selected_agent) {
+                    // For now, show a message about editing agent config
+                    // Full implementation would open config file in editor or show edit modal
+                    self.state.status_message = Some((
+                        format!("Edit agent '{}' - open config file to modify", agent.id),
+                        false
+                    ));
+                    // Could spawn editor: self.spawn_edit_agent_config(&agent.id);
+                }
+            }
+            MenuItem::Models => {
+                // Edit model provider config
+                use super::state::EditProviderState;
+                let edit_state = EditProviderState::new(self.state.selected_provider);
+                self.state.input_mode = InputMode::EditProvider(edit_state);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_kill_action(&mut self) {
+        match self.state.menu_item {
+            MenuItem::Sessions => {
+                if let Some(session) = self.state.sessions.get(self.state.selected_session) {
+                    self.state.input_mode = InputMode::Confirm {
+                        message: format!("Kill session '{}'?", session.key),
+                        action: ConfirmAction::KillSession(session.key.clone()),
+                    };
+                } else {
+                    self.state.status_message = Some(("No session selected".to_string(), true));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_view_action(&mut self) {
+        match self.state.menu_item {
+            MenuItem::Sessions => {
+                if let Some(session) = self.state.sessions.get(self.state.selected_session) {
+                    self.state.input_mode = InputMode::ViewSession { 
+                        session_key: session.key.clone() 
+                    };
+                    // Spawn async task to load session details
+                    self.spawn_session_details(&session.key);
+                } else {
+                    self.state.status_message = Some(("No session selected".to_string(), true));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_test_action(&mut self) {
+        match self.state.menu_item {
+            MenuItem::Models => {
+                let provider_names = ["Anthropic", "OpenAI", "Google AI", "AWS Bedrock", "Ollama"];
+                if let Some(name) = provider_names.get(self.state.selected_provider) {
+                    self.state.status_message = Some((format!("Testing {} connection...", name), false));
+                    self.spawn_model_test(self.state.selected_provider);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_start_action(&mut self) {
+        match self.state.menu_item {
+            MenuItem::Settings => {
+                if self.state.gateway.connected {
+                    self.state.status_message = Some(("Gateway already running".to_string(), false));
+                } else {
+                    self.state.status_message = Some(("Starting gateway...".to_string(), false));
+                    self.spawn_gateway_control("start");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_stop_action(&mut self) {
+        match self.state.menu_item {
+            MenuItem::Settings => {
+                if !self.state.gateway.connected {
+                    self.state.status_message = Some(("Gateway not running".to_string(), false));
+                } else {
+                    self.state.status_message = Some(("Stopping gateway...".to_string(), false));
+                    self.spawn_gateway_control("stop");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn spawn_gateway_control(&self, action: &str) {
+        let tx = self.state.tx.clone();
+        let action = action.to_string();
+        tokio::spawn(async move {
+            match run_gateway_control(&action).await {
+                Ok(msg) => {
+                    let _ = tx.send(Message::SetStatus(msg, false));
+                    // Refresh gateway status after action
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Ok(status) = check_gateway_status().await {
+                        let _ = tx.send(Message::GatewayStatus(status));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::SetStatus(format!("❌ {}", e), true));
+                }
+            }
+        });
+    }
+
+    fn spawn_session_details(&self, _session_key: &str) {
+        // TODO: Load session details from gateway API
+        // For now, just show the view modal with basic info
+    }
+
+    fn spawn_model_test(&self, provider_index: usize) {
+        let tx = self.state.tx.clone();
+        let api_key = match provider_index {
+            0 => self.get_anthropic_api_key(), // Anthropic
+            1 => self.get_provider_api_key("openai"),
+            2 => self.get_provider_api_key("google"),
+            // Bedrock uses AWS credentials, Ollama is local
+            _ => None,
+        };
+        
+        let provider_name = ["Anthropic", "OpenAI", "Google AI", "AWS Bedrock", "Ollama"][provider_index];
+        
+        tokio::spawn(async move {
+            if provider_index == 4 {
+                // Ollama - test local connection
+                match test_ollama_connection().await {
+                    Ok(models) => {
+                        let _ = tx.send(Message::SetStatus(
+                            format!("✅ Ollama connected ({} models)", models),
+                            false
+                        ));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Message::SetStatus(format!("❌ Ollama: {}", e), true));
+                    }
+                }
+            } else if let Some(key) = api_key {
+                match test_api_connection(provider_index, &key).await {
+                    Ok(()) => {
+                        let _ = tx.send(Message::SetStatus(
+                            format!("✅ {} API key valid", provider_name),
+                            false
+                        ));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Message::SetStatus(format!("❌ {}: {}", provider_name, e), true));
+                    }
+                }
+            } else {
+                let _ = tx.send(Message::SetStatus(
+                    format!("❌ No API key found for {}", provider_name),
+                    true
+                ));
+            }
+        });
+    }
+
+    /// Get API key for a specific provider from vault
+    fn get_provider_api_key(&self, provider_name: &str) -> Option<String> {
+        let vault = self.vault.as_ref()?;
+        
+        for endpoint in vault.list_endpoints() {
+            let matches = endpoint.name.to_lowercase().contains(provider_name)
+                || endpoint.base_url.to_lowercase().contains(provider_name);
+            
+            if matches && endpoint.credential_id != uuid::Uuid::nil() {
+                if let Ok(secret_bytes) = vault.decrypt_credential_for_endpoint(endpoint.id) {
+                    if let Ok(api_key) = String::from_utf8(secret_bytes) {
+                        return Some(api_key);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn spawn_kill_session(&self, session_key: &str) {
+        let tx = self.state.tx.clone();
+        let key = session_key.to_string();
+        tokio::spawn(async move {
+            match kill_session(&key).await {
+                Ok(()) => {
+                    let _ = tx.send(Message::SetStatus(format!("✅ Session killed: {}", key), false));
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::SetStatus(format!("❌ Failed to kill session: {}", e), true));
+                }
+            }
+        });
+    }
+
     fn handle_password_input(&mut self, key: KeyEvent, _masked: bool, action: PasswordAction) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
@@ -439,16 +931,58 @@ impl App {
                         if password.len() < 8 {
                             self.state.status_message = Some(("Password must be at least 8 characters".to_string(), true));
                         } else {
-                            // TODO: Actually initialize vault
-                            self.state.vault.initialized = true;
-                            self.state.vault.locked = false;
-                            self.state.status_message = Some(("✅ Vault initialized!".to_string(), false));
+                            // Initialize vault with password
+                            match krabbykrus_credentials::CredentialVault::init_with_password(
+                                &self.state.vault_path,
+                                &password,
+                            ) {
+                                Ok(storage) => {
+                                    self.vault = Some(storage);
+                                    self.state.vault.initialized = true;
+                                    self.state.vault.locked = false;
+                                    self.state.vault.unlock_method = UnlockMethod::Password;
+                                    self.state.status_message = Some(("✅ Vault initialized!".to_string(), false));
+                                }
+                                Err(e) => {
+                                    self.state.status_message = Some((format!("❌ Init failed: {}", e), true));
+                                }
+                            }
                         }
                     }
                     PasswordAction::UnlockVault => {
-                        // TODO: Actually unlock vault
-                        self.state.vault.locked = false;
-                        self.state.status_message = Some(("Vault unlocked".to_string(), false));
+                        // Open and unlock vault with password
+                        match krabbykrus_credentials::CredentialVault::open(&self.state.vault_path) {
+                            Ok(mut storage) => {
+                                match storage.unlock_with_password(&password) {
+                                    Ok(()) => {
+                                        // Load endpoints after unlocking
+                                        let endpoints: Vec<EndpointInfo> = storage.list_endpoints()
+                                            .into_iter()
+                                            .map(|e| EndpointInfo {
+                                                id: e.id.to_string(),
+                                                name: e.name.clone(),
+                                                endpoint_type: format!("{:?}", e.endpoint_type),
+                                                base_url: e.base_url.clone(),
+                                                has_credential: e.credential_id != uuid::Uuid::nil(),
+                                                expiration: None,
+                                            })
+                                            .collect();
+                                        
+                                        self.vault = Some(storage);
+                                        self.state.vault.locked = false;
+                                        self.state.vault.endpoint_count = endpoints.len();
+                                        self.state.endpoints = endpoints;
+                                        self.state.status_message = Some(("✅ Vault unlocked".to_string(), false));
+                                    }
+                                    Err(e) => {
+                                        self.state.status_message = Some((format!("❌ Wrong password: {}", e), true));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.state.status_message = Some((format!("❌ Failed to open vault: {}", e), true));
+                            }
+                        }
                     }
                 }
             }
@@ -490,9 +1024,33 @@ impl App {
                     if let Some(error) = state.validate() {
                         self.state.status_message = Some((error, true));
                     } else {
-                        // TODO: Actually add credential
-                        self.state.status_message = Some((format!("Added: {}", state.name), false));
-                        self.state.input_mode = InputMode::Normal;
+                        // Actually add credential to vault
+                        if let Some(ref mut vault) = self.vault {
+                            match add_credential_to_vault(vault, &state) {
+                                Ok(endpoint_name) => {
+                                    // Refresh endpoints list
+                                    self.state.endpoints = vault.list_endpoints()
+                                        .into_iter()
+                                        .map(|e| EndpointInfo {
+                                            id: e.id.to_string(),
+                                            name: e.name.clone(),
+                                            endpoint_type: format!("{:?}", e.endpoint_type),
+                                            base_url: e.base_url.clone(),
+                                            has_credential: e.credential_id != uuid::Uuid::nil(),
+                                            expiration: None,
+                                        })
+                                        .collect();
+                                    self.state.vault.endpoint_count = self.state.endpoints.len();
+                                    self.state.status_message = Some((format!("✅ Added: {}", endpoint_name), false));
+                                    self.state.input_mode = InputMode::Normal;
+                                }
+                                Err(e) => {
+                                    self.state.status_message = Some((format!("❌ Failed: {}", e), true));
+                                }
+                            }
+                        } else {
+                            self.state.status_message = Some(("❌ Vault not unlocked".to_string(), true));
+                        }
                     }
                 } else {
                     state.next_field();
@@ -537,15 +1095,341 @@ impl App {
         Ok(())
     }
 
+    fn handle_edit_credential(&mut self, key: KeyEvent, mut state: EditCredentialState) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.input_mode = InputMode::Normal;
+                self.state.status_message = Some(("Cancelled".to_string(), false));
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                state.next_field();
+                self.state.input_mode = InputMode::EditCredential(state);
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                state.prev_field();
+                self.state.input_mode = InputMode::EditCredential(state);
+            }
+            KeyCode::Enter => {
+                if state.is_last_field() {
+                    // Submit - validate all required fields
+                    if let Some(error) = state.validate() {
+                        self.state.status_message = Some((error, true));
+                    } else {
+                        // Update the endpoint in vault
+                        if let Some(ref mut vault) = self.vault {
+                            match update_credential_in_vault(vault, &state) {
+                                Ok(endpoint_name) => {
+                                    // Refresh endpoints list
+                                    self.state.endpoints = vault.list_endpoints()
+                                        .into_iter()
+                                        .map(|e| EndpointInfo {
+                                            id: e.id.to_string(),
+                                            name: e.name.clone(),
+                                            endpoint_type: format!("{:?}", e.endpoint_type),
+                                            base_url: e.base_url.clone(),
+                                            has_credential: e.credential_id != uuid::Uuid::nil(),
+                                            expiration: None,
+                                        })
+                                        .collect();
+                                    self.state.vault.endpoint_count = self.state.endpoints.len();
+                                    self.state.status_message = Some((format!("✅ Updated: {}", endpoint_name), false));
+                                    self.state.input_mode = InputMode::Normal;
+                                }
+                                Err(e) => {
+                                    self.state.status_message = Some((format!("❌ Failed: {}", e), true));
+                                }
+                            }
+                        } else {
+                            self.state.status_message = Some(("❌ Vault not unlocked".to_string(), true));
+                        }
+                    }
+                } else {
+                    state.next_field();
+                    self.state.input_mode = InputMode::EditCredential(state);
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(value) = state.current_value_mut() {
+                    value.push(c);
+                }
+                self.state.input_mode = InputMode::EditCredential(state);
+            }
+            KeyCode::Backspace => {
+                if let Some(value) = state.current_value_mut() {
+                    value.pop();
+                }
+                self.state.input_mode = InputMode::EditCredential(state);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_edit_provider(&mut self, key: KeyEvent, mut state: super::state::EditProviderState) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.input_mode = InputMode::Normal;
+                self.state.status_message = Some(("Cancelled".to_string(), false));
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                state.next_field();
+                self.state.input_mode = InputMode::EditProvider(state);
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                state.prev_field();
+                self.state.input_mode = InputMode::EditProvider(state);
+            }
+            KeyCode::Left | KeyCode::Right if state.is_auth_type_field() => {
+                state.cycle_auth_type(key.code == KeyCode::Right);
+                self.state.input_mode = InputMode::EditProvider(state);
+            }
+            KeyCode::Enter => {
+                // Check if on last field - submit
+                if state.field_index == state.total_fields() - 1 {
+                    if let Some(error) = state.validate() {
+                        self.state.status_message = Some((error, true));
+                        self.state.input_mode = InputMode::EditProvider(state);
+                    } else {
+                        // Save provider configuration
+                        self.save_provider_config(&state);
+                        self.state.input_mode = InputMode::Normal;
+                    }
+                } else {
+                    state.next_field();
+                    self.state.input_mode = InputMode::EditProvider(state);
+                }
+            }
+            KeyCode::Char(c) if !state.is_auth_type_field() => {
+                if let Some(value) = state.current_value_mut() {
+                    value.push(c);
+                }
+                self.state.input_mode = InputMode::EditProvider(state);
+            }
+            KeyCode::Backspace if !state.is_auth_type_field() => {
+                if let Some(value) = state.current_value_mut() {
+                    value.pop();
+                }
+                self.state.input_mode = InputMode::EditProvider(state);
+            }
+            _ => {
+                self.state.input_mode = InputMode::EditProvider(state);
+            }
+        }
+        Ok(())
+    }
+
+    /// Save provider configuration to config file
+    fn save_provider_config(&mut self, state: &super::state::EditProviderState) {
+        use super::state::ProviderAuthType;
+        
+        // For session key auth, just verify Claude Code credentials exist
+        if state.auth_type == ProviderAuthType::SessionKey {
+            if self.get_claude_code_session_token().is_some() {
+                self.state.status_message = Some((
+                    format!("✅ {} configured with Session Key auth", state.provider_name),
+                    false
+                ));
+            } else {
+                self.state.status_message = Some((
+                    "❌ Claude Code credentials not found. Run 'claude' to authenticate.".to_string(),
+                    true
+                ));
+            }
+            return;
+        }
+        
+        // For API key auth, store in vault
+        if state.auth_type == ProviderAuthType::ApiKey && !state.api_key.is_empty() {
+            if let Some(ref mut vault) = self.vault {
+                // Create or update provider endpoint in vault
+                // Determine base URL based on provider
+                let base_url = if state.provider_index == 3 {
+                    // Bedrock uses region-based URL
+                    format!("bedrock.{}.amazonaws.com", state.aws_region)
+                } else {
+                    state.base_url.clone()
+                };
+                
+                // Check if endpoint already exists
+                let existing = vault.list_endpoints()
+                    .into_iter()
+                    .find(|e| e.name.to_lowercase() == state.provider_name.to_lowercase());
+                
+                match existing {
+                    Some(endpoint) => {
+                        // Update existing endpoint's credential
+                        match vault.store_credential(
+                            endpoint.id,
+                            krabbykrus_credentials::CredentialType::BearerToken,
+                            state.api_key.as_bytes(),
+                        ) {
+                            Ok(_) => {
+                                self.state.status_message = Some((
+                                    format!("✅ {} API key updated", state.provider_name),
+                                    false
+                                ));
+                            }
+                            Err(e) => {
+                                self.state.status_message = Some((
+                                    format!("❌ Failed to store API key: {}", e),
+                                    true
+                                ));
+                            }
+                        }
+                    }
+                    None => {
+                        // Create new endpoint
+                        match vault.create_endpoint(
+                            state.provider_name.clone(),
+                            krabbykrus_credentials::EndpointType::GenericRest,
+                            base_url.clone(),
+                        ) {
+                            Ok(endpoint) => {
+                                // Store the credential
+                                match vault.store_credential(
+                                    endpoint.id,
+                                    krabbykrus_credentials::CredentialType::BearerToken,
+                                    state.api_key.as_bytes(),
+                                ) {
+                                    Ok(_) => {
+                                        // Refresh endpoints list
+                                        self.state.endpoints = vault.list_endpoints()
+                                            .into_iter()
+                                            .map(|e| EndpointInfo {
+                                                id: e.id.to_string(),
+                                                name: e.name.clone(),
+                                                endpoint_type: format!("{:?}", e.endpoint_type),
+                                                base_url: e.base_url.clone(),
+                                                has_credential: e.credential_id != uuid::Uuid::nil(),
+                                                expiration: None,
+                                            })
+                                            .collect();
+                                        self.state.vault.endpoint_count = self.state.endpoints.len();
+                                        
+                                        self.state.status_message = Some((
+                                            format!("✅ {} configured with API key", state.provider_name),
+                                            false
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        self.state.status_message = Some((
+                                            format!("❌ Failed to store API key: {}", e),
+                                            true
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.state.status_message = Some((
+                                    format!("❌ Failed to create endpoint: {}", e),
+                                    true
+                                ));
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Vault not unlocked - just show a message with env var hint
+                let env_vars = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "", "", "GOOGLE_API_KEY"];
+                if let Some(env_var) = env_vars.get(state.provider_index).filter(|v| !v.is_empty()) {
+                    self.state.status_message = Some((
+                        format!("💡 Set {} environment variable to persist API key", env_var),
+                        false
+                    ));
+                }
+            }
+            return;
+        }
+        
+        // For other auth types
+        match state.auth_type {
+            ProviderAuthType::None => {
+                self.state.status_message = Some((
+                    format!("✅ {} - no authentication needed", state.provider_name),
+                    false
+                ));
+            }
+            ProviderAuthType::AwsCredentials => {
+                self.state.status_message = Some((
+                    format!("💡 Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION={}", state.aws_region),
+                    false
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_view_session(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.state.input_mode = InputMode::Normal;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_confirm(&mut self, key: KeyEvent, action: ConfirmAction) -> Result<()> {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 match action {
                     ConfirmAction::DeleteEndpoint(id) => {
-                        // TODO: Actually delete
-                        self.state.status_message = Some((format!("Deleted endpoint: {}", id), false));
+                        // Parse UUID and delete from vault
+                        if let Some(ref mut vault) = self.vault {
+                            match uuid::Uuid::parse_str(&id) {
+                                Ok(uuid) => {
+                                    match vault.delete_endpoint(uuid) {
+                                        Ok(()) => {
+                                            // Refresh endpoints list
+                                            self.state.endpoints = vault.list_endpoints()
+                                                .into_iter()
+                                                .map(|e| EndpointInfo {
+                                                    id: e.id.to_string(),
+                                                    name: e.name.clone(),
+                                                    endpoint_type: format!("{:?}", e.endpoint_type),
+                                                    base_url: e.base_url.clone(),
+                                                    has_credential: e.credential_id != uuid::Uuid::nil(),
+                                                    expiration: None,
+                                                })
+                                                .collect();
+                                            self.state.vault.endpoint_count = self.state.endpoints.len();
+                                            // Reset selection if needed
+                                            if self.state.selected_endpoint >= self.state.endpoints.len() {
+                                                self.state.selected_endpoint = self.state.endpoints.len().saturating_sub(1);
+                                            }
+                                            self.state.status_message = Some((format!("✅ Deleted endpoint"), false));
+                                        }
+                                        Err(e) => {
+                                            self.state.status_message = Some((format!("❌ Delete failed: {}", e), true));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    self.state.status_message = Some((format!("❌ Invalid endpoint ID: {}", e), true));
+                                }
+                            }
+                        } else {
+                            self.state.status_message = Some(("❌ Vault not unlocked".to_string(), true));
+                        }
                     }
                     ConfirmAction::DeleteAgent(id) => {
+                        // Remove from display list (doesn't actually disable in config yet)
+                        self.state.agents.retain(|a| a.id != id);
+                        if self.state.selected_agent >= self.state.agents.len() {
+                            self.state.selected_agent = self.state.agents.len().saturating_sub(1);
+                        }
+                        self.state.status_message = Some((format!("Disabled agent: {} (edit config to persist)", id), false));
+                    }
+                    ConfirmAction::KillSession(key) => {
+                        // Spawn async task to kill session via gateway API
+                        self.spawn_kill_session(&key);
+                    }
+                    ConfirmAction::DisableAgent(id) => {
+                        // Same as DeleteAgent for now - mark as disabled
+                        self.state.agents.retain(|a| a.id != id);
+                        if self.state.selected_agent >= self.state.agents.len() {
+                            self.state.selected_agent = self.state.agents.len().saturating_sub(1);
+                        }
                         self.state.status_message = Some((format!("Disabled agent: {}", id), false));
                     }
                 }
@@ -566,7 +1450,22 @@ impl App {
                 self.state.input_mode = InputMode::Normal;
             }
             KeyCode::Enter => {
-                // TODO: Send chat message
+                let message = self.state.input_buffer.trim().to_string();
+                if !message.is_empty() {
+                    // Add user message to chat history
+                    self.state.chat_messages.push(ChatMessage::user(message.clone()));
+                    self.state.chat_loading = true;
+                    
+                    // Try to get Anthropic API key from vault and send message
+                    if let Some(api_key) = self.get_anthropic_api_key() {
+                        self.spawn_chat_request(api_key, message);
+                    } else {
+                        self.state.chat_messages.push(ChatMessage::system(
+                            "No Anthropic API key found. Add one in Credentials → Providers → Anthropic".to_string()
+                        ));
+                        self.state.chat_loading = false;
+                    }
+                }
                 self.state.input_buffer.clear();
             }
             KeyCode::Char(c) => {
@@ -578,6 +1477,99 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+    
+    /// Get Anthropic API key from vault if available
+    fn get_anthropic_api_key(&self) -> Option<String> {
+        // Priority 1: Claude Code session key
+        if let Some(access_token) = self.get_claude_code_session_token() {
+            return Some(access_token);
+        }
+        
+        // Priority 2: Environment variable
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            return Some(api_key);
+        }
+        
+        // Priority 3: Vault
+        if let Some(vault) = self.vault.as_ref() {
+            for endpoint in vault.list_endpoints() {
+                let is_anthropic = endpoint.name.to_lowercase().contains("anthropic")
+                    || endpoint.base_url.to_lowercase().contains("anthropic");
+                
+                if is_anthropic && endpoint.credential_id != uuid::Uuid::nil() {
+                    if let Ok(secret_bytes) = vault.decrypt_credential_for_endpoint(endpoint.id) {
+                        if let Ok(api_key) = String::from_utf8(secret_bytes) {
+                            return Some(api_key);
+                        }
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Get Claude Code session token from ~/.claude/.credentials.json
+    fn get_claude_code_session_token(&self) -> Option<String> {
+        let home = dirs::home_dir()?;
+        let credentials_path = home.join(".claude").join(".credentials.json");
+        
+        let content = std::fs::read_to_string(&credentials_path).ok()?;
+        
+        #[derive(serde::Deserialize)]
+        struct ClaudeCredentials {
+            #[serde(rename = "claudeAiOauth")]
+            claude_ai_oauth: Option<OAuthCredentials>,
+        }
+        
+        #[derive(serde::Deserialize)]
+        struct OAuthCredentials {
+            #[serde(rename = "accessToken")]
+            access_token: String,
+            #[serde(rename = "expiresAt")]
+            expires_at: u64,
+        }
+        
+        let creds: ClaudeCredentials = serde_json::from_str(&content).ok()?;
+        let oauth = creds.claude_ai_oauth?;
+        
+        // Check if token is expired (with 5 minute buffer)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as u64;
+        
+        if oauth.expires_at < now + 300_000 {
+            // Token expired or expiring soon
+            return None;
+        }
+        
+        Some(oauth.access_token)
+    }
+    
+    /// Spawn an async task to send a chat message
+    fn spawn_chat_request(&self, api_key: String, user_message: String) {
+        let tx = self.state.tx.clone();
+        let chat_history: Vec<(bool, String)> = self.state.chat_messages
+            .iter()
+            .filter_map(|m| match m.role {
+                super::state::ChatRole::User => Some((true, m.content.clone())),
+                super::state::ChatRole::Assistant => Some((false, m.content.clone())),
+                super::state::ChatRole::System => None,
+            })
+            .collect();
+        
+        tokio::spawn(async move {
+            match send_chat_message(&api_key, &chat_history, &user_message).await {
+                Ok(response) => {
+                    let _ = tx.send(Message::ChatResponse(response));
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::ChatError(e.to_string()));
+                }
+            }
+        });
     }
 
     /// Render the entire UI
@@ -627,8 +1619,17 @@ impl App {
             InputMode::AddCredential(state) => {
                 render_add_credential_modal(frame, frame.area(), state);
             }
+            InputMode::EditCredential(state) => {
+                render_edit_credential_modal(frame, frame.area(), state);
+            }
+            InputMode::EditProvider(state) => {
+                render_edit_provider_modal(frame, frame.area(), state);
+            }
             InputMode::Confirm { message, .. } => {
                 render_confirm_modal(frame, frame.area(), message);
+            }
+            InputMode::ViewSession { session_key } => {
+                render_view_session_modal(frame, frame.area(), session_key, &self.state.sessions);
             }
             _ => {}
         }
@@ -646,7 +1647,7 @@ impl App {
                         }
                         MenuItem::Credentials => {
                             format!(
-                                "a:Add │ d:Delete │ u:Unlock │ l:Lock │ {{}}:Tabs ({}) │ Esc:←",
+                                "a:Add │ e:Edit │ d:Delete │ u:Unlock │ l:Lock │ {{}}:Tabs ({}) │ Esc:←",
                                 self.credentials_tab().label()
                             )
                         }
@@ -669,8 +1670,157 @@ impl App {
             InputMode::AddCredential(_) => "↑↓/Tab:Navigate │ ←→:Type │ Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::Confirm { .. } => "y:Yes │ n:No │ Esc:Cancel".to_string(),
             InputMode::ChatInput => "Enter:Send │ Esc:Close".to_string(),
+            InputMode::EditCredential(_) => "↑↓/Tab:Navigate │ Enter:Submit │ Esc:Cancel".to_string(),
+            InputMode::EditProvider(_) => "↑↓/Tab:Navigate │ ←→:Auth Type │ Enter:Save │ Esc:Cancel".to_string(),
+            InputMode::ViewSession { .. } => "Esc/Enter:Close".to_string(),
         }
     }
+}
+
+/// Add a credential to the vault based on form state (standalone to avoid borrow issues)
+fn add_credential_to_vault(
+    vault: &mut krabbykrus_credentials::CredentialVault,
+    state: &AddCredentialState,
+) -> Result<String> {
+    use krabbykrus_credentials::{EndpointType, CredentialType};
+    
+    // Map TUI endpoint type to core types
+    let (endpoint_type, credential_type, secret_data) = match state.endpoint_type {
+        0 => {
+            // Home Assistant - token field
+            let token = state.get_field_value("token").unwrap_or("");
+            (
+                EndpointType::HomeAssistant,
+                CredentialType::BearerToken,
+                token.as_bytes().to_vec(),
+            )
+        }
+        1 | 5 => {
+            // Generic REST / Bearer Token
+            let token = state.get_field_value("token").unwrap_or("");
+            (
+                EndpointType::GenericRest,
+                CredentialType::BearerToken,
+                token.as_bytes().to_vec(),
+            )
+        }
+        2 => {
+            // OAuth2 Service
+            let client_id = state.get_field_value("client_id").unwrap_or("").to_string();
+            let client_secret = state.get_field_value("client_secret").unwrap_or("");
+            let token_url = state.get_field_value("token_url").unwrap_or("").to_string();
+            let scopes = state.get_field_value("scopes").unwrap_or("").to_string();
+            
+            (
+                EndpointType::GenericOAuth2,
+                CredentialType::OAuth2 {
+                    client_id,
+                    token_url,
+                    scopes: scopes.split_whitespace().map(String::from).collect(),
+                },
+                client_secret.as_bytes().to_vec(),
+            )
+        }
+        3 => {
+            // API Key Service
+            let api_key = state.get_field_value("api_key").unwrap_or("");
+            let header_name = state.get_field_value("header_name")
+                .unwrap_or("X-API-Key")
+                .to_string();
+            
+            (
+                EndpointType::GenericRest,
+                CredentialType::ApiKey { header_name },
+                api_key.as_bytes().to_vec(),
+            )
+        }
+        4 => {
+            // Basic Auth
+            let username = state.get_field_value("username").unwrap_or("").to_string();
+            let password = state.get_field_value("password").unwrap_or("");
+            
+            (
+                EndpointType::GenericRest,
+                CredentialType::BasicAuth { username },
+                password.as_bytes().to_vec(),
+            )
+        }
+        _ => {
+            return Err(anyhow::anyhow!("Unknown endpoint type"));
+        }
+    };
+    
+    // Get URL from first field (all types have URL as first dynamic field)
+    let base_url = state.get_field_value("url")
+        .unwrap_or("")
+        .to_string();
+    
+    // Create endpoint
+    let endpoint = vault.create_endpoint(
+        state.name.clone(),
+        endpoint_type,
+        base_url,
+    )?;
+    
+    // Store credential
+    vault.store_credential(
+        endpoint.id,
+        credential_type,
+        &secret_data,
+    )?;
+    
+    Ok(state.name.clone())
+}
+
+/// Update a credential in the vault based on edit form state
+fn update_credential_in_vault(
+    vault: &mut krabbykrus_credentials::CredentialVault,
+    state: &EditCredentialState,
+) -> Result<String> {
+    use krabbykrus_credentials::{EndpointType, CredentialType};
+    
+    let endpoint_id = uuid::Uuid::parse_str(&state.endpoint_id)?;
+    
+    // Get the existing endpoint
+    let mut endpoint = vault.get_endpoint(endpoint_id)?.clone();
+    
+    // Update endpoint metadata
+    endpoint.name = state.name.clone();
+    endpoint.base_url = state.get_field_value("url")
+        .unwrap_or(&state.base_url)
+        .to_string();
+    endpoint.updated_at = chrono::Utc::now();
+    
+    vault.update_endpoint(endpoint.clone())?;
+    
+    // If secret was modified, rotate the credential
+    if state.secret_modified && endpoint.credential_id != uuid::Uuid::nil() {
+        let secret_data = match state.endpoint_type {
+            0 | 1 | 5 => {
+                // Home Assistant / Generic REST / Bearer Token
+                state.get_field_value("token").unwrap_or("").as_bytes().to_vec()
+            }
+            2 => {
+                // OAuth2 Service
+                state.get_field_value("client_secret").unwrap_or("").as_bytes().to_vec()
+            }
+            3 => {
+                // API Key Service
+                state.get_field_value("api_key").unwrap_or("").as_bytes().to_vec()
+            }
+            4 => {
+                // Basic Auth
+                state.get_field_value("password").unwrap_or("").as_bytes().to_vec()
+            }
+            _ => vec![],
+        };
+        
+        if !secret_data.is_empty() {
+            vault.rotate_credential(endpoint.credential_id, &secret_data)?;
+        }
+    }
+    
+    Ok(state.name.clone())
 }
 
 /// Run the main async TUI event loop
@@ -761,22 +1911,47 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
 use super::state::{AgentInfo, AgentStatus, GatewayStatus, VaultStatus};
 
 async fn check_gateway_status() -> Result<GatewayStatus> {
-    use tokio::net::TcpStream;
     use tokio::time::timeout;
     
-    let connected = timeout(
-        Duration::from_millis(200),
-        TcpStream::connect("127.0.0.1:18080")
-    ).await.is_ok();
+    // Try to fetch actual status from the gateway API
+    let client = reqwest::Client::new();
+    let status_result = timeout(
+        Duration::from_millis(500),
+        client.get("http://127.0.0.1:18080/api/status").send()
+    ).await;
     
-    // TODO: If connected, fetch actual status from gateway API
-    Ok(GatewayStatus {
-        connected,
-        version: if connected { Some("0.1.0".to_string()) } else { None },
-        uptime_secs: None,
-        active_sessions: 0,
-        pending_agents: 0,
-    })
+    match status_result {
+        Ok(Ok(response)) if response.status().is_success() => {
+            // Parse the JSON response
+            if let Ok(json) = response.json::<serde_json::Value>().await {
+                return Ok(GatewayStatus {
+                    connected: true,
+                    version: json.get("version").and_then(|v| v.as_str()).map(String::from),
+                    uptime_secs: json.get("uptime_secs").and_then(|v| v.as_u64()),
+                    active_sessions: json.get("active_sessions").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                    pending_agents: json.get("pending_agents").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                });
+            }
+            // Connected but couldn't parse response
+            Ok(GatewayStatus {
+                connected: true,
+                version: Some("unknown".to_string()),
+                uptime_secs: None,
+                active_sessions: 0,
+                pending_agents: 0,
+            })
+        }
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+            // Not connected or error
+            Ok(GatewayStatus {
+                connected: false,
+                version: None,
+                uptime_secs: None,
+                active_sessions: 0,
+                pending_agents: 0,
+            })
+        }
+    }
 }
 
 async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
@@ -840,7 +2015,18 @@ async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
 async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     use krabbykrus_credentials::CredentialVault;
     
+    // Debug logging
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+        use std::io::Write;
+        let _ = writeln!(f, "check_vault_status: path={:?}", vault_path);
+    }
+    
     let exists = CredentialVault::exists(vault_path);
+    
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+        use std::io::Write;
+        let _ = writeln!(f, "check_vault_status: exists={}", exists);
+    }
     
     if !exists {
         return Ok(VaultStatus {
@@ -855,7 +2041,12 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     // Try to read the vault metadata to determine unlock method
     let unlock_method = match CredentialVault::open(vault_path) {
         Ok(vault) => {
-            match vault.unlock_method() {
+            let method = vault.unlock_method();
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+                use std::io::Write;
+                let _ = writeln!(f, "check_vault_status: raw unlock_method={:?}", method);
+            }
+            match method {
                 Some(krabbykrus_credentials::UnlockMethod::Password { .. }) => {
                     UnlockMethod::Password
                 }
@@ -871,8 +2062,19 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
                 None => UnlockMethod::Unknown,
             }
         }
-        Err(_) => UnlockMethod::Unknown,
+        Err(e) => {
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+                use std::io::Write;
+                let _ = writeln!(f, "check_vault_status: open error={:?}", e);
+            }
+            UnlockMethod::Unknown
+        }
     };
+    
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
+        use std::io::Write;
+        let _ = writeln!(f, "check_vault_status: final unlock_method={:?}", unlock_method);
+    }
     
     Ok(VaultStatus {
         enabled: true,
@@ -881,4 +2083,194 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
         endpoint_count: 0,
         unlock_method,
     })
+}
+
+/// Send a chat message to the Anthropic API
+async fn send_chat_message(
+    api_key: &str,
+    chat_history: &[(bool, String)], // (is_user, content)
+    user_message: &str,
+) -> Result<String> {
+    use krabbykrus_llm::{AnthropicProvider, LlmProvider, ChatCompletionRequest, Message, MessageRole};
+    
+    let provider = AnthropicProvider::with_api_key(api_key.to_string());
+    
+    // Build messages from history
+    let mut messages: Vec<Message> = chat_history
+        .iter()
+        .map(|(is_user, content)| Message {
+            role: if *is_user { MessageRole::User } else { MessageRole::Assistant },
+            content: content.clone(),
+            tool_calls: None,
+        })
+        .collect();
+    
+    // Add the current user message
+    messages.push(Message {
+        role: MessageRole::User,
+        content: user_message.to_string(),
+        tool_calls: None,
+    });
+    
+    let request = ChatCompletionRequest {
+        model: "claude-sonnet-4-20250514".to_string(),
+        messages,
+        temperature: Some(0.7),
+        max_tokens: Some(4096),
+        tools: None,
+        stream: false,
+    };
+    
+    let response = provider.chat_completion(request).await?;
+    
+    // Extract the assistant's response
+    let content = response.choices
+        .first()
+        .map(|c| c.message.content.clone())
+        .unwrap_or_else(|| "No response received".to_string());
+    
+    Ok(content)
+}
+
+/// Run gateway control command (start/stop/restart)
+async fn run_gateway_control(action: &str) -> Result<String> {
+    use tokio::process::Command;
+    
+    let output = Command::new("openclaw")
+        .args(["gateway", action])
+        .output()
+        .await?;
+    
+    if output.status.success() {
+        let msg = match action {
+            "start" => "✅ Gateway started",
+            "stop" => "✅ Gateway stopped",
+            "restart" => "✅ Gateway restarted",
+            _ => "✅ Gateway command completed",
+        };
+        Ok(msg.to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!("Gateway {} failed: {}", action, stderr))
+    }
+}
+
+/// Test Ollama local connection
+async fn test_ollama_connection() -> Result<usize> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get("http://localhost:11434/api/tags")
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?;
+    
+    if response.status().is_success() {
+        let json: serde_json::Value = response.json().await?;
+        let model_count = json
+            .get("models")
+            .and_then(|m| m.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        Ok(model_count)
+    } else {
+        Err(anyhow::anyhow!("Ollama returned status {}", response.status()))
+    }
+}
+
+/// Test API connection for various providers
+async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    
+    match provider_index {
+        0 => {
+            // Anthropic - test with a minimal request
+            // Detect auth type: session key starts with "sk-ant-oat" (OAuth token)
+            let is_session_key = api_key.starts_with("sk-ant-oat");
+            
+            let mut request = client
+                .post("https://api.anthropic.com/v1/messages")
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json");
+            
+            // Use appropriate auth header
+            request = if is_session_key {
+                request.header("Authorization", format!("Bearer {}", api_key))
+            } else {
+                request.header("x-api-key", api_key)
+            };
+            
+            let response = request
+                .json(&serde_json::json!({
+                    "model": "claude-3-5-haiku-latest",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "Hi"}]
+                }))
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await?;
+            
+            if response.status().is_success() || response.status().as_u16() == 400 {
+                // 400 can mean invalid request format but valid API key
+                Ok(())
+            } else if response.status().as_u16() == 401 {
+                Err(anyhow::anyhow!("Invalid API key or session token"))
+            } else {
+                Err(anyhow::anyhow!("API returned status {}", response.status()))
+            }
+        }
+        1 => {
+            // OpenAI
+            let response = client
+                .get("https://api.openai.com/v1/models")
+                .header("Authorization", format!("Bearer {}", api_key))
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await?;
+            
+            if response.status().is_success() {
+                Ok(())
+            } else if response.status().as_u16() == 401 {
+                Err(anyhow::anyhow!("Invalid API key"))
+            } else {
+                Err(anyhow::anyhow!("API returned status {}", response.status()))
+            }
+        }
+        2 => {
+            // Google AI
+            let response = client
+                .get(format!(
+                    "https://generativelanguage.googleapis.com/v1/models?key={}",
+                    api_key
+                ))
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await?;
+            
+            if response.status().is_success() {
+                Ok(())
+            } else if response.status().as_u16() == 400 || response.status().as_u16() == 403 {
+                Err(anyhow::anyhow!("Invalid API key"))
+            } else {
+                Err(anyhow::anyhow!("API returned status {}", response.status()))
+            }
+        }
+        _ => Err(anyhow::anyhow!("Unknown provider")),
+    }
+}
+
+/// Kill a session via gateway API
+async fn kill_session(session_key: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let response = client
+        .delete(format!("http://127.0.0.1:18080/api/sessions/{}", session_key))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?;
+    
+    if response.status().is_success() || response.status().as_u16() == 404 {
+        // 404 means session already gone, which is fine
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("Failed to kill session: {}", response.status()))
+    }
 }

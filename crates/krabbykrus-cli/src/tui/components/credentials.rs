@@ -358,11 +358,12 @@ fn render_endpoints(frame: &mut Frame, area: Rect, state: &AppState, effect_stat
 fn render_providers(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .split(area);
 
-    // Category list
-    let list_border_style = if !state.sidebar_focus {
+    // Category list - active when provider_list_focus is false
+    let category_active = !state.sidebar_focus && !state.provider_list_focus;
+    let cat_border_style = if category_active {
         effects::active_border_style(effect_state.elapsed_secs())
     } else {
         effects::inactive_border_style()
@@ -376,7 +377,7 @@ fn render_providers(frame: &mut Frame, area: Rect, state: &AppState, effect_stat
         ]))
     }).collect();
     
-    let highlight_style = if !state.sidebar_focus {
+    let cat_highlight = if category_active {
         Style::default()
             .bg(palette::ACTIVE_PRIMARY)
             .fg(Color::White)
@@ -390,9 +391,9 @@ fn render_providers(frame: &mut Frame, area: Rect, state: &AppState, effect_stat
     let list = List::new(items)
         .block(Block::default()
             .borders(Borders::ALL)
-            .border_style(list_border_style)
+            .border_style(cat_border_style)
             .title("Categories"))
-        .highlight_style(highlight_style)
+        .highlight_style(cat_highlight)
         .highlight_symbol("▶ ");
     
     let mut list_state = ListState::default();
@@ -400,115 +401,107 @@ fn render_providers(frame: &mut Frame, area: Rect, state: &AppState, effect_stat
     
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
     
-    // Provider details - show providers for selected category
+    // Provider list - active when provider_list_focus is true
     let selected_category = categories.get(state.selected_category).copied().unwrap_or(CredentialCategory::All);
-    render_category_providers(frame, chunks[1], state, selected_category);
+    render_category_providers(frame, chunks[1], state, selected_category, effect_state);
 }
 
 /// Render provider list for a category
-fn render_category_providers(frame: &mut Frame, area: Rect, state: &AppState, category: CredentialCategory) {
+fn render_category_providers(frame: &mut Frame, area: Rect, state: &AppState, category: CredentialCategory, effect_state: &EffectState) {
+    // Provider list is active when provider_list_focus is true
+    let provider_active = !state.sidebar_focus && state.provider_list_focus;
+    let border_style = if provider_active {
+        effects::active_border_style(effect_state.elapsed_secs())
+    } else {
+        effects::inactive_border_style()
+    };
+    
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!("{} {}", category.icon(), category.title()));
+        .border_style(border_style)
+        .title(format!("{} {} (→ to select, a to add)", category.icon(), category.title()));
     
-    let mut content = vec![
-        Line::from(Span::styled(category.description(), Style::default().fg(Color::DarkGray))),
-        Line::from(""),
-    ];
-    
-    // Show providers based on category
-    match category {
+    // Get provider list for this category
+    let providers: Vec<(&str, &str, &str)> = match category {
         CredentialCategory::All => {
-            content.push(Line::from(Span::styled("── Model Providers ──", Style::default().fg(Color::Cyan))));
-            for (id, name, desc) in MODEL_PROVIDERS {
-                let configured = check_provider_configured(state, id);
-                let indicator = if configured { "●" } else { "○" };
-                let color = if configured { Color::Green } else { Color::Yellow };
-                content.push(Line::from(vec![
-                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
-                    Span::styled(*name, Style::default().fg(Color::White)),
-                    Span::styled(format!(" - {}", desc), Style::default().fg(Color::DarkGray)),
-                ]));
-            }
-            content.push(Line::from(""));
-            
-            content.push(Line::from(Span::styled("── Communication ──", Style::default().fg(Color::Cyan))));
-            for (id, name, desc) in COMMUNICATION_PROVIDERS {
-                let configured = check_provider_configured(state, id);
-                let indicator = if configured { "●" } else { "○" };
-                let color = if configured { Color::Green } else { Color::Yellow };
-                content.push(Line::from(vec![
-                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
-                    Span::styled(*name, Style::default().fg(Color::White)),
-                    Span::styled(format!(" - {}", desc), Style::default().fg(Color::DarkGray)),
-                ]));
-            }
-            content.push(Line::from(""));
-            
-            content.push(Line::from(Span::styled("── Tools ──", Style::default().fg(Color::Cyan))));
-            for (id, name, desc) in TOOL_PROVIDERS {
-                let configured = check_provider_configured(state, id);
-                let indicator = if configured { "●" } else { "○" };
-                let color = if configured { Color::Green } else { Color::Yellow };
-                content.push(Line::from(vec![
-                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
-                    Span::styled(*name, Style::default().fg(Color::White)),
-                    Span::styled(format!(" - {}", desc), Style::default().fg(Color::DarkGray)),
-                ]));
-            }
+            // Combined list
+            MODEL_PROVIDERS.iter()
+                .chain(COMMUNICATION_PROVIDERS.iter())
+                .chain(TOOL_PROVIDERS.iter())
+                .copied()
+                .collect()
         }
-        CredentialCategory::ModelProviders => {
-            for (id, name, desc) in MODEL_PROVIDERS {
-                let configured = check_provider_configured(state, id);
-                let indicator = if configured { "●" } else { "○" };
-                let color = if configured { Color::Green } else { Color::Yellow };
-                content.push(Line::from(vec![
-                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
-                    Span::styled(*name, Style::default().fg(Color::White)),
-                ]));
-                content.push(Line::from(Span::styled(format!("   {}", desc), Style::default().fg(Color::DarkGray))));
-            }
-        }
-        CredentialCategory::CommunicationProviders => {
-            for (id, name, desc) in COMMUNICATION_PROVIDERS {
-                let configured = check_provider_configured(state, id);
-                let indicator = if configured { "●" } else { "○" };
-                let color = if configured { Color::Green } else { Color::Yellow };
-                content.push(Line::from(vec![
-                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
-                    Span::styled(*name, Style::default().fg(Color::White)),
-                ]));
-                content.push(Line::from(Span::styled(format!("   {}", desc), Style::default().fg(Color::DarkGray))));
-            }
-        }
-        CredentialCategory::ToolProviders => {
-            for (id, name, desc) in TOOL_PROVIDERS {
-                let configured = check_provider_configured(state, id);
-                let indicator = if configured { "●" } else { "○" };
-                let color = if configured { Color::Green } else { Color::Yellow };
-                content.push(Line::from(vec![
-                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
-                    Span::styled(*name, Style::default().fg(Color::White)),
-                ]));
-                content.push(Line::from(Span::styled(format!("   {}", desc), Style::default().fg(Color::DarkGray))));
-            }
-        }
-        CredentialCategory::OAuth2Services | CredentialCategory::Generic => {
-            content.push(Line::from(Span::styled(
+        CredentialCategory::ModelProviders => MODEL_PROVIDERS.to_vec(),
+        CredentialCategory::CommunicationProviders => COMMUNICATION_PROVIDERS.to_vec(),
+        CredentialCategory::ToolProviders => TOOL_PROVIDERS.to_vec(),
+        CredentialCategory::OAuth2Services | CredentialCategory::Generic => vec![],
+    };
+    
+    if providers.is_empty() {
+        let content = vec![
+            Line::from(Span::styled(category.description(), Style::default().fg(Color::DarkGray))),
+            Line::from(""),
+            Line::from(Span::styled(
                 "Configure via Endpoints tab with appropriate type",
                 Style::default().fg(Color::DarkGray),
-            )));
-        }
+            )),
+        ];
+        let paragraph = Paragraph::new(content).block(block);
+        frame.render_widget(paragraph, area);
+        return;
     }
     
-    content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "Press 'a' to add credentials for selected provider",
-        Style::default().fg(Color::DarkGray),
-    )));
+    // Render as a navigable list
+    let items: Vec<ListItem> = providers.iter().enumerate().map(|(idx, (id, name, desc))| {
+        let configured = check_provider_configured(state, id);
+        let indicator = if configured { "●" } else { "○" };
+        let ind_color = if configured { Color::Green } else { Color::Yellow };
+        
+        // Add section headers for "All" category
+        let prefix = if category == CredentialCategory::All {
+            if idx == 0 {
+                "🧠 "
+            } else if idx == MODEL_PROVIDERS.len() {
+                "💬 "
+            } else if idx == MODEL_PROVIDERS.len() + COMMUNICATION_PROVIDERS.len() {
+                "🔧 "
+            } else {
+                "   "
+            }
+        } else {
+            ""
+        };
+        
+        ListItem::new(Line::from(vec![
+            Span::raw(prefix),
+            Span::styled(format!("{} ", indicator), Style::default().fg(ind_color)),
+            Span::styled(*name, Style::default().fg(Color::White)),
+            Span::styled(format!(" - {}", desc), Style::default().fg(Color::DarkGray)),
+        ]))
+    }).collect();
     
-    let paragraph = Paragraph::new(content).block(block);
-    frame.render_widget(paragraph, area);
+    let highlight_style = if provider_active {
+        Style::default()
+            .bg(palette::ACTIVE_PRIMARY)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    };
+    
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(highlight_style)
+        .highlight_symbol("▶ ");
+    
+    let mut list_state = ListState::default();
+    if provider_active || state.provider_list_focus {
+        list_state.select(Some(state.selected_provider_index.min(providers.len().saturating_sub(1))));
+    }
+    
+    frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 /// Check if a provider is configured in state

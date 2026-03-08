@@ -2,6 +2,15 @@
 //!
 //! Shows LLM provider configuration status with clear guidance on
 //! how to configure credentials via vault or environment variables.
+//!
+//! ## Anthropic Authentication
+//!
+//! Anthropic supports two authentication methods:
+//! 1. **API Key** - Traditional key from console.anthropic.com
+//! 2. **Session Key** - OAuth tokens from Claude Code CLI
+//!
+//! Session key auth uses the same tokens as Claude Code, allowing use of
+//! your Claude subscription without a separate API key.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -14,6 +23,30 @@ use ratatui::{
 use crate::tui::effects::{self, palette, EffectState};
 use crate::tui::state::AppState;
 
+/// Authentication type for a provider
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthType {
+    /// Traditional API key
+    ApiKey,
+    /// OAuth session key (Claude Code style)
+    SessionKey,
+    /// No authentication needed (e.g., local Ollama)
+    None,
+    /// AWS credentials (access key + secret + region)
+    AwsCredentials,
+}
+
+impl AuthType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ApiKey => "API Key",
+            Self::SessionKey => "Session Key",
+            Self::None => "None",
+            Self::AwsCredentials => "AWS Credentials",
+        }
+    }
+}
+
 /// Known LLM providers with their configuration details
 const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
@@ -23,6 +56,8 @@ const PROVIDERS: &[ProviderInfo] = &[
         description: "Claude models (Opus 4, Sonnet 4, Haiku 3.5)",
         api_url: "https://api.anthropic.com",
         docs_url: "https://console.anthropic.com/",
+        auth_types: &[AuthType::ApiKey, AuthType::SessionKey],
+        session_key_hint: Some("Uses Claude Code credentials (~/.claude/.credentials.json)"),
     },
     ProviderInfo {
         name: "OpenAI",
@@ -31,6 +66,8 @@ const PROVIDERS: &[ProviderInfo] = &[
         description: "GPT-4, GPT-4o, o1 models",
         api_url: "https://api.openai.com",
         docs_url: "https://platform.openai.com/api-keys",
+        auth_types: &[AuthType::ApiKey],
+        session_key_hint: None,
     },
     ProviderInfo {
         name: "Ollama",
@@ -39,6 +76,8 @@ const PROVIDERS: &[ProviderInfo] = &[
         description: "Local models (no API key needed)",
         api_url: "http://localhost:11434",
         docs_url: "https://ollama.ai",
+        auth_types: &[AuthType::None],
+        session_key_hint: None,
     },
     ProviderInfo {
         name: "AWS Bedrock",
@@ -47,6 +86,8 @@ const PROVIDERS: &[ProviderInfo] = &[
         description: "Claude, Llama, Titan via AWS",
         api_url: "bedrock-runtime.{region}.amazonaws.com",
         docs_url: "https://aws.amazon.com/bedrock/",
+        auth_types: &[AuthType::AwsCredentials],
+        session_key_hint: None,
     },
     ProviderInfo {
         name: "Google AI",
@@ -55,6 +96,8 @@ const PROVIDERS: &[ProviderInfo] = &[
         description: "Gemini models",
         api_url: "https://generativelanguage.googleapis.com",
         docs_url: "https://aistudio.google.com/apikey",
+        auth_types: &[AuthType::ApiKey],
+        session_key_hint: None,
     },
 ];
 
@@ -65,6 +108,20 @@ struct ProviderInfo {
     description: &'static str,
     api_url: &'static str,
     docs_url: &'static str,
+    /// Supported authentication types (first is default)
+    auth_types: &'static [AuthType],
+    /// Hint text for session key auth (if supported)
+    session_key_hint: Option<&'static str>,
+}
+
+/// Check if Claude Code credentials exist
+fn has_claude_code_credentials() -> bool {
+    if let Some(home) = dirs::home_dir() {
+        let credentials_path = home.join(".claude").join(".credentials.json");
+        credentials_path.exists()
+    } else {
+        false
+    }
 }
 
 /// Render the models page
@@ -147,13 +204,8 @@ fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState, _eff
     let provider_idx = state.selected_provider.min(PROVIDERS.len() - 1);
     let info = &PROVIDERS[provider_idx];
     
-    // Check if this provider is configured (from state or env)
-    let is_configured = if let Some(provider) = state.providers.get(state.selected_provider) {
-        provider.configured
-    } else {
-        // Check environment variable
-        !info.env_var.is_empty() && std::env::var(info.env_var).is_ok()
-    };
+    // Check configuration status based on auth type
+    let (is_configured, detected_auth_type) = detect_provider_config(info);
     
     let status_color = if is_configured { palette::CONFIGURED } else { palette::UNCONFIGURED };
     let status_text = if is_configured { "✓ Configured" } else { "○ Not Configured" };
@@ -170,11 +222,22 @@ fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState, _eff
             Span::styled("Status: ", Style::default().fg(Color::Cyan)),
             Span::styled(status_text, Style::default().fg(status_color)),
         ]),
-        Line::from(vec![
-            Span::styled("API URL: ", Style::default().fg(Color::Cyan)),
-            Span::raw(info.api_url),
-        ]),
     ];
+    
+    // Show detected auth type if configured
+    if is_configured {
+        if let Some(auth_type) = detected_auth_type {
+            content.push(Line::from(vec![
+                Span::styled("Auth Type: ", Style::default().fg(Color::Cyan)),
+                Span::styled(auth_type.label(), Style::default().fg(Color::Green)),
+            ]));
+        }
+    }
+    
+    content.push(Line::from(vec![
+        Span::styled("API URL: ", Style::default().fg(Color::Cyan)),
+        Span::raw(info.api_url),
+    ]));
     
     // Add models if loaded
     if let Some(provider) = state.providers.get(state.selected_provider) {
@@ -198,17 +261,126 @@ fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState, _eff
     content.push(Line::from(Span::styled("─── Configuration ───", Style::default().fg(Color::DarkGray))));
     content.push(Line::from(""));
     
-    if info.env_var.is_empty() {
-        // Ollama - no API key needed
+    // Render auth options based on provider capabilities
+    render_auth_options(info, &mut content);
+    
+    content.push(Line::from(""));
+    content.push(Line::from(Span::styled(
+        "[e]dit  [t]est connection  [s]witch auth type",
+        Style::default().fg(Color::DarkGray),
+    )));
+    
+    let paragraph = Paragraph::new(content).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+/// Detect if a provider is configured and what auth type is in use
+fn detect_provider_config(info: &ProviderInfo) -> (bool, Option<AuthType>) {
+    // Check for no-auth providers first
+    if info.auth_types.contains(&AuthType::None) {
+        return (true, Some(AuthType::None));
+    }
+    
+    // For Anthropic, check session key first (preferred), then API key
+    if info.name == "Anthropic" {
+        if has_claude_code_credentials() {
+            return (true, Some(AuthType::SessionKey));
+        }
+        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            return (true, Some(AuthType::ApiKey));
+        }
+        return (false, None);
+    }
+    
+    // For AWS Bedrock, check all required env vars
+    if info.name == "AWS Bedrock" {
+        let has_access = std::env::var("AWS_ACCESS_KEY_ID").is_ok();
+        let has_secret = std::env::var("AWS_SECRET_ACCESS_KEY").is_ok();
+        let has_region = std::env::var("AWS_REGION").is_ok() || std::env::var("AWS_DEFAULT_REGION").is_ok();
+        if has_access && has_secret && has_region {
+            return (true, Some(AuthType::AwsCredentials));
+        }
+        return (false, None);
+    }
+    
+    // Standard API key check
+    if !info.env_var.is_empty() && std::env::var(info.env_var).is_ok() {
+        return (true, Some(AuthType::ApiKey));
+    }
+    
+    (false, None)
+}
+
+/// Render authentication options for a provider
+fn render_auth_options(info: &ProviderInfo, content: &mut Vec<Line>) {
+    // No auth needed (Ollama)
+    if info.auth_types.contains(&AuthType::None) {
         content.push(Line::from(Span::styled("No API key required", Style::default().fg(Color::Green))));
         content.push(Line::from(""));
         content.push(Line::from("Just start the Ollama server locally."));
-    } else {
-        // Show environment variable option
+        return;
+    }
+    
+    let mut option_num = 1;
+    
+    // Session Key option (for Anthropic)
+    if info.auth_types.contains(&AuthType::SessionKey) {
+        let has_creds = has_claude_code_credentials();
+        let status = if has_creds { 
+            Span::styled(" ✓", Style::default().fg(Color::Green)) 
+        } else { 
+            Span::raw("") 
+        };
+        
         content.push(Line::from(vec![
-            Span::styled("Option 1: ", Style::default().fg(palette::INFO)),
-            Span::raw("Environment variable"),
+            Span::styled(format!("Option {}: ", option_num), Style::default().fg(palette::INFO)),
+            Span::raw("Session Key (Claude Code)"),
+            status,
         ]));
+        
+        if let Some(hint) = info.session_key_hint {
+            content.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(hint, Style::default().fg(Color::Gray)),
+            ]));
+        }
+        
+        if !has_creds {
+            content.push(Line::from(vec![
+                Span::styled("  Install Claude Code: ", Style::default().fg(Color::Gray)),
+                Span::styled("npm i -g @anthropic-ai/claude-code", Style::default().fg(Color::Yellow)),
+            ]));
+            content.push(Line::from(vec![
+                Span::styled("  Then run: ", Style::default().fg(Color::Gray)),
+                Span::styled("claude", Style::default().fg(Color::Yellow)),
+                Span::styled(" (to authenticate)", Style::default().fg(Color::Gray)),
+            ]));
+        } else {
+            content.push(Line::from(Span::styled(
+                "  ✓ Credentials detected - ready to use!",
+                Style::default().fg(Color::Green),
+            )));
+        }
+        
+        content.push(Line::from(""));
+        option_num += 1;
+    }
+    
+    // API Key option
+    if info.auth_types.contains(&AuthType::ApiKey) {
+        let has_env = !info.env_var.is_empty() && std::env::var(info.env_var).is_ok();
+        let status = if has_env { 
+            Span::styled(" ✓", Style::default().fg(Color::Green)) 
+        } else { 
+            Span::raw("") 
+        };
+        
+        content.push(Line::from(vec![
+            Span::styled(format!("Option {}: ", option_num), Style::default().fg(palette::INFO)),
+            Span::raw("API Key"),
+            status,
+        ]));
+        
         content.push(Line::from(vec![
             Span::styled("  export ", Style::default().fg(Color::DarkGray)),
             Span::styled(info.env_var, Style::default().fg(Color::Yellow)),
@@ -216,9 +388,9 @@ fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState, _eff
         ]));
         content.push(Line::from(""));
         
-        // Show vault option with specific instructions
+        // Vault option for API keys
         content.push(Line::from(vec![
-            Span::styled("Option 2: ", Style::default().fg(palette::VAULT_HINT)),
+            Span::styled(format!("Option {}: ", option_num + 1), Style::default().fg(palette::VAULT_HINT)),
             Span::raw("Credential vault (recommended)"),
         ]));
         content.push(Line::from(vec![
@@ -253,12 +425,31 @@ fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState, _eff
         ]));
     }
     
-    content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "[e]dit  [t]est connection",
-        Style::default().fg(Color::DarkGray),
-    )));
-    
-    let paragraph = Paragraph::new(content).block(block);
-    frame.render_widget(paragraph, area);
+    // AWS Credentials option
+    if info.auth_types.contains(&AuthType::AwsCredentials) {
+        content.push(Line::from(vec![
+            Span::styled(format!("Option {}: ", option_num), Style::default().fg(palette::INFO)),
+            Span::raw("AWS Credentials"),
+        ]));
+        content.push(Line::from(vec![
+            Span::styled("  export ", Style::default().fg(Color::DarkGray)),
+            Span::styled("AWS_ACCESS_KEY_ID", Style::default().fg(Color::Yellow)),
+            Span::styled("=\"...\"", Style::default().fg(Color::DarkGray)),
+        ]));
+        content.push(Line::from(vec![
+            Span::styled("  export ", Style::default().fg(Color::DarkGray)),
+            Span::styled("AWS_SECRET_ACCESS_KEY", Style::default().fg(Color::Yellow)),
+            Span::styled("=\"...\"", Style::default().fg(Color::DarkGray)),
+        ]));
+        content.push(Line::from(vec![
+            Span::styled("  export ", Style::default().fg(Color::DarkGray)),
+            Span::styled("AWS_REGION", Style::default().fg(Color::Yellow)),
+            Span::styled("=\"us-east-1\"", Style::default().fg(Color::DarkGray)),
+        ]));
+        content.push(Line::from(""));
+        content.push(Line::from(vec![
+            Span::styled("Docs: ", Style::default().fg(Color::Cyan)),
+            Span::styled(info.docs_url, Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)),
+        ]));
+    }
 }

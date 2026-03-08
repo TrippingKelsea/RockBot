@@ -1,4 +1,50 @@
 //! LLM provider abstraction for Krabbykrus
+//!
+//! This crate provides a unified interface for multiple LLM providers:
+//!
+//! - **Anthropic** - Claude models with API key or session key auth
+//! - **OpenAI** - GPT-4, o1, and other OpenAI models
+//! - **Mock** - For development and testing
+//!
+//! # Authentication
+//!
+//! ## Anthropic
+//! - **API Key**: Set `ANTHROPIC_API_KEY` environment variable
+//! - **Session Key**: Uses Claude Code credentials from `~/.claude/.credentials.json`
+//!
+//! ## OpenAI
+//! - **API Key**: Set `OPENAI_API_KEY` environment variable
+//!
+//! # Example
+//!
+//! ```no_run
+//! use krabbykrus_llm::{LlmProviderRegistry, ChatCompletionRequest, Message, MessageRole};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let registry = LlmProviderRegistry::new().await?;
+//!     
+//!     let provider = registry.get_provider_for_model("anthropic/claude-sonnet-4-20250514").await?;
+//!     
+//!     let request = ChatCompletionRequest {
+//!         model: "claude-sonnet-4-20250514".to_string(),
+//!         messages: vec![Message {
+//!             role: MessageRole::User,
+//!             content: "Hello!".to_string(),
+//!             tool_calls: None,
+//!         }],
+//!         tools: None,
+//!         temperature: Some(0.7),
+//!         max_tokens: Some(1000),
+//!         stream: false,
+//!     };
+//!     
+//!     let response = provider.chat_completion(request).await?;
+//!     println!("{}", response.choices[0].message.content);
+//!     
+//!     Ok(())
+//! }
+//! ```
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -7,7 +53,10 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub mod anthropic;
-pub use anthropic::AnthropicProvider;
+pub mod openai;
+
+pub use anthropic::{AnthropicProvider, AnthropicAuth};
+pub use openai::OpenAiProvider;
 
 /// LLM provider errors
 #[derive(Debug, Error)]
@@ -193,9 +242,15 @@ impl LlmProviderRegistry {
         let mock_provider = Arc::new(MockLlmProvider::new());
         self.register_provider(mock_provider).await;
         
-        // Try to register Anthropic provider if API key is available
-        if let Ok(anthropic) = AnthropicProvider::new() {
+        // Try to register Anthropic provider
+        // Priority: 1. Claude Code session key, 2. API key
+        if let Ok(anthropic) = AnthropicProvider::auto() {
             self.register_provider(Arc::new(anthropic)).await;
+        }
+        
+        // Try to register OpenAI provider if API key is available
+        if let Ok(openai) = OpenAiProvider::new() {
+            self.register_provider(Arc::new(openai)).await;
         }
         
         Ok(())

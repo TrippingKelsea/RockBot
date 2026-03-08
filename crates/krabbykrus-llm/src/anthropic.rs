@@ -1,4 +1,11 @@
 //! Anthropic Claude API provider
+//!
+//! Supports two authentication methods:
+//! 1. **API Key** - Traditional `ANTHROPIC_API_KEY` from console.anthropic.com
+//! 2. **Session Key** - OAuth tokens from Claude Code CLI (~/.claude/.credentials.json)
+//!
+//! Session key auth uses the same tokens as Claude Code, allowing you to use your
+//! Claude subscription without a separate API key.
 
 use crate::{
     ChatCompletionRequest, ChatCompletionResponse, Choice, CompletionStream, LlmError,
@@ -8,11 +15,99 @@ use crate::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
-/// Anthropic API provider
+/// Authentication method for Anthropic API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicAuth {
+    /// Traditional API key authentication
+    ApiKey {
+        key: String,
+    },
+    /// OAuth session key (Claude Code style)
+    SessionKey {
+        access_token: String,
+        refresh_token: String,
+        expires_at: u64,
+        #[serde(default)]
+        scopes: Vec<String>,
+    },
+}
+
+impl AnthropicAuth {
+    /// Load from Claude Code credentials file (~/.claude/.credentials.json)
+    pub fn from_claude_credentials() -> Result<Self> {
+        let credentials_path = Self::claude_credentials_path()?;
+        let content = std::fs::read_to_string(&credentials_path).map_err(|_| {
+            LlmError::AuthenticationFailed
+        })?;
+        
+        #[derive(Deserialize)]
+        struct ClaudeCredentials {
+            #[serde(rename = "claudeAiOauth")]
+            claude_ai_oauth: Option<OAuthCredentials>,
+        }
+        
+        #[derive(Deserialize)]
+        struct OAuthCredentials {
+            #[serde(rename = "accessToken")]
+            access_token: String,
+            #[serde(rename = "refreshToken")]
+            refresh_token: String,
+            #[serde(rename = "expiresAt")]
+            expires_at: u64,
+            #[serde(default)]
+            scopes: Vec<String>,
+        }
+        
+        let creds: ClaudeCredentials = serde_json::from_str(&content)?;
+        let oauth = creds.claude_ai_oauth.ok_or(LlmError::AuthenticationFailed)?;
+        
+        Ok(Self::SessionKey {
+            access_token: oauth.access_token,
+            refresh_token: oauth.refresh_token,
+            expires_at: oauth.expires_at,
+            scopes: oauth.scopes,
+        })
+    }
+    
+    /// Get the Claude Code credentials file path
+    fn claude_credentials_path() -> Result<PathBuf> {
+        let home = dirs::home_dir().ok_or(LlmError::AuthenticationFailed)?;
+        Ok(home.join(".claude").join(".credentials.json"))
+    }
+    
+    /// Check if session key is expired (with 5 minute buffer)
+    pub fn is_expired(&self) -> bool {
+        match self {
+            Self::ApiKey { .. } => false,
+            Self::SessionKey { expires_at, .. } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                // Add 5 minute buffer
+                *expires_at < now + 300_000
+            }
+        }
+    }
+    
+    /// Get the authorization header value
+    pub fn auth_header(&self) -> (&'static str, String) {
+        match self {
+            Self::ApiKey { key } => ("x-api-key", key.clone()),
+            Self::SessionKey { access_token, .. } => ("Authorization", format!("Bearer {}", access_token)),
+        }
+    }
+}
+
+/// Anthropic API provider with support for both API key and session key auth
 pub struct AnthropicProvider {
     client: reqwest::Client,
-    api_key: String,
+    auth: Arc<RwLock<AnthropicAuth>>,
     base_url: String,
 }
 
@@ -89,14 +184,22 @@ struct AnthropicErrorDetail {
     message: String,
 }
 
+/// OAuth token refresh response
+#[derive(Debug, Deserialize)]
+struct TokenRefreshResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: u64,
+}
+
 impl AnthropicProvider {
-    /// Create a new Anthropic provider
+    /// Create a new Anthropic provider from environment variable (API key)
     pub fn new() -> Result<Self> {
         let api_key = env::var("ANTHROPIC_API_KEY").map_err(|_| LlmError::AuthenticationFailed)?;
 
         Ok(Self {
             client: reqwest::Client::new(),
-            api_key,
+            auth: Arc::new(RwLock::new(AnthropicAuth::ApiKey { key: api_key })),
             base_url: "https://api.anthropic.com".to_string(),
         })
     }
@@ -105,9 +208,36 @@ impl AnthropicProvider {
     pub fn with_api_key(api_key: String) -> Self {
         Self {
             client: reqwest::Client::new(),
-            api_key,
+            auth: Arc::new(RwLock::new(AnthropicAuth::ApiKey { key: api_key })),
             base_url: "https://api.anthropic.com".to_string(),
         }
+    }
+    
+    /// Create with session key auth (Claude Code style)
+    pub fn with_session_key(auth: AnthropicAuth) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            auth: Arc::new(RwLock::new(auth)),
+            base_url: "https://api.anthropic.com".to_string(),
+        }
+    }
+    
+    /// Create from Claude Code credentials file
+    pub fn from_claude_credentials() -> Result<Self> {
+        let auth = AnthropicAuth::from_claude_credentials()?;
+        Ok(Self::with_session_key(auth))
+    }
+    
+    /// Try to create provider, preferring session key over API key
+    /// Priority: 1. Claude Code credentials, 2. ANTHROPIC_API_KEY env var
+    pub fn auto() -> Result<Self> {
+        // Try Claude Code credentials first
+        if let Ok(provider) = Self::from_claude_credentials() {
+            return Ok(provider);
+        }
+        
+        // Fall back to API key
+        Self::new()
     }
 
     /// Extract model name from full ID (e.g., "anthropic/claude-3-opus" -> "claude-3-opus")
@@ -116,6 +246,102 @@ impl AnthropicProvider {
             .strip_prefix("anthropic/")
             .unwrap_or(model_id)
             .to_string()
+    }
+    
+    /// Refresh the OAuth token if expired
+    async fn refresh_token_if_needed(&self) -> Result<()> {
+        let auth = self.auth.read().await;
+        
+        if let AnthropicAuth::SessionKey { refresh_token, expires_at, .. } = &*auth {
+            if !auth.is_expired() {
+                return Ok(());
+            }
+            
+            let refresh_token = refresh_token.clone();
+            let _expires_at = *expires_at;
+            drop(auth); // Release read lock
+            
+            // Perform token refresh
+            let response = self
+                .client
+                .post("https://console.anthropic.com/v1/oauth/token")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", &refresh_token),
+                ])
+                .send()
+                .await?;
+            
+            if !response.status().is_success() {
+                return Err(LlmError::AuthenticationFailed);
+            }
+            
+            let token_response: TokenRefreshResponse = response.json().await?;
+            
+            // Update stored auth
+            let mut auth = self.auth.write().await;
+            let new_expires_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64 + (token_response.expires_in * 1000);
+            
+            if let AnthropicAuth::SessionKey { 
+                access_token, 
+                refresh_token: stored_refresh, 
+                expires_at,
+                ..
+            } = &mut *auth {
+                *access_token = token_response.access_token;
+                if let Some(new_refresh) = token_response.refresh_token {
+                    *stored_refresh = new_refresh;
+                }
+                *expires_at = new_expires_at;
+            }
+            
+            // Persist updated credentials back to Claude credentials file
+            self.persist_credentials(&auth).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Persist updated credentials to Claude Code's credentials file
+    async fn persist_credentials(&self, auth: &AnthropicAuth) -> Result<()> {
+        if let AnthropicAuth::SessionKey { access_token, refresh_token, expires_at, scopes } = auth {
+            let credentials_path = AnthropicAuth::claude_credentials_path()?;
+            
+            // Read existing file to preserve other fields
+            let content = tokio::fs::read_to_string(&credentials_path).await.unwrap_or_default();
+            let mut creds: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+            
+            // Update OAuth section
+            creds["claudeAiOauth"] = serde_json::json!({
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "expiresAt": expires_at,
+                "scopes": scopes,
+            });
+            
+            // Write back
+            let updated = serde_json::to_string_pretty(&creds)?;
+            tokio::fs::write(&credentials_path, updated).await.map_err(|_| {
+                LlmError::ApiError {
+                    message: "Failed to persist updated credentials".to_string(),
+                }
+            })?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Get current auth type for display/debugging
+    pub async fn auth_type(&self) -> &'static str {
+        let auth = self.auth.read().await;
+        match &*auth {
+            AnthropicAuth::ApiKey { .. } => "api_key",
+            AnthropicAuth::SessionKey { .. } => "session_key",
+        }
     }
 }
 
@@ -137,6 +363,9 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<ChatCompletionResponse> {
+        // Refresh token if needed
+        self.refresh_token_if_needed().await?;
+        
         let model = self.normalize_model(&request.model);
 
         // Extract system message and convert others
@@ -186,12 +415,25 @@ impl LlmProvider for AnthropicProvider {
             temperature: request.temperature,
         };
 
-        let response = self
+        // Get auth header
+        let auth = self.auth.read().await;
+        let (header_name, header_value) = auth.auth_header();
+        
+        let mut req_builder = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
+            .header(header_name, header_value)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        
+        // Add beta header for session key auth (some features require it)
+        if matches!(&*auth, AnthropicAuth::SessionKey { .. }) {
+            req_builder = req_builder.header("anthropic-beta", "max-tokens-3-5-sonnet-2024-07-15");
+        }
+        
+        drop(auth); // Release lock before await
+
+        let response = req_builder
             .json(&api_request)
             .send()
             .await?;
@@ -331,14 +573,48 @@ mod tests {
     fn test_normalize_model() {
         let provider = AnthropicProvider {
             client: reqwest::Client::new(),
-            api_key: "test".to_string(),
+            auth: Arc::new(RwLock::new(AnthropicAuth::ApiKey { key: "test".to_string() })),
             base_url: "https://api.anthropic.com".to_string(),
         };
 
-        assert_eq!(
-            provider.normalize_model("anthropic/claude-3-opus"),
-            "claude-3-opus"
-        );
-        assert_eq!(provider.normalize_model("claude-3-opus"), "claude-3-opus");
+        // Need to use a runtime for async tests
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            assert_eq!(
+                provider.normalize_model("anthropic/claude-3-opus"),
+                "claude-3-opus"
+            );
+            assert_eq!(provider.normalize_model("claude-3-opus"), "claude-3-opus");
+        });
+    }
+    
+    #[test]
+    fn test_auth_expiration() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        
+        // Expired token
+        let expired = AnthropicAuth::SessionKey {
+            access_token: "test".to_string(),
+            refresh_token: "test".to_string(),
+            expires_at: now - 1000,
+            scopes: vec![],
+        };
+        assert!(expired.is_expired());
+        
+        // Valid token
+        let valid = AnthropicAuth::SessionKey {
+            access_token: "test".to_string(),
+            refresh_token: "test".to_string(),
+            expires_at: now + 600_000, // 10 minutes from now
+            scopes: vec![],
+        };
+        assert!(!valid.is_expired());
+        
+        // API key never expires
+        let api_key = AnthropicAuth::ApiKey { key: "test".to_string() };
+        assert!(!api_key.is_expired());
     }
 }

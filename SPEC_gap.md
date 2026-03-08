@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-krabbykrus is approximately **25-30% complete** relative to the full SPEC.md specification. The credential vault system is the most mature component (~85% complete). Core gateway infrastructure exists but many subsystems are stubbed or partial. The biggest gaps are in channel support (only Discord implemented), the cron/scheduling system (not implemented), and the full agent execution pipeline.
+krabbykrus is approximately **25-30% complete** relative to the full SPEC.md specification. The credential vault system is the most mature component (~85% complete), followed by the TUI (~70%) and Web UI (~55%). Core gateway infrastructure exists but many subsystems are stubbed or partial. The biggest gaps are in channel support (only Discord implemented), the cron/scheduling system (not implemented), and the full agent execution pipeline.
 
 ---
 
@@ -20,12 +20,14 @@ krabbykrus is approximately **25-30% complete** relative to the full SPEC.md spe
 |---------|--------|-------|
 | **14. Security Model** | ~85% | Credential vault, permissions, audit logging, HIL approval all implemented |
 | **6. Session Management** | ~75% | SQLite persistence, session CRUD, message history working |
+| **20. TUI** | ~70% | All 6 sections, credentials complete, chat partial |
 | **3. Gateway Protocol** | ~60% | WebSocket server running, basic RPC methods, auth flow |
 
 ### 🟡 Partially Implemented (30-70%)
 
 | Section | Status | Notes |
 |---------|--------|-------|
+| **20. Web UI** | ~55% | All sections present, credentials complete, real-time missing |
 | **7. Agent System** | ~50% | Basic agent execution works, missing thinking levels, failover, streaming |
 | **2. System Architecture** | ~45% | Gateway + Session Store exist; Channel Manager, Routing Engine partial |
 | **10. Configuration** | ~40% | Config loading works, missing hot reload, many fields unparsed |
@@ -330,44 +332,176 @@ This is the **most complete** section.
 
 ---
 
-### 13. TUI Application
+### 13. User Interface (Section 20) — TUI + Web UI
 
-#### Implemented
-- [x] Main dashboard
-- [x] Agents list view
-- [x] Sessions list view
-- [x] Credentials management
-  - [x] Endpoints tab
-  - [x] Permissions tab
-  - [x] Audit log tab
-  - [x] Settings tab
-- [x] Chat interface (partial)
-- [x] Modals (password entry, confirmations)
+The UI system is **~65% complete** overall, with the TUI more mature than the Web UI.
 
-#### Missing
-- [ ] Models configuration tab
+#### TUI Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **App Loop** | ✅ Complete | Crossterm + async message channel |
+| **State Management** | ✅ Complete | Elm-like AppState + Message pattern |
+| **Sidebar Navigation** | ✅ Complete | 6 sections, keyboard nav |
+| **Dashboard** | ✅ Complete | Gateway status, agent list, vault status |
+| **Credentials** | ✅ Complete | 4 sub-tabs, full CRUD, unlock flows |
+| **Agents** | 🟡 ~70% | List view works, config editing partial |
+| **Sessions** | 🟡 ~60% | List works, chat partial |
+| **Models** | 🟡 ~50% | Provider cards, config editing partial |
+| **Settings** | 🟡 ~40% | Basic display, no editing |
+| **Modals** | ✅ Complete | Password, confirm, add/edit forms |
+
+#### TUI Missing Features
+- [ ] Chat streaming display (chunks arrive, not rendered incrementally)
+- [ ] Session detail drilldown
+- [ ] Real-time WebSocket updates
 - [ ] Channels status view
 - [ ] Cron jobs view
 - [ ] Plugins view
-- [ ] Full chat streaming display
-- [ ] Session detail drilldown
-- [ ] Real-time updates via WebSocket
+- [ ] Agent config editing
+- [ ] Model testing/validation
+
+#### Web UI Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Gateway Server** | ✅ Complete | Embedded HTML served from `web_ui.rs` |
+| **Layout** | ✅ Complete | Sidebar + main content, 6 sections |
+| **Color Palette** | ✅ Complete | Cyberpunk dark theme |
+| **Dashboard** | ✅ Complete | Stats cards, agent table |
+| **Credentials** | ✅ Complete | Init, unlock, endpoints CRUD |
+| **Sessions** | 🟡 ~50% | List + chat UI, API partial |
+| **Agents** | 🟡 ~40% | List view, no editing |
+| **Models** | 🟡 ~60% | Provider cards with config |
+| **Settings** | 🟡 ~30% | Display only |
+| **Keyboard Shortcuts** | ✅ Complete | 1-6 for navigation |
+
+#### Web UI Missing Features
+- [ ] WebSocket integration (currently REST polling)
+- [ ] Real-time chat streaming
+- [ ] Form validation
+- [ ] Error toast notifications
+- [ ] Mobile responsive breakpoints
+- [ ] Touch-friendly interactions
+- [ ] Credential permission editing
+- [ ] Agent binding configuration
+
+#### Shared Infrastructure Gaps
+- [ ] **State Sync**: No WebSocket subscription for real-time updates
+- [ ] **API Parity**: Some TUI features lack REST endpoints
+- [ ] **Theme System**: No light mode or user customization
+- [ ] **i18n**: No internationalization support
 
 ---
 
-### 14. Web UI
+## UI Extension Playbook
 
-#### Implemented
-- [x] Basic HTTP server in gateway
-- [x] Static file serving
-- [x] Status endpoint
+When adding new features, follow these patterns to maintain consistency:
 
-#### Missing
-- [ ] Full web application
-- [ ] WebSocket client integration
-- [ ] Chat interface
-- [ ] Dashboard
-- [ ] Mobile-responsive design
+### Adding a New Navigation Section
+
+**Example: Adding "Channels" section**
+
+1. **State** (`state.rs`):
+   ```rust
+   pub enum MenuItem {
+       // ... existing
+       Channels,  // Add variant
+   }
+   
+   impl MenuItem {
+       pub fn all() -> Vec<Self> {
+           vec![..., Self::Channels]  // Add to list
+       }
+       pub fn icon(&self) -> &'static str {
+           Self::Channels => "📡",
+       }
+   }
+   ```
+
+2. **TUI Component** (`components/channels.rs`):
+   ```rust
+   pub fn render_channels(frame: &mut Frame, area: Rect, state: &AppState) {
+       // Render channel list, status indicators
+   }
+   ```
+
+3. **Web UI** (`web_ui.rs`):
+   ```html
+   <li class="nav-item" data-page="channels">
+       <span class="icon">📡</span> Channels
+   </li>
+   
+   <div id="page-channels" class="content page hidden">
+       <!-- Channel list, status cards -->
+   </div>
+   ```
+   ```javascript
+   function loadChannelsPage() {
+       api('/api/channels/status').then(renderChannels);
+   }
+   ```
+
+4. **API Endpoint** (`gateway.rs`):
+   ```rust
+   "/api/channels/status" => {
+       let status = get_channel_status().await;
+       json_response(&status)
+   }
+   ```
+
+### Adding Sub-tabs
+
+**Example: Adding "Bindings" sub-tab to Agents**
+
+1. **State**:
+   ```rust
+   pub enum AgentsTab { List, Config, Bindings }
+   ```
+
+2. **TUI**: Handle `[`/`]` in `handle_normal_mode()`:
+   ```rust
+   MenuItem::Agents => {
+       self.agents_tab = (self.agents_tab + 1) % 3;
+   }
+   ```
+
+3. **Web UI**: Add tab bar and content switching
+
+### Adding Real-time Updates
+
+When a feature needs live updates:
+
+1. **Gateway**: Broadcast events via WebSocket
+2. **TUI**: Handle in async message loop
+3. **Web UI**: Subscribe to WebSocket, update DOM
+
+```javascript
+// Web UI WebSocket pattern
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    if (event.type === 'channel_status') updateChannelUI(event.payload);
+};
+```
+
+### Adding a Modal Form
+
+1. **State**: Add `InputMode` variant
+2. **TUI**: Create `render_*_modal()` + `handle_*()` 
+3. **Web UI**: Add modal HTML + show/close functions
+4. **Validation**: Implement in both UIs consistently
+
+### File Locations Reference
+
+| Feature | TUI | Web UI |
+|---------|-----|--------|
+| State types | `tui/state.rs` | JS globals in `web_ui.rs` |
+| App loop | `tui/app.rs` | `<script>` in `web_ui.rs` |
+| Components | `tui/components/*.rs` | Inline in HTML |
+| Modals | `tui/components/modals.rs` | Modal divs in HTML |
+| API endpoints | `core/gateway.rs` | Same file |
+| Styles | N/A (ratatui) | `<style>` in HTML |
 
 ---
 

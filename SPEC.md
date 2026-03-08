@@ -1701,9 +1701,383 @@ interface ChannelHealth {
 
 ---
 
-## 20. Implementation Notes
+## 20. User Interface Design
 
-### 20.1 Language Considerations
+Krabbykrus provides two unified interfaces: a **Terminal UI (TUI)** for power users and a **Web UI** for browser-based access. Both interfaces share the same navigation structure, design language, and state model to ensure consistency.
+
+### 20.1 Design Philosophy
+
+| Principle | Description |
+|-----------|-------------|
+| **Unified Navigation** | Same 6-section structure in both TUI and Web UI |
+| **Elm-like Architecture** | Single state source, message-driven updates, pure render functions |
+| **Dark-first Aesthetic** | Cyberpunk-inspired palette optimized for extended use |
+| **Keyboard-first** | Full keyboard navigation; mouse/touch optional |
+| **Real-time Updates** | WebSocket-driven state sync across clients |
+
+### 20.2 Navigation Structure
+
+Both interfaces share identical navigation sections:
+
+| Section | Icon | Description | Sub-tabs |
+|---------|------|-------------|----------|
+| **Dashboard** | 📊 | System overview, health, quick stats | — |
+| **Credentials** | 🔐 | Vault management, endpoints, permissions | Endpoints, Providers, Permissions, Audit |
+| **Agents** | 🤖 | Agent configuration, bindings | — |
+| **Sessions** | 💬 | Active sessions, chat interface | — |
+| **Models** | 🧠 | LLM provider configuration | — |
+| **Settings** | ⚙️ | Gateway config, paths, about | — |
+
+### 20.3 Color Palette
+
+```css
+:root {
+  --bg: #0f0f1a;           /* Deep background */
+  --surface: #1a1a2e;      /* Card/panel background */
+  --surface-2: #232342;    /* Hover/selected state */
+  --primary: #e94560;      /* Accent (coral red) */
+  --secondary: #0f3460;    /* Secondary accent */
+  --accent: #7c3aed;       /* Purple highlights */
+  --text: #f0f0f0;         /* Primary text */
+  --text-dim: #8888aa;     /* Secondary text */
+  --success: #10b981;      /* Green status */
+  --warning: #f59e0b;      /* Yellow/orange warnings */
+  --error: #ef4444;        /* Red errors */
+  --border: #2a2a4a;       /* Subtle borders */
+}
+```
+
+### 20.4 Terminal UI (TUI)
+
+Built with **ratatui** (Rust TUI framework), the TUI provides full functionality in terminal environments.
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         App                                  │
+│  ┌─────────────┐  ┌──────────────────────────────────────┐  │
+│  │   State     │  │           Event Loop                  │  │
+│  │  (AppState) │◄─┤  • Crossterm key events               │  │
+│  └──────┬──────┘  │  • Async message channel              │  │
+│         │         │  • Tick timer (animations)            │  │
+│         ▼         └──────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │                    Components                        │    │
+│  │  sidebar │ dashboard │ credentials │ sessions │ ... │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### State Management
+
+```rust
+/// Central application state
+pub struct AppState {
+    // Navigation
+    pub menu_item: MenuItem,
+    pub sidebar_focus: bool,
+    pub credentials_tab: usize,
+    
+    // Data
+    pub gateway: GatewayStatus,
+    pub vault: VaultStatus,
+    pub agents: Vec<AgentInfo>,
+    pub sessions: Vec<SessionInfo>,
+    pub endpoints: Vec<EndpointInfo>,
+    
+    // UI State
+    pub input_mode: InputMode,
+    pub status_message: Option<(String, bool)>,
+    pub should_exit: bool,
+    
+    // Async communication
+    pub tx: mpsc::UnboundedSender<Message>,
+}
+
+/// Input modes for modal handling
+pub enum InputMode {
+    Normal,
+    PasswordInput { prompt: String, masked: bool, action: PasswordAction },
+    AddCredential(AddCredentialState),
+    EditCredential(EditCredentialState),
+    Confirm { message: String, action: ConfirmAction },
+    ChatInput,
+    ViewSession { session_id: String },
+}
+```
+
+#### Message Types
+
+```rust
+pub enum Message {
+    // Navigation
+    Navigate(MenuItem),
+    ToggleSidebar,
+    
+    // Data loading
+    GatewayStatus(GatewayStatus),
+    AgentsLoaded(Vec<AgentInfo>),
+    SessionsLoaded(Vec<SessionInfo>),
+    VaultStatus(VaultStatus),
+    EndpointsLoaded(Vec<EndpointInfo>),
+    
+    // Chat
+    ChatResponse(String),
+    ChatStreamChunk(String),
+    
+    // UI feedback
+    SetStatus(String, bool),
+    Tick,
+    Quit,
+}
+```
+
+#### Key Bindings
+
+| Key | Context | Action |
+|-----|---------|--------|
+| `Tab` | Global | Toggle sidebar/content focus |
+| `j/k` or `↓/↑` | Sidebar | Navigate menu items |
+| `Enter` | Sidebar | Select menu item |
+| `[` / `]` | Content | Previous/next sub-tab |
+| `a` | Credentials | Add endpoint |
+| `d` | Credentials | Delete selected |
+| `u` | Credentials | Unlock vault |
+| `Enter` | Sessions | Start chat |
+| `Esc` | Modal | Cancel/close |
+| `Ctrl+C` | Global | Exit |
+
+#### Component Structure
+
+```
+tui/
+├── app.rs           # Main app loop, event handling
+├── state.rs         # AppState, Message, data types
+├── effects.rs       # Visual animations
+├── components/
+│   ├── mod.rs       # Component exports, helpers
+│   ├── sidebar.rs   # Navigation sidebar
+│   ├── dashboard.rs # Dashboard view
+│   ├── credentials.rs # Credential vault UI
+│   ├── agents.rs    # Agent list/config
+│   ├── sessions.rs  # Session list + chat
+│   ├── models.rs    # Provider configuration
+│   ├── settings.rs  # Gateway settings
+│   └── modals.rs    # Password, confirm, forms
+```
+
+### 20.5 Web UI
+
+Embedded single-page application served by the gateway. No build step required—pure HTML/CSS/JS.
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Browser                                  │
+│  ┌─────────────┐  ┌──────────────────────────────────────┐  │
+│  │   State     │  │           Event Handlers              │  │
+│  │ (JS globals)│◄─┤  • Navigation clicks                  │  │
+│  └──────┬──────┘  │  • Keyboard shortcuts (1-6)           │  │
+│         │         │  • Form submissions                   │  │
+│         ▼         └──────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │                    DOM Updates                       │    │
+│  │  Sidebar │ Page content │ Modals                     │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          │                                   │
+│                          ▼                                   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              REST API + WebSocket                    │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Layout Structure
+
+```html
+<div class="app">
+  <aside class="sidebar">
+    <div class="logo">🦀 Krabbykrus</div>
+    <ul class="nav">
+      <li class="nav-item" data-page="dashboard">📊 Dashboard</li>
+      <li class="nav-item" data-page="credentials">🔐 Credentials</li>
+      <!-- ... -->
+    </ul>
+    <div class="sidebar-footer">v0.1.0</div>
+  </aside>
+  
+  <main class="main">
+    <div id="page-dashboard" class="content page">...</div>
+    <div id="page-credentials" class="content page hidden">...</div>
+    <!-- ... -->
+  </main>
+</div>
+```
+
+#### API Endpoints (Web UI)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Gateway health + agent list |
+| GET | `/api/credentials/status` | Vault status |
+| POST | `/api/credentials/init` | Initialize vault |
+| POST | `/api/credentials/unlock` | Unlock vault |
+| POST | `/api/credentials/lock` | Lock vault |
+| GET | `/api/credentials/endpoints` | List endpoints |
+| POST | `/api/credentials/endpoints` | Add endpoint |
+| DELETE | `/api/credentials/endpoints/:id` | Remove endpoint |
+| GET | `/api/sessions` | List sessions |
+| POST | `/api/chat` | Send chat message |
+| GET | `/api/agents` | List agents |
+| POST | `/api/gateway/reload` | Reload config |
+
+#### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `1` | Dashboard |
+| `2` | Credentials |
+| `3` | Agents |
+| `4` | Sessions |
+| `5` | Models |
+| `6` | Settings |
+
+### 20.6 Component Design Patterns
+
+#### Cards
+
+Used for grouping related content:
+
+```html
+<div class="card">
+  <div class="card-header">
+    <h3>Title</h3>
+    <button class="btn btn-primary btn-sm">Action</button>
+  </div>
+  <!-- Content -->
+</div>
+```
+
+#### Tables
+
+For data lists with consistent styling:
+
+```html
+<table>
+  <thead><tr><th>Column</th><th>Status</th><th>Actions</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Value</td>
+      <td><span class="badge badge-success">Active</span></td>
+      <td><button class="btn btn-danger btn-sm">Delete</button></td>
+    </tr>
+  </tbody>
+</table>
+```
+
+#### Badges
+
+Status indicators:
+
+```html
+<span class="badge badge-success">Online</span>
+<span class="badge badge-warning">Pending</span>
+<span class="badge badge-error">Offline</span>
+<span class="badge badge-info">Info</span>
+```
+
+#### Modals
+
+Overlay dialogs for forms:
+
+```html
+<div class="modal-overlay">
+  <div class="modal">
+    <h2>Title</h2>
+    <div class="form-group">
+      <label>Field</label>
+      <input type="text" placeholder="...">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary">Cancel</button>
+      <button class="btn btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+```
+
+### 20.7 Extension Guidelines
+
+When adding new features to the UI:
+
+#### Adding a New Section
+
+1. **State**: Add `MenuItem` variant and any data fields to `AppState`
+2. **TUI Component**: Create `components/newview.rs` with `render_newview()`
+3. **Web UI**: Add page div, nav item, and `loadNewviewPage()` function
+4. **Navigation**: Update `MenuItem::all()` and keyboard shortcuts
+
+#### Adding a Sub-tab
+
+1. **State**: Add tab enum (e.g., `CredentialsTab`) and state field
+2. **TUI**: Handle `[`/`]` navigation in `handle_normal_mode()`
+3. **Web UI**: Add tab bar HTML and `showSubtab()` logic
+
+#### Adding a Modal
+
+1. **State**: Add `InputMode` variant with necessary fields
+2. **TUI**: Add `render_*_modal()` and `handle_*()` functions
+3. **Web UI**: Add modal HTML and show/close functions
+
+#### Adding API Data
+
+1. **State**: Add data type and field to `AppState`
+2. **Message**: Add `*Loaded` and `*Error` variants
+3. **Spawn**: Add `spawn_*_load()` async task
+4. **API**: Add endpoint in `web_ui.rs`
+5. **TUI/Web**: Update render/load functions
+
+### 20.8 Responsive Design (Web UI)
+
+The Web UI uses CSS Grid for responsive layouts:
+
+```css
+/* Default: 4-column grid */
+.grid { 
+  display: grid; 
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+  gap: 1.5rem; 
+}
+
+/* Split layouts */
+.split { grid-template-columns: 1fr 1fr; }
+.split-35-65 { grid-template-columns: 35% 65%; }
+
+/* Mobile: stack vertically */
+@media (max-width: 768px) {
+  .sidebar { width: 60px; }
+  .nav-item span:not(.icon) { display: none; }
+  .split { grid-template-columns: 1fr; }
+}
+```
+
+### 20.9 Accessibility
+
+| Feature | Implementation |
+|---------|----------------|
+| **Keyboard Navigation** | Full keyboard support in both TUI and Web |
+| **Color Contrast** | WCAG AA compliant text/background ratios |
+| **Focus Indicators** | Visible focus rings on interactive elements |
+| **Screen Reader** | Semantic HTML in Web UI |
+| **Reduced Motion** | Respect `prefers-reduced-motion` |
+
+---
+
+## 21. Implementation Notes
+
+### 21.1 Language Considerations
 
 When implementing in a new language:
 
@@ -1715,14 +2089,14 @@ When implementing in a new language:
 6. **HTTP Client**: For model API calls
 7. **SQLite**: For session metadata storage
 
-### 20.2 Critical Paths
+### 21.2 Critical Paths
 
 1. **Message Routing**: Must be fast (<10ms) to not delay responses
 2. **Tool Execution**: Sandboxing critical for security
 3. **Streaming**: Real-time token delivery for responsiveness
 4. **Session Loading**: Cache hot sessions in memory
 
-### 20.3 Testing Requirements
+### 21.3 Testing Requirements
 
 1. **Unit Tests**: Core routing, session management
 2. **Integration Tests**: Channel adapters, model providers

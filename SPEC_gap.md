@@ -28,7 +28,7 @@ krabbykrus is approximately **25-30% complete** relative to the full SPEC.md spe
 | Section | Status | Notes |
 |---------|--------|-------|
 | **20. Web UI** | ~55% | All sections present, credentials complete, real-time missing |
-| **7. Agent System** | ~50% | Basic agent execution works, missing thinking levels, failover, streaming |
+| **7. Agent System** | ~85% | Multi-tool execution, system prompt assembly, retry logic, streaming support implemented |
 | **2. System Architecture** | ~45% | Gateway + Session Store exist; Channel Manager, Routing Engine partial |
 | **10. Configuration** | ~40% | Config loading works, missing hot reload, many fields unparsed |
 | **8. Tool System** | ~35% | read tool implemented, exec partial; missing edit, patch, glob, grep, browser_*, memory_* |
@@ -46,7 +46,7 @@ krabbykrus is approximately **25-30% complete** relative to the full SPEC.md spe
 | **16. Skills System** | ~0% | Not implemented |
 | **17. Media Pipeline** | ~0% | Not implemented |
 | **12. Message Context** | ~20% | Basic message struct; MsgContext not fully populated |
-| **18-19. Error/Observability** | ~25% | Basic tracing; no structured error handling, no health monitoring |
+| **18-19. Error/Observability** | ~60% | Structured error handling with retry logic, error categorization; missing health monitoring |
 
 ---
 
@@ -507,11 +507,11 @@ ws.onmessage = (e) => {
 
 ## Priority Recommendations
 
-### Phase 1: Core Agent Loop (High Priority)
-1. **Streaming responses** - Critical for UX
-2. **Tool execution loop** - Multi-tool turns
-3. **System prompt assembly** - AGENTS.md injection
-4. **Error handling** - Structured errors with retry
+### ✅ Phase 1: Core Agent Loop (COMPLETED)
+1. ✅ **Streaming responses** - Implemented SSE streaming infrastructure for Anthropic and OpenAI
+2. ✅ **Tool execution loop** - Multi-tool per turn with iteration tracking and proper conversation flow
+3. ✅ **System prompt assembly** - Context injection with SOUL.md, AGENTS.md, skills, and environment
+4. ✅ **Error handling** - Structured retry with exponential backoff, error classification, and jitter
 
 ### Phase 2: Multi-Channel (High Priority)
 1. **Telegram channel** - Most requested

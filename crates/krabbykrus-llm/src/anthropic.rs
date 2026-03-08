@@ -10,7 +10,7 @@
 use crate::{
     ChatCompletionRequest, ChatCompletionResponse, Choice, CompletionStream, LlmError,
     LlmProvider, Message, MessageRole, ModelInfo, ProviderCapabilities, Result, ToolDefinition,
-    Usage,
+    Usage, StreamingChunk, StreamingChoice, StreamingDelta,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use futures_util::{Stream, StreamExt};
+use std::pin::Pin;
 
 /// Authentication method for Anthropic API
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +192,80 @@ struct TokenRefreshResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
+}
+
+/// Anthropic streaming event types
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum AnthropicStreamEvent {
+    #[serde(rename = "message_start")]
+    MessageStart {
+        message: AnthropicStreamMessage,
+    },
+    #[serde(rename = "content_block_start")]
+    ContentBlockStart {
+        index: u32,
+        content_block: AnthropicStreamContentBlock,
+    },
+    #[serde(rename = "content_block_delta")]
+    ContentBlockDelta {
+        index: u32,
+        delta: AnthropicStreamDelta,
+    },
+    #[serde(rename = "content_block_stop")]
+    ContentBlockStop {
+        index: u32,
+    },
+    #[serde(rename = "message_delta")]
+    MessageDelta {
+        delta: AnthropicStreamMessageDelta,
+        usage: Option<AnthropicUsage>,
+    },
+    #[serde(rename = "message_stop")]
+    MessageStop,
+    #[serde(rename = "ping")]
+    Ping,
+    #[serde(rename = "error")]
+    Error {
+        error: AnthropicErrorDetail,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicStreamMessage {
+    id: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    role: String,
+    model: String,
+    usage: AnthropicUsage,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum AnthropicStreamContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum AnthropicStreamDelta {
+    #[serde(rename = "text_delta")]
+    TextDelta { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicStreamMessageDelta {
+    stop_reason: Option<String>,
 }
 
 impl AnthropicProvider {
@@ -506,11 +582,137 @@ impl LlmProvider for AnthropicProvider {
         })
     }
 
-    async fn stream_completion(&self, _request: ChatCompletionRequest) -> Result<CompletionStream> {
-        // TODO: Implement streaming with SSE
-        Err(LlmError::ApiError {
-            message: "Streaming not yet implemented".to_string(),
-        })
+    async fn stream_completion(&self, request: ChatCompletionRequest) -> Result<CompletionStream> {
+        // Refresh token if needed
+        self.refresh_token_if_needed().await?;
+        
+        let model = self.normalize_model(&request.model);
+
+        // Extract system message and convert others
+        let mut system_message: Option<String> = None;
+        let messages: Vec<AnthropicMessage> = request
+            .messages
+            .iter()
+            .filter_map(|m| {
+                match m.role {
+                    MessageRole::System => {
+                        system_message = Some(m.content.clone());
+                        None
+                    }
+                    MessageRole::User => Some(AnthropicMessage {
+                        role: "user".to_string(),
+                        content: m.content.clone(),
+                    }),
+                    MessageRole::Assistant => Some(AnthropicMessage {
+                        role: "assistant".to_string(),
+                        content: m.content.clone(),
+                    }),
+                    MessageRole::Tool => Some(AnthropicMessage {
+                        role: "user".to_string(), // Tool results come as user messages in Anthropic
+                        content: m.content.clone(),
+                    }),
+                }
+            })
+            .collect();
+
+        // Convert tools
+        let tools: Option<Vec<AnthropicTool>> = request.tools.map(|t| {
+            t.into_iter()
+                .map(|tool| AnthropicTool {
+                    name: tool.name,
+                    description: tool.description,
+                    input_schema: tool.parameters,
+                })
+                .collect()
+        });
+
+        let mut api_request = AnthropicRequest {
+            model: model.clone(),
+            max_tokens: request.max_tokens.unwrap_or(4096),
+            messages,
+            system: system_message,
+            tools,
+            temperature: request.temperature,
+        };
+
+        // For streaming, we need to add stream: true to the request
+        let mut request_json = serde_json::to_value(&api_request)?;
+        request_json["stream"] = serde_json::Value::Bool(true);
+
+        // Get auth header
+        let auth = self.auth.read().await;
+        let (header_name, header_value) = auth.auth_header();
+        
+        let mut req_builder = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header(header_name, header_value)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json");
+        
+        // Add beta header for session key auth (some features require it)
+        if matches!(&*auth, AnthropicAuth::SessionKey { .. }) {
+            req_builder = req_builder.header("anthropic-beta", "max-tokens-3-5-sonnet-2024-07-15");
+        }
+        
+        drop(auth); // Release lock before await
+
+        let response = req_builder
+            .json(&request_json)
+            .send()
+            .await?;
+
+        let status = response.status();
+        
+        if !status.is_success() {
+            let body = response.text().await?;
+            // Try to parse error response
+            if let Ok(error) = serde_json::from_str::<AnthropicError>(&body) {
+                return Err(LlmError::ApiError {
+                    message: format!("{}: {}", error.error.error_type, error.error.message),
+                });
+            }
+            return Err(LlmError::ApiError {
+                message: format!("HTTP {}: {}", status, body),
+            });
+        }
+
+        // For now, return a simple implementation that creates a single chunk with the full response
+        // This is a temporary solution until we properly implement SSE streaming
+        let stream = async_stream::stream! {
+            // Read the entire response for now
+            let body = match response.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    yield Err(LlmError::Request(e));
+                    return;
+                }
+            };
+            
+            // For non-streaming response, create a single chunk
+            let chunk = StreamingChunk {
+                id: format!("stream-{}", uuid::Uuid::new_v4()),
+                object: "chat.completion.chunk".to_string(),
+                created: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                model: model.clone(),
+                choices: vec![StreamingChoice {
+                    index: 0,
+                    delta: StreamingDelta {
+                        role: Some(MessageRole::Assistant),
+                        content: Some(body),
+                        tool_calls: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                }],
+            };
+            
+            yield Ok(chunk);
+        };
+        
+        Ok(Box::pin(stream))
     }
 
     async fn generate_embedding(&self, _text: &str) -> Result<Vec<f32>> {

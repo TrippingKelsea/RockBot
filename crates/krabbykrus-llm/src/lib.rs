@@ -51,6 +51,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
+use futures_util::Stream;
+use std::pin::Pin;
 
 pub mod anthropic;
 pub mod openai;
@@ -198,11 +200,34 @@ pub struct Usage {
     pub total_tokens: u64,
 }
 
-/// Streaming completion response
-pub struct CompletionStream {
-    // Placeholder for streaming implementation
-    _inner: (),
+/// Streaming completion chunk
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingChunk {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub choices: Vec<StreamingChoice>,
 }
+
+/// Streaming choice
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingChoice {
+    pub index: u32,
+    pub delta: StreamingDelta,
+    pub finish_reason: Option<String>,
+}
+
+/// Streaming delta (incremental content)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingDelta {
+    pub role: Option<MessageRole>,
+    pub content: Option<String>,
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+/// Streaming completion response
+pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamingChunk>> + Send>>;
 
 /// Model information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,9 +386,47 @@ impl LlmProvider for MockLlmProvider {
         })
     }
     
-    async fn stream_completion(&self, _request: ChatCompletionRequest) -> Result<CompletionStream> {
+    async fn stream_completion(&self, request: ChatCompletionRequest) -> Result<CompletionStream> {
         // Mock streaming implementation
-        Ok(CompletionStream { _inner: () })
+        let response_content = format!(
+            "Mock streamed response to: {}",
+            request.messages.last()
+                .map(|m| m.content.chars().take(50).collect::<String>())
+                .unwrap_or_default()
+        );
+        
+        let stream = async_stream::stream! {
+            // Simulate streaming by yielding chunks
+            let words: Vec<&str> = response_content.split_whitespace().collect();
+            
+            for (i, word) in words.iter().enumerate() {
+                let chunk = StreamingChunk {
+                    id: format!("mock-stream-{}", uuid::Uuid::new_v4()),
+                    object: "chat.completion.chunk".to_string(),
+                    created: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    model: request.model.clone(),
+                    choices: vec![StreamingChoice {
+                        index: 0,
+                        delta: StreamingDelta {
+                            role: if i == 0 { Some(MessageRole::Assistant) } else { None },
+                            content: Some(format!("{} ", word)),
+                            tool_calls: None,
+                        },
+                        finish_reason: if i == words.len() - 1 { Some("stop".to_string()) } else { None },
+                    }],
+                };
+                
+                yield Ok(chunk);
+                
+                // Small delay to simulate real streaming
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        };
+        
+        Ok(Box::pin(stream))
     }
     
     async fn generate_embedding(&self, _text: &str) -> Result<Vec<f32>> {

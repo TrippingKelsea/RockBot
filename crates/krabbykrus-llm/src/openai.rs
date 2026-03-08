@@ -3,7 +3,7 @@
 use crate::{
     ChatCompletionRequest, ChatCompletionResponse, Choice, CompletionStream, LlmError,
     LlmProvider, Message, MessageRole, ModelInfo, ProviderCapabilities, Result, ToolCall,
-    FunctionCall, Usage,
+    FunctionCall, Usage, StreamingChunk, StreamingChoice, StreamingDelta,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -311,11 +311,100 @@ impl LlmProvider for OpenAiProvider {
         })
     }
 
-    async fn stream_completion(&self, _request: ChatCompletionRequest) -> Result<CompletionStream> {
-        // TODO: Implement streaming with SSE
-        Err(LlmError::ApiError {
-            message: "Streaming not yet implemented".to_string(),
-        })
+    async fn stream_completion(&self, request: ChatCompletionRequest) -> Result<CompletionStream> {
+        let model = self.normalize_model(&request.model);
+
+        let messages: Vec<OpenAiMessage> = request
+            .messages
+            .iter()
+            .map(|m| self.convert_message(m))
+            .collect();
+
+        let tools: Option<Vec<OpenAiTool>> = request.tools.map(|t| {
+            t.into_iter()
+                .map(|tool| OpenAiTool {
+                    tool_type: "function".to_string(),
+                    function: OpenAiFunctionDef {
+                        name: tool.name,
+                        description: tool.description,
+                        parameters: tool.parameters,
+                    },
+                })
+                .collect()
+        });
+
+        let api_request = OpenAiRequest {
+            model: model.clone(),
+            messages,
+            tools,
+            temperature: request.temperature,
+            max_tokens: request.max_tokens,
+            stream: Some(true),
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&api_request)
+            .send()
+            .await?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await?;
+            if let Ok(error) = serde_json::from_str::<OpenAiError>(&body) {
+                return Err(LlmError::ApiError {
+                    message: format!(
+                        "{}: {}",
+                        error.error.error_type.unwrap_or_else(|| "error".to_string()),
+                        error.error.message
+                    ),
+                });
+            }
+            return Err(LlmError::ApiError {
+                message: format!("HTTP {}: {}", status, body),
+            });
+        }
+
+        // For now, return a simple implementation that creates a single chunk with the full response
+        // This is a temporary solution until we properly implement SSE streaming
+        let stream = async_stream::stream! {
+            // Read the entire response for now
+            let body = match response.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    yield Err(LlmError::Request(e));
+                    return;
+                }
+            };
+            
+            // For non-streaming response, create a single chunk
+            let chunk = StreamingChunk {
+                id: format!("stream-{}", uuid::Uuid::new_v4()),
+                object: "chat.completion.chunk".to_string(),
+                created: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                model: model.clone(),
+                choices: vec![StreamingChoice {
+                    index: 0,
+                    delta: StreamingDelta {
+                        role: Some(MessageRole::Assistant),
+                        content: Some(body),
+                        tool_calls: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                }],
+            };
+            
+            yield Ok(chunk);
+        };
+
+        Ok(Box::pin(stream))
     }
 
     async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {

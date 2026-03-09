@@ -22,7 +22,10 @@ pub mod session;
 pub mod message;
 pub mod web_ui;
 
-pub use config::{Config, GatewayConfig, AgentConfig};
+pub use config::{
+    Config, GatewayConfig, AgentConfig, ProvidersConfig, 
+    AnthropicProviderConfig, OpenAiProviderConfig, BedrockProviderConfig, OllamaProviderConfig
+};
 pub use credential_bridge::VaultCredentialAccessor;
 pub use error::{KrabbykrusError, Result};
 pub use gateway::Gateway;

@@ -19,3 +19,4 @@ uuid = { workspace = true }
 dirs = "5"
 bytes = "1.0"
 async-stream = "0.3"
+claude-agent-sdk = { workspace = true }

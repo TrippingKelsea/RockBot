@@ -15,14 +15,19 @@ use tokio::sync::mpsc;
 use super::components::{
     render_add_credential_modal, render_confirm_modal, render_dashboard,
     render_agents, render_credentials, render_edit_credential_modal, render_edit_provider_modal,
-    render_models, render_password_modal, render_sessions, render_settings, render_sidebar, 
+    render_models, render_password_modal, render_sessions, render_settings, render_sidebar,
     render_status_bar, render_view_session_modal,
 };
 use super::effects::EffectState;
 use super::state::{
-    AddCredentialState, AppState, ChatMessage, ConfirmAction, EditCredentialState, EndpointInfo, 
+    AddCredentialState, AppState, ChatMessage, ConfirmAction, EditCredentialState, EndpointInfo,
     InputMode, MenuItem, Message, PasswordAction, UnlockMethod,
 };
+
+/// Check if Claude Code OAuth credentials are available
+pub fn has_claude_credentials() -> bool {
+    krabbykrus_llm::AnthropicProvider::has_credentials()
+}
 
 /// Content tabs for views that have sub-tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -38,7 +43,7 @@ impl CredentialsTab {
     pub fn all() -> Vec<Self> {
         vec![Self::Endpoints, Self::Providers, Self::Permissions, Self::Audit]
     }
-    
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Endpoints => "Endpoints",
@@ -47,7 +52,7 @@ impl CredentialsTab {
             Self::Audit => "Audit Log",
         }
     }
-    
+
     pub fn index(&self) -> usize {
         match self {
             Self::Endpoints => 0,
@@ -56,7 +61,7 @@ impl CredentialsTab {
             Self::Audit => 3,
         }
     }
-    
+
     pub fn from_index(idx: usize) -> Self {
         match idx % 4 {
             0 => Self::Endpoints,
@@ -82,7 +87,7 @@ pub struct App {
 impl App {
     pub fn new(config_path: PathBuf, vault_path: PathBuf) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        
+
         Self {
             state: AppState::new(config_path, vault_path, tx),
             rx,
@@ -91,12 +96,12 @@ impl App {
             vault: None,
         }
     }
-    
+
     /// Get current credentials tab as enum
     fn credentials_tab(&self) -> CredentialsTab {
         CredentialsTab::from_index(self.state.credentials_tab)
     }
-    
+
     /// Navigate to previous content tab (Shift+[)
     fn prev_content_tab(&mut self) {
         match self.state.menu_item {
@@ -109,7 +114,7 @@ impl App {
             _ => {}
         }
     }
-    
+
     /// Navigate to next content tab (Shift+])
     fn next_content_tab(&mut self) {
         match self.state.menu_item {
@@ -191,16 +196,16 @@ impl App {
                 }
             }
         }
-        
+
         self.state.update(msg);
     }
-    
+
     /// Auto-unlock a keyfile-protected vault (no user interaction needed)
     fn auto_unlock_keyfile_vault(&mut self, path_hint: Option<String>) {
         let keyfile_path = path_hint.or_else(|| {
             dirs::config_dir().map(|d| d.join("krabbykrus").join("vault.key").to_string_lossy().to_string())
         });
-        
+
         if let Some(kf_path) = keyfile_path {
             let kf_pathbuf = std::path::PathBuf::from(&kf_path);
             if kf_pathbuf.exists() {
@@ -220,7 +225,7 @@ impl App {
                                         expiration: None,
                                     })
                                     .collect();
-                                
+
                                 self.vault = Some(storage);
                                 self.state.vault.locked = false;
                                 self.state.vault.endpoint_count = endpoints.len();
@@ -292,7 +297,7 @@ impl App {
                 self.state.sidebar_focus = !self.state.sidebar_focus;
                 self.effect_state.set_active(!self.state.sidebar_focus);
             }
-            
+
             // Sidebar navigation (only when sidebar focused)
             KeyCode::Up | KeyCode::Char('k') if self.state.sidebar_focus => {
                 self.state.menu_prev();
@@ -305,13 +310,13 @@ impl App {
                 self.state.sidebar_focus = false;
                 self.effect_state.set_active(true);
             }
-            
+
             // Content navigation (only when content focused)
             KeyCode::Esc if !self.state.sidebar_focus => {
                 // On Credentials Providers tab, Esc first goes back to category list
-                if self.state.menu_item == MenuItem::Credentials 
-                   && self.state.credentials_tab == 1 
-                   && self.state.provider_list_focus 
+                if self.state.menu_item == MenuItem::Credentials
+                   && self.state.credentials_tab == 1
+                   && self.state.provider_list_focus
                 {
                     self.state.provider_list_focus = false;
                 } else {
@@ -342,16 +347,16 @@ impl App {
             }
             // Enter to select/enter provider list
             KeyCode::Enter if !self.state.sidebar_focus => {
-                if self.state.menu_item == MenuItem::Credentials 
-                   && self.state.credentials_tab == 1 
-                   && !self.state.provider_list_focus 
+                if self.state.menu_item == MenuItem::Credentials
+                   && self.state.credentials_tab == 1
+                   && !self.state.provider_list_focus
                    && self.state.provider_count_for_category() > 0
                 {
                     self.state.provider_list_focus = true;
                     self.state.selected_provider_index = 0;
                 }
             }
-            
+
             // Tab navigation within views (Shift+[ and Shift+])
             KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.prev_content_tab();
@@ -366,7 +371,7 @@ impl App {
             KeyCode::Char('}') => {
                 self.next_content_tab();
             }
-            
+
             // Quick nav by number
             KeyCode::Char('1') => self.state.menu_item = MenuItem::Dashboard,
             KeyCode::Char('2') => self.state.menu_item = MenuItem::Credentials,
@@ -374,7 +379,7 @@ impl App {
             KeyCode::Char('4') => self.state.menu_item = MenuItem::Sessions,
             KeyCode::Char('5') => self.state.menu_item = MenuItem::Models,
             KeyCode::Char('6') => self.state.menu_item = MenuItem::Settings,
-            
+
             // Page-specific actions
             KeyCode::Char('a') if !self.state.sidebar_focus => {
                 self.handle_add_action();
@@ -415,12 +420,12 @@ impl App {
             KeyCode::Char('S') if !self.state.sidebar_focus => {
                 self.handle_stop_action();
             }
-            
+
             // Shift+Tab for backwards tab navigation
             KeyCode::BackTab => {
                 self.prev_content_tab();
             }
-            
+
             _ => {}
         }
         Ok(())
@@ -526,14 +531,14 @@ impl App {
         // Debug: log unlock attempt
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
             use std::io::Write;
-            let _ = writeln!(f, "handle_unlock_action: initialized={}, locked={}, method={:?}", 
+            let _ = writeln!(f, "handle_unlock_action: initialized={}, locked={}, method={:?}",
                 self.state.vault.initialized, self.state.vault.locked, self.state.vault.unlock_method);
         }
-        
+
         if !self.state.vault.initialized || !self.state.vault.locked {
             return;
         }
-        
+
         match &self.state.vault.unlock_method {
             UnlockMethod::Password => {
                 self.state.input_mode = InputMode::PasswordInput {
@@ -549,12 +554,12 @@ impl App {
                     use std::io::Write;
                     let _ = writeln!(f, "Keyfile unlock: path={:?}", path);
                 }
-                
+
                 // Auto-unlock with keyfile - no password needed
                 let keyfile_path = path.clone().or_else(|| {
                     dirs::config_dir().map(|d| d.join("krabbykrus").join("vault.key").to_string_lossy().to_string())
                 });
-                
+
                 if let Some(kf_path) = keyfile_path {
                     let kf_pathbuf = std::path::PathBuf::from(&kf_path);
                     if kf_pathbuf.exists() {
@@ -575,7 +580,7 @@ impl App {
                                                 expiration: None,
                                             })
                                             .collect();
-                                        
+
                                         self.vault = Some(storage);
                                         self.state.vault.locked = false;
                                         self.state.vault.endpoint_count = endpoints.len();
@@ -637,21 +642,15 @@ impl App {
     }
 
     fn handle_chat_action(&mut self) {
-        // Can chat from Sessions page or anywhere with vault unlocked
+        // Can chat from Sessions page or anywhere with Claude Code authenticated
         match self.state.menu_item {
             MenuItem::Sessions | MenuItem::Dashboard => {
-                // Check if we have Anthropic API key
-                if self.get_anthropic_api_key().is_some() {
+                if has_claude_credentials() {
                     self.state.input_mode = InputMode::ChatInput;
                     self.state.input_buffer.clear();
-                } else if self.state.vault.locked {
-                    self.state.status_message = Some((
-                        "Unlock vault first to access API keys (press 'u')".to_string(),
-                        true
-                    ));
                 } else {
                     self.state.status_message = Some((
-                        "No Anthropic API key found. Add one in Credentials → Providers".to_string(),
+                        "Run 'claude' in terminal to authenticate with Claude Code".to_string(),
                         true
                     ));
                 }
@@ -659,7 +658,7 @@ impl App {
             _ => {
                 // Navigate to Sessions and start chat
                 self.state.menu_item = MenuItem::Sessions;
-                if self.get_anthropic_api_key().is_some() {
+                if has_claude_credentials() {
                     self.state.input_mode = InputMode::ChatInput;
                     self.state.input_buffer.clear();
                 }
@@ -669,7 +668,7 @@ impl App {
 
     fn handle_edit_action(&mut self) {
         use super::state::EditCredentialState;
-        
+
         match self.state.menu_item {
             MenuItem::Credentials if self.state.vault.initialized && !self.state.vault.locked => {
                 // Edit selected endpoint
@@ -681,7 +680,7 @@ impl App {
                         "GenericOAuth2" => 2,
                         _ => 3, // Default to API Key Service
                     };
-                    
+
                     let mut edit_state = EditCredentialState::from_endpoint(
                         &endpoint.id,
                         &endpoint.name,
@@ -689,7 +688,7 @@ impl App {
                         &endpoint.base_url,
                         if endpoint.has_credential { Some(&endpoint.id) } else { None },
                     );
-                    
+
                     // Try to pre-fill secret if vault is unlocked
                     if let Some(ref vault) = self.vault {
                         if let Ok(uuid) = uuid::Uuid::parse_str(&endpoint.id) {
@@ -707,7 +706,7 @@ impl App {
                             }
                         }
                     }
-                    
+
                     self.state.input_mode = InputMode::EditCredential(edit_state);
                 } else {
                     self.state.status_message = Some(("No endpoint selected".to_string(), true));
@@ -754,8 +753,8 @@ impl App {
         match self.state.menu_item {
             MenuItem::Sessions => {
                 if let Some(session) = self.state.sessions.get(self.state.selected_session) {
-                    self.state.input_mode = InputMode::ViewSession { 
-                        session_key: session.key.clone() 
+                    self.state.input_mode = InputMode::ViewSession {
+                        session_key: session.key.clone()
                     };
                     // Spawn async task to load session details
                     self.spawn_session_details(&session.key);
@@ -835,18 +834,36 @@ impl App {
 
     fn spawn_model_test(&self, provider_index: usize) {
         let tx = self.state.tx.clone();
-        let api_key = match provider_index {
-            0 => self.get_anthropic_api_key(), // Anthropic
+
+        // Get API key for the provider (Anthropic uses OAuth, not API key)
+        let api_key: Option<String> = match provider_index {
+            0 => None, // Anthropic uses Claude Code OAuth - test differently
             1 => self.get_provider_api_key("openai"),
             2 => self.get_provider_api_key("google"),
             // Bedrock uses AWS credentials, Ollama is local
             _ => None,
         };
-        
+
+        // For Anthropic, check if Claude Code credentials exist
+        let has_anthropic_oauth = provider_index == 0 && has_claude_credentials();
+
         let provider_name = ["Anthropic", "OpenAI", "Google AI", "AWS Bedrock", "Ollama"][provider_index];
-        
+
         tokio::spawn(async move {
-            if provider_index == 4 {
+            if provider_index == 0 {
+                // Anthropic - check Claude Code OAuth credentials
+                if has_anthropic_oauth {
+                    let _ = tx.send(Message::SetStatus(
+                        "✅ Claude Code OAuth credentials found".to_string(),
+                        false
+                    ));
+                } else {
+                    let _ = tx.send(Message::SetStatus(
+                        "❌ Run 'claude' in terminal to authenticate".to_string(),
+                        true
+                    ));
+                }
+            } else if provider_index == 4 {
                 // Ollama - test local connection
                 match test_ollama_connection().await {
                     Ok(models) => {
@@ -883,11 +900,11 @@ impl App {
     /// Get API key for a specific provider from vault
     fn get_provider_api_key(&self, provider_name: &str) -> Option<String> {
         let vault = self.vault.as_ref()?;
-        
+
         for endpoint in vault.list_endpoints() {
             let matches = endpoint.name.to_lowercase().contains(provider_name)
                 || endpoint.base_url.to_lowercase().contains(provider_name);
-            
+
             if matches && endpoint.credential_id != uuid::Uuid::nil() {
                 if let Ok(secret_bytes) = vault.decrypt_credential_for_endpoint(endpoint.id) {
                     if let Ok(api_key) = String::from_utf8(secret_bytes) {
@@ -920,12 +937,12 @@ impl App {
                 let password = self.state.input_buffer.clone();
                 self.state.input_buffer.clear();
                 self.state.input_mode = InputMode::Normal;
-                
+
                 if password.is_empty() {
                     self.state.status_message = Some(("Password cannot be empty".to_string(), true));
                     return Ok(());
                 }
-                
+
                 match action {
                     PasswordAction::InitVault => {
                         if password.len() < 8 {
@@ -967,7 +984,7 @@ impl App {
                                                 expiration: None,
                                             })
                                             .collect();
-                                        
+
                                         self.vault = Some(storage);
                                         self.state.vault.locked = false;
                                         self.state.vault.endpoint_count = endpoints.len();
@@ -1004,7 +1021,7 @@ impl App {
 
     fn handle_add_credential(&mut self, key: KeyEvent, mut state: AddCredentialState) -> Result<()> {
         use super::components::modals::ENDPOINT_TYPES;
-        
+
         match key.code {
             KeyCode::Esc => {
                 self.state.input_mode = InputMode::Normal;
@@ -1059,10 +1076,10 @@ impl App {
             }
             KeyCode::Left if state.is_type_field() => {
                 let old_type = state.endpoint_type;
-                state.endpoint_type = if state.endpoint_type == 0 { 
-                    ENDPOINT_TYPES.len() - 1 
-                } else { 
-                    state.endpoint_type - 1 
+                state.endpoint_type = if state.endpoint_type == 0 {
+                    ENDPOINT_TYPES.len() - 1
+                } else {
+                    state.endpoint_type - 1
                 };
                 if old_type != state.endpoint_type {
                     state.reset_fields_for_type();
@@ -1221,23 +1238,26 @@ impl App {
     /// Save provider configuration to config file
     fn save_provider_config(&mut self, state: &super::state::EditProviderState) {
         use super::state::ProviderAuthType;
-        
+
+        // Save auth mode preference to config file
+        self.save_provider_auth_mode(state);
+
         // For session key auth, just verify Claude Code credentials exist
         if state.auth_type == ProviderAuthType::SessionKey {
-            if self.get_claude_code_session_token().is_some() {
+            if has_claude_credentials() {
                 self.state.status_message = Some((
-                    format!("✅ {} configured with Session Key auth", state.provider_name),
+                    format!("✅ {} configured with Claude Code OAuth", state.provider_name),
                     false
                 ));
             } else {
                 self.state.status_message = Some((
-                    "❌ Claude Code credentials not found. Run 'claude' to authenticate.".to_string(),
+                    "❌ Run 'claude' in terminal to authenticate with Claude Code".to_string(),
                     true
                 ));
             }
             return;
         }
-        
+
         // For API key auth, store in vault
         if state.auth_type == ProviderAuthType::ApiKey && !state.api_key.is_empty() {
             if let Some(ref mut vault) = self.vault {
@@ -1249,12 +1269,12 @@ impl App {
                 } else {
                     state.base_url.clone()
                 };
-                
+
                 // Check if endpoint already exists
                 let existing = vault.list_endpoints()
                     .into_iter()
                     .find(|e| e.name.to_lowercase() == state.provider_name.to_lowercase());
-                
+
                 match existing {
                     Some(endpoint) => {
                         // Update existing endpoint's credential
@@ -1305,7 +1325,7 @@ impl App {
                                             })
                                             .collect();
                                         self.state.vault.endpoint_count = self.state.endpoints.len();
-                                        
+
                                         self.state.status_message = Some((
                                             format!("✅ {} configured with API key", state.provider_name),
                                             false
@@ -1340,7 +1360,7 @@ impl App {
             }
             return;
         }
-        
+
         // For other auth types
         match state.auth_type {
             ProviderAuthType::None => {
@@ -1455,13 +1475,13 @@ impl App {
                     // Add user message to chat history
                     self.state.chat_messages.push(ChatMessage::user(message.clone()));
                     self.state.chat_loading = true;
-                    
-                    // Try to get Anthropic API key from vault and send message
-                    if let Some(api_key) = self.get_anthropic_api_key() {
-                        self.spawn_chat_request(api_key, message);
+
+                    // Check for Claude Code OAuth credentials
+                    if has_claude_credentials() {
+                        self.spawn_chat_request(message);
                     } else {
                         self.state.chat_messages.push(ChatMessage::system(
-                            "No Anthropic API key found. Add one in Credentials → Providers → Anthropic".to_string()
+                            "Claude Code not authenticated. Run 'claude' in terminal to set up OAuth.".to_string()
                         ));
                         self.state.chat_loading = false;
                     }
@@ -1478,78 +1498,88 @@ impl App {
         }
         Ok(())
     }
-    
-    /// Get Anthropic API key from vault if available
-    fn get_anthropic_api_key(&self) -> Option<String> {
-        // Priority 1: Claude Code session key
-        if let Some(access_token) = self.get_claude_code_session_token() {
-            return Some(access_token);
+
+    /// Save provider auth mode preference to config file
+    fn save_provider_auth_mode(&mut self, state: &super::state::EditProviderState) {
+        use super::state::ProviderAuthType;
+
+        // Determine the auth mode string
+        let auth_mode = match state.auth_type {
+            ProviderAuthType::ApiKey => "api",
+            ProviderAuthType::SessionKey => "oauth",
+            ProviderAuthType::None => "none",
+            ProviderAuthType::AwsCredentials => "aws",
+        };
+
+        // Determine provider section name
+        let provider_section = match state.provider_index {
+            0 => "anthropic",
+            1 => "openai",
+            2 => "ollama",
+            3 => "bedrock",
+            4 => "google",
+            _ => return, // Unknown provider, skip
+        };
+
+        // Read existing config
+        let config_path = &self.state.config_path;
+        let content = match std::fs::read_to_string(config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to read config for provider auth mode update: {}", e);
+                return;
+            }
+        };
+
+        // Parse as TOML value for manipulation
+        let mut doc: toml_edit::DocumentMut = match content.parse() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("Failed to parse config as TOML: {}", e);
+                return;
+            }
+        };
+
+        // Ensure [providers] section exists
+        if !doc.contains_key("providers") {
+            doc["providers"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        
-        // Priority 2: Environment variable
-        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
-            return Some(api_key);
+
+        // Ensure [providers.<provider>] section exists
+        if !doc["providers"].as_table().map(|t| t.contains_key(provider_section)).unwrap_or(false) {
+            doc["providers"][provider_section] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        
-        // Priority 3: Vault
-        if let Some(vault) = self.vault.as_ref() {
-            for endpoint in vault.list_endpoints() {
-                let is_anthropic = endpoint.name.to_lowercase().contains("anthropic")
-                    || endpoint.base_url.to_lowercase().contains("anthropic");
-                
-                if is_anthropic && endpoint.credential_id != uuid::Uuid::nil() {
-                    if let Ok(secret_bytes) = vault.decrypt_credential_for_endpoint(endpoint.id) {
-                        if let Ok(api_key) = String::from_utf8(secret_bytes) {
-                            return Some(api_key);
-                        }
-                    }
-                }
+
+        // Set the auth_mode
+        doc["providers"][provider_section]["auth_mode"] = toml_edit::value(auth_mode);
+
+        // Also save base_url if provided and not default
+        if !state.base_url.is_empty() {
+            let default_url = match state.provider_index {
+                0 => "https://api.anthropic.com",
+                1 => "https://api.openai.com",
+                2 => "http://localhost:11434",
+                _ => "",
+            };
+            if state.base_url != default_url {
+                doc["providers"][provider_section]["api_url"] = toml_edit::value(&state.base_url);
             }
         }
-        
-        None
+
+        // Write back to file
+        if let Err(e) = std::fs::write(config_path, doc.to_string()) {
+            tracing::warn!("Failed to save provider config: {}", e);
+            self.state.status_message = Some((
+                format!("⚠️ Auth mode set but failed to save config: {}", e),
+                true
+            ));
+        } else {
+            tracing::info!("Saved {} auth mode: {}", provider_section, auth_mode);
+        }
     }
-    
-    /// Get Claude Code session token from ~/.claude/.credentials.json
-    fn get_claude_code_session_token(&self) -> Option<String> {
-        let home = dirs::home_dir()?;
-        let credentials_path = home.join(".claude").join(".credentials.json");
-        
-        let content = std::fs::read_to_string(&credentials_path).ok()?;
-        
-        #[derive(serde::Deserialize)]
-        struct ClaudeCredentials {
-            #[serde(rename = "claudeAiOauth")]
-            claude_ai_oauth: Option<OAuthCredentials>,
-        }
-        
-        #[derive(serde::Deserialize)]
-        struct OAuthCredentials {
-            #[serde(rename = "accessToken")]
-            access_token: String,
-            #[serde(rename = "expiresAt")]
-            expires_at: u64,
-        }
-        
-        let creds: ClaudeCredentials = serde_json::from_str(&content).ok()?;
-        let oauth = creds.claude_ai_oauth?;
-        
-        // Check if token is expired (with 5 minute buffer)
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_millis() as u64;
-        
-        if oauth.expires_at < now + 300_000 {
-            // Token expired or expiring soon
-            return None;
-        }
-        
-        Some(oauth.access_token)
-    }
-    
-    /// Spawn an async task to send a chat message
-    fn spawn_chat_request(&self, api_key: String, user_message: String) {
+
+    /// Spawn an async task to send a chat message via Claude Code SDK
+    fn spawn_chat_request(&self, user_message: String) {
         let tx = self.state.tx.clone();
         let chat_history: Vec<(bool, String)> = self.state.chat_messages
             .iter()
@@ -1559,9 +1589,9 @@ impl App {
                 super::state::ChatRole::System => None,
             })
             .collect();
-        
+
         tokio::spawn(async move {
-            match send_chat_message(&api_key, &chat_history, &user_message).await {
+            match send_chat_message(&chat_history, &user_message).await {
                 Ok(response) => {
                     let _ = tx.send(Message::ChatResponse(response));
                 }
@@ -1683,7 +1713,7 @@ fn add_credential_to_vault(
     state: &AddCredentialState,
 ) -> Result<String> {
     use krabbykrus_credentials::{EndpointType, CredentialType};
-    
+
     // Map TUI endpoint type to core types
     let (endpoint_type, credential_type, secret_data) = match state.endpoint_type {
         0 => {
@@ -1710,7 +1740,7 @@ fn add_credential_to_vault(
             let client_secret = state.get_field_value("client_secret").unwrap_or("");
             let token_url = state.get_field_value("token_url").unwrap_or("").to_string();
             let scopes = state.get_field_value("scopes").unwrap_or("").to_string();
-            
+
             (
                 EndpointType::GenericOAuth2,
                 CredentialType::OAuth2 {
@@ -1727,7 +1757,7 @@ fn add_credential_to_vault(
             let header_name = state.get_field_value("header_name")
                 .unwrap_or("X-API-Key")
                 .to_string();
-            
+
             (
                 EndpointType::GenericRest,
                 CredentialType::ApiKey { header_name },
@@ -1738,7 +1768,7 @@ fn add_credential_to_vault(
             // Basic Auth
             let username = state.get_field_value("username").unwrap_or("").to_string();
             let password = state.get_field_value("password").unwrap_or("");
-            
+
             (
                 EndpointType::GenericRest,
                 CredentialType::BasicAuth { username },
@@ -1749,26 +1779,26 @@ fn add_credential_to_vault(
             return Err(anyhow::anyhow!("Unknown endpoint type"));
         }
     };
-    
+
     // Get URL from first field (all types have URL as first dynamic field)
     let base_url = state.get_field_value("url")
         .unwrap_or("")
         .to_string();
-    
+
     // Create endpoint
     let endpoint = vault.create_endpoint(
         state.name.clone(),
         endpoint_type,
         base_url,
     )?;
-    
+
     // Store credential
     vault.store_credential(
         endpoint.id,
         credential_type,
         &secret_data,
     )?;
-    
+
     Ok(state.name.clone())
 }
 
@@ -1778,21 +1808,21 @@ fn update_credential_in_vault(
     state: &EditCredentialState,
 ) -> Result<String> {
     use krabbykrus_credentials::{EndpointType, CredentialType};
-    
+
     let endpoint_id = uuid::Uuid::parse_str(&state.endpoint_id)?;
-    
+
     // Get the existing endpoint
     let mut endpoint = vault.get_endpoint(endpoint_id)?.clone();
-    
+
     // Update endpoint metadata
     endpoint.name = state.name.clone();
     endpoint.base_url = state.get_field_value("url")
         .unwrap_or(&state.base_url)
         .to_string();
     endpoint.updated_at = chrono::Utc::now();
-    
+
     vault.update_endpoint(endpoint.clone())?;
-    
+
     // If secret was modified, rotate the credential
     if state.secret_modified && endpoint.credential_id != uuid::Uuid::nil() {
         let secret_data = match state.endpoint_type {
@@ -1814,12 +1844,12 @@ fn update_credential_in_vault(
             }
             _ => vec![],
         };
-        
+
         if !secret_data.is_empty() {
             vault.rotate_credential(endpoint.credential_id, &secret_data)?;
         }
     }
-    
+
     Ok(state.name.clone())
 }
 
@@ -1846,7 +1876,7 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
 
     // Tick interval for animations and periodic updates
     let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
-    
+
     // Periodic refresh interval
     let mut refresh_interval = tokio::time::interval(Duration::from_secs(15));
 
@@ -1870,19 +1900,19 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
                     }
                 }
             }
-            
+
             // Messages from background tasks
             msg = app.rx.recv() => {
                 if let Some(msg) = msg {
                     app.handle_message(msg);
                 }
             }
-            
+
             // Tick for animations
             _ = tick_interval.tick() => {
                 app.state.tick_count = app.state.tick_count.wrapping_add(1);
             }
-            
+
             // Periodic refresh
             _ = refresh_interval.tick() => {
                 if !app.state.gateway_loading {
@@ -1912,14 +1942,14 @@ use super::state::{AgentInfo, AgentStatus, GatewayStatus, VaultStatus};
 
 async fn check_gateway_status() -> Result<GatewayStatus> {
     use tokio::time::timeout;
-    
+
     // Try to fetch actual status from the gateway API
     let client = reqwest::Client::new();
     let status_result = timeout(
         Duration::from_millis(500),
         client.get("http://127.0.0.1:18080/api/status").send()
     ).await;
-    
+
     match status_result {
         Ok(Ok(response)) if response.status().is_success() => {
             // Parse the JSON response
@@ -1957,12 +1987,12 @@ async fn check_gateway_status() -> Result<GatewayStatus> {
 async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
     // Read config file and parse agents
     let content = tokio::fs::read_to_string(config_path).await?;
-    
+
     let mut agents = Vec::new();
     let mut in_agent = false;
     let mut current_id = String::new();
     let mut current_model = None;
-    
+
     for line in content.lines() {
         let line = line.trim();
         if line == "[[agents.list]]" {
@@ -1988,7 +2018,7 @@ async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
             }
         }
     }
-    
+
     // Don't forget the last agent
     if !current_id.is_empty() {
         agents.push(AgentInfo {
@@ -1998,7 +2028,7 @@ async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
             session_count: 0,
         });
     }
-    
+
     // If no agents found, add a default
     if agents.is_empty() {
         agents.push(AgentInfo {
@@ -2008,26 +2038,26 @@ async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
             session_count: 0,
         });
     }
-    
+
     Ok(agents)
 }
 
 async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     use krabbykrus_credentials::CredentialVault;
-    
+
     // Debug logging
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
         use std::io::Write;
         let _ = writeln!(f, "check_vault_status: path={:?}", vault_path);
     }
-    
+
     let exists = CredentialVault::exists(vault_path);
-    
+
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
         use std::io::Write;
         let _ = writeln!(f, "check_vault_status: exists={}", exists);
     }
-    
+
     if !exists {
         return Ok(VaultStatus {
             enabled: true,
@@ -2037,7 +2067,7 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
             unlock_method: UnlockMethod::Unknown,
         });
     }
-    
+
     // Try to read the vault metadata to determine unlock method
     let unlock_method = match CredentialVault::open(vault_path) {
         Ok(vault) => {
@@ -2070,12 +2100,12 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
             UnlockMethod::Unknown
         }
     };
-    
+
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/krabbykrus_debug.log") {
         use std::io::Write;
         let _ = writeln!(f, "check_vault_status: final unlock_method={:?}", unlock_method);
     }
-    
+
     Ok(VaultStatus {
         enabled: true,
         initialized: true,
@@ -2085,16 +2115,17 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     })
 }
 
-/// Send a chat message to the Anthropic API
+/// Send a chat message via Claude Code SDK (OAuth)
 async fn send_chat_message(
-    api_key: &str,
     chat_history: &[(bool, String)], // (is_user, content)
     user_message: &str,
 ) -> Result<String> {
     use krabbykrus_llm::{AnthropicProvider, LlmProvider, ChatCompletionRequest, Message, MessageRole};
-    
-    let provider = AnthropicProvider::with_api_key(api_key.to_string());
-    
+
+    // Create provider using Claude Code OAuth
+    let provider = AnthropicProvider::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create Anthropic provider: {}", e))?;
+
     // Build messages from history
     let mut messages: Vec<Message> = chat_history
         .iter()
@@ -2104,14 +2135,14 @@ async fn send_chat_message(
             tool_calls: None,
         })
         .collect();
-    
+
     // Add the current user message
     messages.push(Message {
         role: MessageRole::User,
         content: user_message.to_string(),
         tool_calls: None,
     });
-    
+
     let request = ChatCompletionRequest {
         model: "claude-sonnet-4-20250514".to_string(),
         messages,
@@ -2120,27 +2151,28 @@ async fn send_chat_message(
         tools: None,
         stream: false,
     };
-    
-    let response = provider.chat_completion(request).await?;
-    
+
+    let response = provider.chat_completion(request).await
+        .map_err(|e| anyhow::anyhow!("Chat completion failed: {}", e))?;
+
     // Extract the assistant's response
     let content = response.choices
         .first()
         .map(|c| c.message.content.clone())
         .unwrap_or_else(|| "No response received".to_string());
-    
+
     Ok(content)
 }
 
 /// Run gateway control command (start/stop/restart)
 async fn run_gateway_control(action: &str) -> Result<String> {
     use tokio::process::Command;
-    
+
     let output = Command::new("openclaw")
         .args(["gateway", action])
         .output()
         .await?;
-    
+
     if output.status.success() {
         let msg = match action {
             "start" => "✅ Gateway started",
@@ -2163,7 +2195,7 @@ async fn test_ollama_connection() -> Result<usize> {
         .timeout(Duration::from_secs(5))
         .send()
         .await?;
-    
+
     if response.status().is_success() {
         let json: serde_json::Value = response.json().await?;
         let model_count = json
@@ -2180,25 +2212,25 @@ async fn test_ollama_connection() -> Result<usize> {
 /// Test API connection for various providers
 async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()> {
     let client = reqwest::Client::new();
-    
+
     match provider_index {
         0 => {
             // Anthropic - test with a minimal request
             // Detect auth type: session key starts with "sk-ant-oat" (OAuth token)
             let is_session_key = api_key.starts_with("sk-ant-oat");
-            
+
             let mut request = client
                 .post("https://api.anthropic.com/v1/messages")
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json");
-            
+
             // Use appropriate auth header
             request = if is_session_key {
                 request.header("Authorization", format!("Bearer {}", api_key))
             } else {
                 request.header("x-api-key", api_key)
             };
-            
+
             let response = request
                 .json(&serde_json::json!({
                     "model": "claude-3-5-haiku-latest",
@@ -2208,7 +2240,7 @@ async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()>
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await?;
-            
+
             if response.status().is_success() || response.status().as_u16() == 400 {
                 // 400 can mean invalid request format but valid API key
                 Ok(())
@@ -2226,7 +2258,7 @@ async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()>
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await?;
-            
+
             if response.status().is_success() {
                 Ok(())
             } else if response.status().as_u16() == 401 {
@@ -2245,7 +2277,7 @@ async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()>
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await?;
-            
+
             if response.status().is_success() {
                 Ok(())
             } else if response.status().as_u16() == 400 || response.status().as_u16() == 403 {
@@ -2266,7 +2298,7 @@ async fn kill_session(session_key: &str) -> Result<()> {
         .timeout(Duration::from_secs(5))
         .send()
         .await?;
-    
+
     if response.status().is_success() || response.status().as_u16() == 404 {
         // 404 means session already gone, which is fine
         Ok(())

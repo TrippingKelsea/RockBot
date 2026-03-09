@@ -88,6 +88,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     // Initialize other components
     let tool_registry = Arc::new(ToolRegistry::new(config.tools.clone().into()).await?);
     let security_manager = Arc::new(SecurityManager::new(config.security.clone().into()).await?);
+    // Create LLM registry (Anthropic uses Claude Code OAuth automatically)
     let llm_registry = Arc::new(LlmProviderRegistry::new().await?);
     
     // Create agent factory for hot reload

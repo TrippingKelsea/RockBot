@@ -2,18 +2,19 @@
 //!
 //! This crate provides a unified interface for multiple LLM providers:
 //!
-//! - **Anthropic** - Claude models with API key or session key auth
+//! - **Anthropic** - Claude models via Claude Code SDK (OAuth only)
 //! - **OpenAI** - GPT-4, o1, and other OpenAI models
 //! - **Mock** - For development and testing
 //!
 //! # Authentication
 //!
-//! ## Anthropic
-//! - **API Key**: Set `ANTHROPIC_API_KEY` environment variable
-//! - **Session Key**: Uses Claude Code credentials from `~/.claude/.credentials.json`
+//! ## Anthropic (OAuth via Claude Code)
+//! - Requires Claude Code CLI: `npm install -g @anthropic-ai/claude-code`
+//! - Run `claude` to authenticate (OAuth flow)
+//! - Credentials stored at `~/.claude/.credentials.json`
 //!
 //! ## OpenAI
-//! - **API Key**: Set `OPENAI_API_KEY` environment variable
+//! - Set `OPENAI_API_KEY` environment variable
 //!
 //! # Example
 //!
@@ -57,7 +58,7 @@ use std::pin::Pin;
 pub mod anthropic;
 pub mod openai;
 
-pub use anthropic::{AnthropicProvider, AnthropicAuth};
+pub use anthropic::AnthropicProvider;
 pub use openai::OpenAiProvider;
 
 /// LLM provider errors
@@ -69,7 +70,7 @@ pub enum LlmError {
     #[error("API error: {message}")]
     ApiError { message: String },
     
-    #[error("Authentication failed")]
+    #[error("Authentication failed - run 'claude' to authenticate")]
     AuthenticationFailed,
     
     #[error("Rate limit exceeded")]
@@ -244,7 +245,7 @@ pub struct ModelInfo {
 /// LLM provider registry
 pub struct LlmProviderRegistry {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    model_mapping: HashMap<String, String>, // model_id -> provider_id
+    model_mapping: HashMap<String, String>,
 }
 
 impl LlmProviderRegistry {
@@ -255,9 +256,7 @@ impl LlmProviderRegistry {
             model_mapping: HashMap::new(),
         };
         
-        // Register built-in providers
         registry.register_builtin_providers().await?;
-        
         Ok(registry)
     }
     
@@ -267,13 +266,14 @@ impl LlmProviderRegistry {
         let mock_provider = Arc::new(MockLlmProvider::new());
         self.register_provider(mock_provider).await;
         
-        // Try to register Anthropic provider
-        // Priority: 1. Claude Code session key, 2. API key
-        if let Ok(anthropic) = AnthropicProvider::auto() {
-            self.register_provider(Arc::new(anthropic)).await;
+        // Register Anthropic provider if Claude Code credentials exist
+        if AnthropicProvider::has_credentials() {
+            if let Ok(anthropic) = AnthropicProvider::new() {
+                self.register_provider(Arc::new(anthropic)).await;
+            }
         }
         
-        // Try to register OpenAI provider if API key is available
+        // Register OpenAI provider if API key is available
         if let Ok(openai) = OpenAiProvider::new() {
             self.register_provider(Arc::new(openai)).await;
         }
@@ -302,16 +302,15 @@ impl LlmProviderRegistry {
         } else if let Some(provider_id) = self.model_mapping.get(model_id) {
             provider_id
         } else {
-            "mock" // Default to mock provider
+            "mock"
         };
         
         self.providers.get(provider_id)
             .cloned()
             .ok_or_else(|| {
-                // Provide helpful error message
                 let hint = match provider_id {
-                    "anthropic" => " (hint: set ANTHROPIC_API_KEY environment variable)",
-                    "openai" => " (hint: set OPENAI_API_KEY environment variable)",
+                    "anthropic" => " (run 'claude' to authenticate)",
+                    "openai" => " (set OPENAI_API_KEY environment variable)",
                     _ => "",
                 };
                 LlmError::ApiError {
@@ -323,6 +322,11 @@ impl LlmProviderRegistry {
     /// List available providers
     pub fn list_providers(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
+    }
+    
+    /// Check if Anthropic (Claude) is available
+    pub fn has_anthropic(&self) -> bool {
+        self.providers.contains_key("anthropic")
     }
 }
 
@@ -353,7 +357,6 @@ impl LlmProvider for MockLlmProvider {
     }
     
     async fn chat_completion(&self, request: ChatCompletionRequest) -> Result<ChatCompletionResponse> {
-        // Generate a mock response
         let response_content = format!(
             "Mock response to: {}",
             request.messages.last()
@@ -379,7 +382,7 @@ impl LlmProvider for MockLlmProvider {
                 finish_reason: "stop".to_string(),
             }],
             usage: Usage {
-                prompt_tokens: 50, // Mock values
+                prompt_tokens: 50,
                 completion_tokens: 25,
                 total_tokens: 75,
             },
@@ -387,7 +390,6 @@ impl LlmProvider for MockLlmProvider {
     }
     
     async fn stream_completion(&self, request: ChatCompletionRequest) -> Result<CompletionStream> {
-        // Mock streaming implementation
         let response_content = format!(
             "Mock streamed response to: {}",
             request.messages.last()
@@ -396,7 +398,6 @@ impl LlmProvider for MockLlmProvider {
         );
         
         let stream = async_stream::stream! {
-            // Simulate streaming by yielding chunks
             let words: Vec<&str> = response_content.split_whitespace().collect();
             
             for (i, word) in words.iter().enumerate() {
@@ -420,8 +421,6 @@ impl LlmProvider for MockLlmProvider {
                 };
                 
                 yield Ok(chunk);
-                
-                // Small delay to simulate real streaming
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
         };
@@ -430,7 +429,6 @@ impl LlmProvider for MockLlmProvider {
     }
     
     async fn generate_embedding(&self, _text: &str) -> Result<Vec<f32>> {
-        // Return mock embedding vector
         Ok(vec![0.1, 0.2, 0.3, 0.4, 0.5])
     }
     

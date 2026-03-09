@@ -118,5 +118,6 @@ fn create_default_config() -> Config {
             capabilities: CapabilityConfig::default(),
         },
         credentials: CredentialsConfig::default(),
+        providers: krabbykrus_core::ProvidersConfig::default(),
     }
 }

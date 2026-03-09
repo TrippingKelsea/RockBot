@@ -25,6 +25,9 @@ pub struct Config {
     /// Credential management settings
     #[serde(default)]
     pub credentials: CredentialsConfig,
+    /// LLM provider settings
+    #[serde(default)]
+    pub providers: ProvidersConfig,
 }
 
 /// Gateway server configuration
@@ -160,6 +163,145 @@ impl Default for CredentialsConfig {
             default_permission: default_default_permission(),
         }
     }
+}
+
+/// LLM provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvidersConfig {
+    /// Anthropic provider settings
+    #[serde(default)]
+    pub anthropic: AnthropicProviderConfig,
+    /// OpenAI provider settings
+    #[serde(default)]
+    pub openai: OpenAiProviderConfig,
+    /// AWS Bedrock provider settings
+    #[serde(default)]
+    pub bedrock: BedrockProviderConfig,
+    /// Ollama provider settings
+    #[serde(default)]
+    pub ollama: OllamaProviderConfig,
+}
+
+impl Default for ProvidersConfig {
+    fn default() -> Self {
+        Self {
+            anthropic: AnthropicProviderConfig::default(),
+            openai: OpenAiProviderConfig::default(),
+            bedrock: BedrockProviderConfig::default(),
+            ollama: OllamaProviderConfig::default(),
+        }
+    }
+}
+
+/// Anthropic provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicProviderConfig {
+    /// Authentication mode: "auto", "api", or "oauth"
+    /// - "auto": Try OAuth first (Claude Code), fall back to API key
+    /// - "api": Use API key only (ANTHROPIC_API_KEY env var or vault)
+    /// - "oauth": Use OAuth only (Claude Code credentials)
+    #[serde(default = "default_anthropic_auth_mode")]
+    pub auth_mode: String,
+    /// API endpoint URL override for API key auth (default: https://api.anthropic.com)
+    #[serde(default)]
+    pub api_url: Option<String>,
+    /// API endpoint URL override for OAuth auth (default: https://api.claude.ai)
+    #[serde(default)]
+    pub oauth_api_url: Option<String>,
+    /// OAuth token refresh URL override  
+    #[serde(default)]
+    pub oauth_token_url: Option<String>,
+    /// Whether this provider is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for AnthropicProviderConfig {
+    fn default() -> Self {
+        Self {
+            auth_mode: default_anthropic_auth_mode(),
+            api_url: None,
+            oauth_api_url: None,
+            oauth_token_url: None,
+            enabled: true,
+        }
+    }
+}
+
+/// OpenAI provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAiProviderConfig {
+    /// API endpoint URL override (for Azure OpenAI, etc.)
+    #[serde(default)]
+    pub api_url: Option<String>,
+    /// Whether this provider is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for OpenAiProviderConfig {
+    fn default() -> Self {
+        Self {
+            api_url: None,
+            enabled: true,
+        }
+    }
+}
+
+/// AWS Bedrock provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BedrockProviderConfig {
+    /// AWS region
+    #[serde(default = "default_aws_region")]
+    pub region: String,
+    /// Whether this provider is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for BedrockProviderConfig {
+    fn default() -> Self {
+        Self {
+            region: default_aws_region(),
+            enabled: true,
+        }
+    }
+}
+
+/// Ollama provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaProviderConfig {
+    /// Ollama server URL
+    #[serde(default = "default_ollama_url")]
+    pub url: String,
+    /// Whether this provider is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for OllamaProviderConfig {
+    fn default() -> Self {
+        Self {
+            url: default_ollama_url(),
+            enabled: true,
+        }
+    }
+}
+
+fn default_anthropic_auth_mode() -> String {
+    "auto".to_string()
+}
+
+fn default_aws_region() -> String {
+    "us-east-1".to_string()
+}
+
+fn default_ollama_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Sandbox configuration

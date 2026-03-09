@@ -35,6 +35,9 @@ use thiserror::Error;
 #[cfg(feature = "discord")]
 pub mod discord;
 
+#[cfg(feature = "telegram")]
+pub mod telegram;
+
 /// Channel errors
 #[derive(Debug, Error)]
 pub enum ChannelError {

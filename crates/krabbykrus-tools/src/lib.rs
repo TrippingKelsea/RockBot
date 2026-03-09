@@ -207,9 +207,9 @@ impl ToolRegistry {
     async fn register_builtin_tools(&self) -> Result<()> {
         let tools_to_register = match self.config.profile.as_str() {
             "minimal" => vec!["read", "write"],
-            "standard" => vec!["read", "write", "edit", "exec"],
-            "full" => vec!["read", "write", "edit", "exec", "browser", "search"],
-            _ => vec!["read", "write", "edit", "exec"],
+            "standard" => vec!["read", "write", "edit", "exec", "glob", "grep", "patch"],
+            "full" => vec!["read", "write", "edit", "exec", "glob", "grep", "patch", "memory_get", "memory_search"],
+            _ => vec!["read", "write", "edit", "exec", "glob", "grep", "patch"],
         };
         
         for tool_name in tools_to_register {
@@ -232,6 +232,11 @@ impl ToolRegistry {
             "write" => Ok(Some(Arc::new(builtin::WriteTool::new()))),
             "edit" => Ok(Some(Arc::new(builtin::EditTool::new()))),
             "exec" => Ok(Some(Arc::new(builtin::ExecTool::new()))),
+            "glob" => Ok(Some(Arc::new(builtin::GlobTool::new()))),
+            "grep" => Ok(Some(Arc::new(builtin::GrepTool::new()))),
+            "patch" => Ok(Some(Arc::new(builtin::PatchTool::new()))),
+            "memory_get" => Ok(Some(Arc::new(builtin::MemoryGetTool::new()))),
+            "memory_search" => Ok(Some(Arc::new(builtin::MemorySearchTool::new()))),
             _ => Ok(None),
         }
     }

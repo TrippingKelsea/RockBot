@@ -16,3 +16,5 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+regex = { workspace = true }
+glob = { workspace = true }

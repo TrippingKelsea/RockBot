@@ -34,6 +34,8 @@ rusqlite = { workspace = true }
 regex = { workspace = true }
 dirs = { workspace = true }
 rand = "0.8"
+which = "6"
+cron = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

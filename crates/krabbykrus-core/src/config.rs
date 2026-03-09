@@ -675,8 +675,9 @@ mod tests {
                 capabilities: CapabilityConfig::default(),
             },
             credentials: CredentialsConfig::default(),
+            providers: ProvidersConfig::default(),
         };
-        
+
         assert!(config.validate().is_ok());
         
         // Test invalid port

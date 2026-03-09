@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_rich_message_conversion() {
-        let embed = Embed {
+        let embed = crate::Embed {
             title: Some("Test Title".to_string()),
             description: Some("Test Description".to_string()),
             color: None,

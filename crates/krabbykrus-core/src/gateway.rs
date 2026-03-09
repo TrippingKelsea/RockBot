@@ -1357,7 +1357,7 @@ struct ErrorResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, AgentDefaults, AgentInstance, ToolConfig, SecurityConfig, SandboxConfig};
+    use crate::config::{AgentConfig, AgentDefaults, AgentInstance, ToolConfig, SecurityConfig, SandboxConfig, ProvidersConfig};
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
     
@@ -1398,8 +1398,9 @@ mod tests {
                 capabilities: Default::default(),
             },
             credentials: CredentialsConfig::default(),
+            providers: ProvidersConfig::default(),
         };
-        
+
         Gateway::new(config, session_manager).await.unwrap()
     }
     

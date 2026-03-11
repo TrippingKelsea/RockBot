@@ -225,11 +225,13 @@ fn render_provider_details(
         Style::default().fg(Color::DarkGray),
     )));
     content.push(Line::from(""));
-    render_auth_hints(&provider.id, &provider.auth_type, &mut content);
+    // Find matching credential schema for this provider
+    let schema = state.credential_schemas.iter().find(|s| s.provider_id == provider.id);
+    render_auth_hints(&provider.id, &provider.auth_type, &mut content, schema);
 
     content.push(Line::from(""));
     content.push(Line::from(Span::styled(
-        "[t]est connection",
+        "[e]dit config  [t]est connection",
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -247,63 +249,87 @@ fn auth_type_label(auth_type: &str) -> &str {
     }
 }
 
-fn render_auth_hints(provider_id: &str, auth_type: &str, content: &mut Vec<Line>) {
+fn render_auth_hints(
+    _provider_id: &str,
+    auth_type: &str,
+    content: &mut Vec<Line>,
+    schema: Option<&crate::tui::state::CredentialSchemaInfo>,
+) {
+    // If we have a schema, show env var hints from the default auth method's fields
+    if let Some(schema) = schema {
+        if let Some(method) = schema.auth_methods.first() {
+            // Show env var export hints for fields that have env_var set
+            let env_fields: Vec<_> = method.fields.iter()
+                .filter(|f| f.env_var.is_some())
+                .collect();
+
+            if !env_fields.is_empty() {
+                for field in &env_fields {
+                    if let Some(env_var) = &field.env_var {
+                        let detected = std::env::var(env_var).is_ok();
+                        let indicator = if detected { "✓" } else { " " };
+                        let color = if detected { Color::Green } else { Color::DarkGray };
+                        let value_hint = field.default.as_deref().unwrap_or("\"...\"");
+
+                        content.push(Line::from(vec![
+                            Span::styled(format!("  {indicator} export "), Style::default().fg(color)),
+                            Span::styled(env_var.clone(), Style::default().fg(Color::Yellow)),
+                            Span::styled(format!("={value_hint}"), Style::default().fg(Color::DarkGray)),
+                        ]));
+                    }
+                }
+            }
+
+            // Show the method hint
+            if let Some(hint) = &method.hint {
+                content.push(Line::from(""));
+                content.push(Line::from(Span::styled(
+                    hint.clone(),
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+
+            // Show auth method count
+            let method_count = schema.auth_methods.len();
+            if method_count > 1 {
+                content.push(Line::from(""));
+                content.push(Line::from(Span::styled(
+                    format!("{method_count} auth methods available — press [e] to configure"),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+
+            return;
+        }
+    }
+
+    // Fallback: static hints for when schema is not available
     match auth_type {
         "aws_credentials" => {
             content.push(Line::from("Configure via AWS credential chain:"));
             content.push(Line::from(vec![
                 Span::styled("  export ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    "AWS_ACCESS_KEY_ID",
-                    Style::default().fg(Color::Yellow),
-                ),
+                Span::styled("AWS_ACCESS_KEY_ID", Style::default().fg(Color::Yellow)),
                 Span::styled("=\"...\"", Style::default().fg(Color::DarkGray)),
             ]));
             content.push(Line::from(vec![
                 Span::styled("  export ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    "AWS_SECRET_ACCESS_KEY",
-                    Style::default().fg(Color::Yellow),
-                ),
+                Span::styled("AWS_SECRET_ACCESS_KEY", Style::default().fg(Color::Yellow)),
                 Span::styled("=\"...\"", Style::default().fg(Color::DarkGray)),
             ]));
-            content.push(Line::from(vec![
-                Span::styled("  export ", Style::default().fg(Color::DarkGray)),
-                Span::styled("AWS_REGION", Style::default().fg(Color::Yellow)),
-                Span::styled("=\"us-east-1\"", Style::default().fg(Color::DarkGray)),
-            ]));
-            content.push(Line::from(""));
-            content.push(Line::from(Span::styled(
-                "Also supports: IAM roles, ~/.aws/credentials",
-                Style::default().fg(Color::Gray),
-            )));
         }
         "oauth" => {
-            content.push(Line::from("Uses Claude Code OAuth credentials:"));
-            content.push(Line::from(vec![
-                Span::styled("  1. Install: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    "npm i -g @anthropic-ai/claude-code",
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]));
-            content.push(Line::from(vec![
-                Span::styled("  2. Run: ", Style::default().fg(Color::Gray)),
-                Span::styled("claude", Style::default().fg(Color::Yellow)),
-                Span::styled(" (to authenticate)", Style::default().fg(Color::Gray)),
-            ]));
+            content.push(Line::from("Uses Claude Code OAuth credentials."));
+            content.push(Line::from(Span::styled(
+                "  Run: claude (to authenticate)",
+                Style::default().fg(Color::Yellow),
+            )));
         }
         "api_key" => {
-            let env_var = match provider_id {
-                "openai" => "OPENAI_API_KEY",
-                "google" => "GOOGLE_API_KEY",
-                _ => "API_KEY",
-            };
-            content.push(Line::from(vec![
-                Span::styled("  export ", Style::default().fg(Color::DarkGray)),
-                Span::styled(env_var, Style::default().fg(Color::Yellow)),
-                Span::styled("=\"your-key\"", Style::default().fg(Color::DarkGray)),
-            ]));
+            content.push(Line::from(Span::styled(
+                "  Set API key via environment or press [e] to configure.",
+                Style::default().fg(Color::Gray),
+            )));
         }
         "none" => {
             content.push(Line::from(Span::styled(
@@ -313,7 +339,7 @@ fn render_auth_hints(provider_id: &str, auth_type: &str, content: &mut Vec<Line>
         }
         _ => {
             content.push(Line::from(Span::styled(
-                "See provider documentation for setup.",
+                "Press [e] to configure.",
                 Style::default().fg(Color::Gray),
             )));
         }

@@ -4,16 +4,40 @@
 //! IAM roles, etc.) to access foundation models via Amazon Bedrock.
 //!
 //! ## Authentication
-//! Uses standard AWS credential chain:
+//!
+//! ### Standard AWS Credentials
+//! Uses the standard AWS credential chain:
 //! - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
 //! - AWS config files (`~/.aws/credentials`, `~/.aws/config`)
 //! - IAM instance roles / ECS task roles
+//!
+//! ### AgentCore Identity (OAuth2)
+//! Uses Bedrock AgentCore Identity for OAuth2 credential providers:
+//! - Supports 23+ built-in OAuth providers (Google, GitHub, Slack, Salesforce, etc.)
+//! - OAuth2 Authorization Code Grant (USER_FEDERATION) for user-delegated access
+//! - OAuth2 Client Credentials Grant for machine-to-machine auth
+//! - Custom OAuth2 providers via discovery URL
+//!
+//! ### AgentCore Identity (API Key)
+//! Uses Bedrock AgentCore Identity for API key credential providers:
+//! - Store and retrieve API keys via AgentCore Token Vault
+//! - Encrypted credential storage with IAM-scoped access
 //!
 //! ## Usage
 //! ```ignore
 //! use rockbot_llm::bedrock::BedrockProvider;
 //!
+//! // Standard AWS credentials
 //! let provider = BedrockProvider::new("us-east-1").await?;
+//!
+//! // With AgentCore OAuth2 credential provider
+//! let config = AgentCoreConfig {
+//!     credential_provider_name: "my-google-provider".to_string(),
+//!     auth_flow: AgentCoreAuthFlow::UserFederation,
+//!     scopes: vec!["https://www.googleapis.com/auth/drive.readonly".to_string()],
+//!     ..Default::default()
+//! };
+//! let provider = BedrockProvider::with_agentcore_oauth2("us-east-1", config).await?;
 //! ```
 
 use crate::{
@@ -33,15 +57,137 @@ use aws_sdk_bedrockruntime::{
     },
 };
 
+/// AgentCore OAuth2 auth flow type
+#[derive(Debug, Clone, Default)]
+pub enum AgentCoreAuthFlow {
+    /// OAuth2 Authorization Code Grant (3LO / USER_FEDERATION)
+    /// Used for user-delegated access to third-party services
+    #[default]
+    UserFederation,
+    /// OAuth2 Client Credentials Grant (2LO)
+    /// Used for machine-to-machine authentication
+    ClientCredentials,
+}
+
+impl std::fmt::Display for AgentCoreAuthFlow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UserFederation => write!(f, "USER_FEDERATION"),
+            Self::ClientCredentials => write!(f, "CLIENT_CREDENTIALS"),
+        }
+    }
+}
+
+/// Built-in OAuth2 vendor types supported by AgentCore Identity
+#[derive(Debug, Clone)]
+pub enum AgentCoreOAuthVendor {
+    Google,
+    GitHub,
+    Slack,
+    Salesforce,
+    Microsoft,
+    Sharepoint,
+    Confluence,
+    Jira,
+    Zendesk,
+    ServiceNow,
+    Asana,
+    Linear,
+    Monday,
+    Notion,
+    Stripe,
+    Shopify,
+    HubSpot,
+    Twilio,
+    SendGrid,
+    Zoom,
+    Dropbox,
+    Box,
+    /// Custom OAuth2 provider with a discovery URL
+    Custom {
+        /// OIDC discovery URL (e.g., https://provider.com/.well-known/openid-configuration)
+        discovery_url: String,
+    },
+}
+
+impl AgentCoreOAuthVendor {
+    /// Returns the vendor config identifier used by AgentCore API
+    pub fn vendor_id(&self) -> &str {
+        match self {
+            Self::Google => "GoogleOauth2",
+            Self::GitHub => "GithubOauth2",
+            Self::Slack => "SlackOauth2",
+            Self::Salesforce => "SalesforceOauth2",
+            Self::Microsoft => "MicrosoftOauth2",
+            Self::Sharepoint => "SharepointOauth2",
+            Self::Confluence => "ConfluenceOauth2",
+            Self::Jira => "JiraOauth2",
+            Self::Zendesk => "ZendeskOauth2",
+            Self::ServiceNow => "ServiceNowOauth2",
+            Self::Asana => "AsanaOauth2",
+            Self::Linear => "LinearOauth2",
+            Self::Monday => "MondayOauth2",
+            Self::Notion => "NotionOauth2",
+            Self::Stripe => "StripeOauth2",
+            Self::Shopify => "ShopifyOauth2",
+            Self::HubSpot => "HubSpotOauth2",
+            Self::Twilio => "TwilioOauth2",
+            Self::SendGrid => "SendGridOauth2",
+            Self::Zoom => "ZoomOauth2",
+            Self::Dropbox => "DropboxOauth2",
+            Self::Box => "BoxOauth2",
+            Self::Custom { .. } => "CustomOauth2",
+        }
+    }
+}
+
+/// Configuration for AgentCore Identity credential providers
+#[derive(Debug, Clone, Default)]
+pub struct AgentCoreConfig {
+    /// Name of the credential provider in AgentCore
+    /// Created via `aws bedrock-agentcore-control create-oauth2-credential-provider`
+    pub credential_provider_name: String,
+
+    /// OAuth2 auth flow type (UserFederation or ClientCredentials)
+    pub auth_flow: AgentCoreAuthFlow,
+
+    /// OAuth2 scopes to request (e.g., ["https://www.googleapis.com/auth/drive.readonly"])
+    pub scopes: Vec<String>,
+
+    /// AWS Secrets Manager ARN for OAuth2 client credentials
+    /// Contains client_id and client_secret for the OAuth2 application
+    pub credentials_secret_arn: Option<String>,
+
+    /// OAuth2 vendor type (Google, GitHub, Custom, etc.)
+    pub vendor: Option<AgentCoreOAuthVendor>,
+}
+
+/// Authentication mode for the Bedrock provider
+#[derive(Debug, Clone, Default)]
+pub enum BedrockAuthMode {
+    /// Standard AWS credential chain (env vars, config files, IAM roles)
+    #[default]
+    AwsCredentials,
+    /// AgentCore Identity with OAuth2 credential provider
+    AgentCoreOAuth2(AgentCoreConfig),
+    /// AgentCore Identity with API key credential provider
+    AgentCoreApiKey {
+        /// Name of the API key credential provider in AgentCore
+        credential_provider_name: String,
+    },
+}
+
 /// AWS Bedrock provider
 pub struct BedrockProvider {
     client: Client,
     #[allow(dead_code)]
     region: String,
+    #[allow(dead_code)]
+    auth_mode: BedrockAuthMode,
 }
 
 impl BedrockProvider {
-    /// Create a new Bedrock provider with the specified region
+    /// Create a new Bedrock provider with the specified region using standard AWS credentials
     pub async fn new(region: &str) -> Result<Self> {
         let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(aws_config::Region::new(region.to_string()))
@@ -51,6 +197,7 @@ impl BedrockProvider {
         Ok(Self {
             client: Client::new(&config),
             region: region.to_string(),
+            auth_mode: BedrockAuthMode::AwsCredentials,
         })
     }
 
@@ -66,7 +213,70 @@ impl BedrockProvider {
         Ok(Self {
             client: Client::new(&config),
             region,
+            auth_mode: BedrockAuthMode::AwsCredentials,
         })
+    }
+
+    /// Create a Bedrock provider configured with AgentCore OAuth2 credential provider.
+    ///
+    /// This uses AWS Bedrock AgentCore Identity to manage OAuth2 tokens for third-party
+    /// services. The credential provider must first be created via:
+    /// ```bash
+    /// aws bedrock-agentcore-control create-oauth2-credential-provider \
+    ///   --name "my-provider" \
+    ///   --credential-provider-vendor '{"CustomOauth2": {"oauthDiscovery": {"discoveryUrl": "..."}}}' \
+    ///   --credential-provider-secret-arn "arn:aws:secretsmanager:..."
+    /// ```
+    ///
+    /// Required IAM permissions:
+    /// - `bedrock-agentcore:GetResourceOauth2Token`
+    /// - `secretsmanager:GetSecretValue` (for the credentials secret)
+    pub async fn with_agentcore_oauth2(region: &str, config: AgentCoreConfig) -> Result<Self> {
+        let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new(region.to_string()))
+            .load()
+            .await;
+
+        Ok(Self {
+            client: Client::new(&aws_config),
+            region: region.to_string(),
+            auth_mode: BedrockAuthMode::AgentCoreOAuth2(config),
+        })
+    }
+
+    /// Create a Bedrock provider configured with AgentCore API key credential provider.
+    ///
+    /// This uses AWS Bedrock AgentCore Identity to manage API keys stored in
+    /// the AgentCore Token Vault. The credential provider must first be created via:
+    /// ```bash
+    /// aws bedrock-agentcore-control create-api-key-credential-provider \
+    ///   --name "my-api-key-provider" \
+    ///   --api-key "sk-..."
+    /// ```
+    ///
+    /// Required IAM permissions:
+    /// - `bedrock-agentcore:GetApiKeyCredential`
+    pub async fn with_agentcore_api_key(
+        region: &str,
+        credential_provider_name: &str,
+    ) -> Result<Self> {
+        let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new(region.to_string()))
+            .load()
+            .await;
+
+        Ok(Self {
+            client: Client::new(&aws_config),
+            region: region.to_string(),
+            auth_mode: BedrockAuthMode::AgentCoreApiKey {
+                credential_provider_name: credential_provider_name.to_string(),
+            },
+        })
+    }
+
+    /// Get the current auth mode
+    pub fn auth_mode(&self) -> &BedrockAuthMode {
+        &self.auth_mode
     }
 
     /// Normalize model ID (strip provider prefix)
@@ -224,41 +434,213 @@ impl LlmProvider for BedrockProvider {
             provider_id: "bedrock".to_string(),
             provider_name: "AWS Bedrock".to_string(),
             category: CredentialCategory::Model,
-            auth_methods: vec![AuthMethod {
-                id: "aws_credentials".to_string(),
-                label: "AWS Credentials".to_string(),
-                fields: vec![
-                    CredentialField {
-                        id: "access_key_id".to_string(),
-                        label: "Access Key ID".to_string(),
-                        secret: true,
-                        default: None,
-                        placeholder: Some("AKIA...".to_string()),
-                        required: true,
-                        env_var: Some("AWS_ACCESS_KEY_ID".to_string()),
-                    },
-                    CredentialField {
-                        id: "secret_access_key".to_string(),
-                        label: "Secret Access Key".to_string(),
-                        secret: true,
-                        default: None,
-                        placeholder: None,
-                        required: true,
-                        env_var: Some("AWS_SECRET_ACCESS_KEY".to_string()),
-                    },
-                    CredentialField {
-                        id: "region".to_string(),
-                        label: "AWS Region".to_string(),
-                        secret: false,
-                        default: Some("us-east-1".to_string()),
-                        placeholder: Some("us-east-1".to_string()),
-                        required: true,
-                        env_var: Some("AWS_REGION".to_string()),
-                    },
-                ],
-                hint: Some("Also supports IAM roles, ~/.aws/credentials, and instance profiles".to_string()),
-                docs_url: Some("https://aws.amazon.com/bedrock/".to_string()),
-            }],
+            auth_methods: vec![
+                // Standard AWS credential chain (long-lived keys)
+                AuthMethod {
+                    id: "aws_credentials".to_string(),
+                    label: "AWS Credentials".to_string(),
+                    fields: vec![
+                        CredentialField {
+                            id: "access_key_id".to_string(),
+                            label: "Access Key ID".to_string(),
+                            secret: true,
+                            default: None,
+                            placeholder: Some("AKIA...".to_string()),
+                            required: true,
+                            env_var: Some("AWS_ACCESS_KEY_ID".to_string()),
+                        },
+                        CredentialField {
+                            id: "secret_access_key".to_string(),
+                            label: "Secret Access Key".to_string(),
+                            secret: true,
+                            default: None,
+                            placeholder: None,
+                            required: true,
+                            env_var: Some("AWS_SECRET_ACCESS_KEY".to_string()),
+                        },
+                        CredentialField {
+                            id: "session_token".to_string(),
+                            label: "Session Token".to_string(),
+                            secret: true,
+                            default: None,
+                            placeholder: Some("Optional — for temporary credentials".to_string()),
+                            required: false,
+                            env_var: Some("AWS_SESSION_TOKEN".to_string()),
+                        },
+                        CredentialField {
+                            id: "region".to_string(),
+                            label: "AWS Region".to_string(),
+                            secret: false,
+                            default: Some("us-east-1".to_string()),
+                            placeholder: Some("us-east-1".to_string()),
+                            required: true,
+                            env_var: Some("AWS_REGION".to_string()),
+                        },
+                        CredentialField {
+                            id: "endpoint_url".to_string(),
+                            label: "Endpoint URL".to_string(),
+                            secret: false,
+                            default: Some("https://bedrock-runtime.us-east-1.amazonaws.com".to_string()),
+                            placeholder: Some("https://bedrock-runtime.{region}.amazonaws.com".to_string()),
+                            required: false,
+                            env_var: None,
+                        },
+                    ],
+                    hint: Some("Also supports IAM roles, ~/.aws/credentials, and instance profiles".to_string()),
+                    docs_url: Some("https://aws.amazon.com/bedrock/".to_string()),
+                },
+                // AWS Bedrock session key (temporary credentials from console)
+                AuthMethod {
+                    id: "aws_bearer_token".to_string(),
+                    label: "AWS Bearer Token (Session Key)".to_string(),
+                    fields: vec![
+                        CredentialField {
+                            id: "bearer_token".to_string(),
+                            label: "Bearer Token".to_string(),
+                            secret: true,
+                            default: None,
+                            placeholder: Some("Paste token from AWS console".to_string()),
+                            required: true,
+                            env_var: Some("AWS_BEARER_TOKEN_BEDROCK".to_string()),
+                        },
+                        CredentialField {
+                            id: "region".to_string(),
+                            label: "AWS Region".to_string(),
+                            secret: false,
+                            default: Some("us-east-1".to_string()),
+                            placeholder: Some("us-east-1".to_string()),
+                            required: true,
+                            env_var: Some("AWS_REGION".to_string()),
+                        },
+                        CredentialField {
+                            id: "endpoint_url".to_string(),
+                            label: "Endpoint URL".to_string(),
+                            secret: false,
+                            default: Some("https://bedrock-runtime.us-east-1.amazonaws.com".to_string()),
+                            placeholder: Some("https://bedrock-runtime.{region}.amazonaws.com".to_string()),
+                            required: false,
+                            env_var: None,
+                        },
+                    ],
+                    hint: Some(
+                        "Use a session key from the AWS console. Generate one at: \
+                         AWS Console → Bedrock → Session credentials. \
+                         The console names this AWS_BEARER_TOKEN_BEDROCK."
+                            .to_string(),
+                    ),
+                    docs_url: Some("https://aws.amazon.com/bedrock/".to_string()),
+                },
+                // AgentCore Identity - OAuth2 credential provider
+                AuthMethod {
+                    id: "agentcore_oauth2".to_string(),
+                    label: "AgentCore Identity (OAuth2)".to_string(),
+                    fields: vec![
+                        CredentialField {
+                            id: "credential_provider_name".to_string(),
+                            label: "Credential Provider Name".to_string(),
+                            secret: false,
+                            default: None,
+                            placeholder: Some("my-google-oauth-provider".to_string()),
+                            required: true,
+                            env_var: None,
+                        },
+                        CredentialField {
+                            id: "auth_flow".to_string(),
+                            label: "Auth Flow".to_string(),
+                            secret: false,
+                            default: Some("USER_FEDERATION".to_string()),
+                            placeholder: Some("USER_FEDERATION or CLIENT_CREDENTIALS".to_string()),
+                            required: true,
+                            env_var: None,
+                        },
+                        CredentialField {
+                            id: "oauth_scopes".to_string(),
+                            label: "OAuth2 Scopes".to_string(),
+                            secret: false,
+                            default: None,
+                            placeholder: Some("https://www.googleapis.com/auth/drive.readonly".to_string()),
+                            required: false,
+                            env_var: None,
+                        },
+                        CredentialField {
+                            id: "oauth_vendor".to_string(),
+                            label: "OAuth2 Vendor".to_string(),
+                            secret: false,
+                            default: Some("CustomOauth2".to_string()),
+                            placeholder: Some("GoogleOauth2, GithubOauth2, SlackOauth2, ...".to_string()),
+                            required: true,
+                            env_var: None,
+                        },
+                        CredentialField {
+                            id: "credentials_secret_arn".to_string(),
+                            label: "Credentials Secret ARN".to_string(),
+                            secret: true,
+                            default: None,
+                            placeholder: Some("arn:aws:secretsmanager:...".to_string()),
+                            required: true,
+                            env_var: None,
+                        },
+                        CredentialField {
+                            id: "region".to_string(),
+                            label: "AWS Region".to_string(),
+                            secret: false,
+                            default: Some("us-east-1".to_string()),
+                            placeholder: Some("us-east-1".to_string()),
+                            required: true,
+                            env_var: Some("AWS_REGION".to_string()),
+                        },
+                    ],
+                    hint: Some(
+                        "Uses Bedrock AgentCore Identity for OAuth2 tokens. \
+                         Supports 23+ built-in providers (Google, GitHub, Slack, Salesforce, etc.). \
+                         Create provider first: aws bedrock-agentcore-control create-oauth2-credential-provider. \
+                         Requires IAM: bedrock-agentcore:GetResourceOauth2Token, secretsmanager:GetSecretValue"
+                            .to_string(),
+                    ),
+                    docs_url: Some("https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/identity.html".to_string()),
+                },
+                // AgentCore Identity - API key credential provider
+                AuthMethod {
+                    id: "agentcore_api_key".to_string(),
+                    label: "AgentCore Identity (API Key)".to_string(),
+                    fields: vec![
+                        CredentialField {
+                            id: "credential_provider_name".to_string(),
+                            label: "Credential Provider Name".to_string(),
+                            secret: false,
+                            default: None,
+                            placeholder: Some("my-api-key-provider".to_string()),
+                            required: true,
+                            env_var: None,
+                        },
+                        CredentialField {
+                            id: "api_key".to_string(),
+                            label: "API Key".to_string(),
+                            secret: true,
+                            default: None,
+                            placeholder: Some("sk-...".to_string()),
+                            required: true,
+                            env_var: None,
+                        },
+                        CredentialField {
+                            id: "region".to_string(),
+                            label: "AWS Region".to_string(),
+                            secret: false,
+                            default: Some("us-east-1".to_string()),
+                            placeholder: Some("us-east-1".to_string()),
+                            required: true,
+                            env_var: Some("AWS_REGION".to_string()),
+                        },
+                    ],
+                    hint: Some(
+                        "Uses Bedrock AgentCore Identity Token Vault for API key storage. \
+                         Create provider first: aws bedrock-agentcore-control create-api-key-credential-provider. \
+                         Requires IAM: bedrock-agentcore:GetApiKeyCredential"
+                            .to_string(),
+                    ),
+                    docs_url: Some("https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/identity.html".to_string()),
+                },
+            ],
         })
     }
 
@@ -541,6 +923,10 @@ impl LlmProvider for BedrockProvider {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
     #[test]
     fn test_normalize_model() {
         assert_eq!(
@@ -549,5 +935,41 @@ mod tests {
                 .strip_prefix("bedrock/")
                 .unwrap_or("anthropic.claude-sonnet-4-20250514-v1:0")
         );
+    }
+
+    #[test]
+    fn test_auth_mode_default() {
+        let mode = BedrockAuthMode::default();
+        assert!(matches!(mode, BedrockAuthMode::AwsCredentials));
+    }
+
+    #[test]
+    fn test_auth_flow_display() {
+        assert_eq!(AgentCoreAuthFlow::UserFederation.to_string(), "USER_FEDERATION");
+        assert_eq!(AgentCoreAuthFlow::ClientCredentials.to_string(), "CLIENT_CREDENTIALS");
+    }
+
+    #[test]
+    fn test_oauth_vendor_ids() {
+        assert_eq!(AgentCoreOAuthVendor::Google.vendor_id(), "GoogleOauth2");
+        assert_eq!(AgentCoreOAuthVendor::GitHub.vendor_id(), "GithubOauth2");
+        assert_eq!(AgentCoreOAuthVendor::Slack.vendor_id(), "SlackOauth2");
+        assert_eq!(
+            AgentCoreOAuthVendor::Custom {
+                discovery_url: "https://example.com/.well-known/openid-configuration".to_string()
+            }
+            .vendor_id(),
+            "CustomOauth2"
+        );
+    }
+
+    #[test]
+    fn test_agentcore_config_default() {
+        let config = AgentCoreConfig::default();
+        assert!(config.credential_provider_name.is_empty());
+        assert!(matches!(config.auth_flow, AgentCoreAuthFlow::UserFederation));
+        assert!(config.scopes.is_empty());
+        assert!(config.credentials_secret_arn.is_none());
+        assert!(config.vendor.is_none());
     }
 }

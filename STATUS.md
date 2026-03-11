@@ -186,12 +186,20 @@ Tool provider crates with self-registering credential schemas:
 
 ### Web UI (`rockbot-core/web_ui.rs`)
 
-- Embedded HTML served from gateway
-- 6 navigation sections matching TUI
-- Cyberpunk dark theme
-- Credential management (init, unlock, endpoints CRUD)
-- Dynamic provider cards
-- Chat interface (partial)
+- Embedded HTML SPA served from gateway (no external deps, vanilla JS)
+- 6 navigation sections at parity with TUI
+- Cyberpunk dark theme with CSS custom properties
+- **Credentials**: 4 sub-tabs (Endpoints, Providers, Permissions, Audit)
+  - Endpoints: list/detail split, add/edit/delete, credential storage
+  - Providers: dynamic schemas from gateway, category filtering, schema-driven config modals
+  - Permissions: CRUD for path-based permission rules
+  - Audit: log viewer with refresh
+  - Vault lifecycle: init, unlock, lock
+- **Agents**: split list/detail, parent-child hierarchy, full CRUD, subagent support
+- **Sessions**: split list/chat, message history, "thinking" indicator, token stats
+- **Models**: split list/detail with capabilities, config hints per auth type, test connection, configure modal
+- **Settings**: gateway status, version, session/agent counts, paths, about
+- Toast notifications, status bar, keyboard shortcuts (1-6)
 
 ---
 

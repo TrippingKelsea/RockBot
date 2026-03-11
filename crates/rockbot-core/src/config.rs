@@ -257,6 +257,24 @@ pub struct BedrockProviderConfig {
     /// Whether this provider is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Authentication mode: "aws_credentials", "agentcore_oauth2", or "agentcore_api_key"
+    /// - "aws_credentials" (default): Standard AWS credential chain
+    /// - "agentcore_oauth2": AgentCore Identity OAuth2 credential provider
+    /// - "agentcore_api_key": AgentCore Identity API key credential provider
+    #[serde(default = "default_bedrock_auth_mode")]
+    pub auth_mode: String,
+    /// AgentCore credential provider name (required for agentcore_oauth2 and agentcore_api_key)
+    #[serde(default)]
+    pub credential_provider_name: Option<String>,
+    /// AgentCore OAuth2 auth flow: "USER_FEDERATION" or "CLIENT_CREDENTIALS"
+    #[serde(default)]
+    pub agentcore_auth_flow: Option<String>,
+    /// AgentCore OAuth2 scopes (comma-separated)
+    #[serde(default)]
+    pub agentcore_scopes: Option<String>,
+    /// AWS Secrets Manager ARN for AgentCore OAuth2 client credentials
+    #[serde(default)]
+    pub credentials_secret_arn: Option<String>,
 }
 
 impl Default for BedrockProviderConfig {
@@ -264,6 +282,11 @@ impl Default for BedrockProviderConfig {
         Self {
             region: default_aws_region(),
             enabled: true,
+            auth_mode: default_bedrock_auth_mode(),
+            credential_provider_name: None,
+            agentcore_auth_flow: None,
+            agentcore_scopes: None,
+            credentials_secret_arn: None,
         }
     }
 }
@@ -294,6 +317,10 @@ fn default_anthropic_auth_mode() -> String {
 
 fn default_aws_region() -> String {
     "us-east-1".to_string()
+}
+
+fn default_bedrock_auth_mode() -> String {
+    "aws_credentials".to_string()
 }
 
 fn default_ollama_url() -> String {

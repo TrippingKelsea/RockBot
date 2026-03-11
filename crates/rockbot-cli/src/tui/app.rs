@@ -22,7 +22,7 @@ use super::components::{
 use super::effects::EffectState;
 use super::state::{
     AddCredentialState, AppState, ChatMessage, ConfirmAction, EditAgentState, EditCredentialState,
-    EndpointInfo, InputMode, MenuItem, Message, PasswordAction, UnlockMethod,
+    EditProviderState, EndpointInfo, InputMode, MenuItem, Message, PasswordAction, UnlockMethod,
 };
 
 /// Check if Claude Code OAuth credentials are available
@@ -482,19 +482,12 @@ impl App {
             MenuItem::Credentials if self.state.vault.initialized && !self.state.vault.locked => {
                 // Context-aware add based on which tab and what's selected
                 if self.state.credentials_tab == 1 {
-                    // Providers tab - use selected provider context
+                    // Providers tab — always use schema-driven form (same as models→edit)
                     if self.state.provider_list_focus {
-                        // In provider list — prefer schema-driven form
                         if let Some(schema) = self.state.get_selected_credential_schema().cloned() {
-                            self.state.input_mode = InputMode::AddCredential(
-                                AddCredentialState::new_from_schema(&schema)
-                            );
-                            return;
-                        }
-                        // Fallback to legacy provider info
-                        if let Some(provider_info) = self.state.get_selected_provider_info() {
-                            self.state.input_mode = InputMode::AddCredential(
-                                AddCredentialState::new_for_provider(&provider_info)
+                            let idx = self.state.selected_provider_index;
+                            self.state.input_mode = InputMode::EditProvider(
+                                EditProviderState::from_schema(&schema, idx)
                             );
                             return;
                         }
@@ -506,16 +499,14 @@ impl App {
                             self.state.provider_list_focus = true;
                             self.state.selected_provider_index = 0;
                             self.state.status_message = Some((
-                                "Select a provider with ↑↓, then press 'a' to add".to_string(),
+                                "Select a provider with ↑↓, then press 'a' to configure".to_string(),
                                 false
                             ));
                             return;
                         }
-                        // For OAuth2/Generic categories with no predefined providers,
-                        // fall through to default form
                     }
                 }
-                // Default: show generic add form (API Key Service is more useful than Home Assistant)
+                // Default: show generic add form for endpoints tab
                 let mut default_state = AddCredentialState::new();
                 default_state.endpoint_type = 3; // API Key Service instead of Home Assistant
                 default_state.reset_fields_for_type();
@@ -773,7 +764,6 @@ impl App {
             }
             MenuItem::Models => {
                 // Edit model provider config — use schema if available
-                use super::state::EditProviderState;
                 let idx = self.state.selected_provider;
                 let provider = self.state.providers.get(idx);
                 // Find matching credential schema by provider ID

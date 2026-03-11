@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::state::{AddCredentialState, AgentInfo, EditAgentState, EditCredentialState, EditProviderState, ProviderAuthType, SessionInfo, get_fields_for_endpoint_type};
+use crate::tui::state::{AddCredentialState, AgentInfo, EditAgentState, EditCredentialState, EditProviderState, SessionInfo, get_fields_for_endpoint_type};
 use super::centered_rect;
 
 /// Endpoint types for the add credential modal
@@ -452,24 +452,29 @@ pub fn render_view_session_modal(
     frame.render_widget(paragraph, inner_margin[0]);
 }
 
-/// Render the edit provider modal
+/// Render the edit provider modal — fully schema-driven.
+///
+/// This renders the same form whether opened from Credentials→Providers or Models→Edit.
+/// The form fields come entirely from the provider's credential schema.
 pub fn render_edit_provider_modal(
     frame: &mut Frame,
     area: Rect,
     state: &EditProviderState,
 ) {
-    let modal_area = centered_rect(60, 50, area);
+    // Calculate modal height based on field count
+    let field_count = state.current_auth_method().map_or(0, |m| m.fields.len());
+    let modal_percent = (40 + field_count as u16 * 5).min(80);
+    let modal_area = centered_rect(65, modal_percent, area);
     frame.render_widget(Clear, modal_area);
-    
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
         .title(format!(" Configure {} ", state.provider_name));
-    
+
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
-    
-    // Build form content
+
     let mut lines = vec![
         Line::from(Span::styled(
             &state.provider_name,
@@ -477,16 +482,18 @@ pub fn render_edit_provider_modal(
         )),
         Line::from(""),
     ];
-    
-    // Auth type selector (field 0)
+
+    // Auth type selector (field 0) — show label from schema auth method
     let auth_type_focused = state.field_index == 0;
-    let auth_options = ProviderAuthType::all_for_provider(state.provider_index);
-    let auth_type_display = if auth_options.len() > 1 {
-        format!("◀ {} ▶", state.auth_type.label())
+    let auth_method_count = state.schema.as_ref().map_or(1, |s| s.auth_methods.len());
+    let auth_label = state.current_auth_method()
+        .map_or_else(|| state.auth_type.label().to_string(), |m| m.label.clone());
+    let auth_display = if auth_method_count > 1 {
+        format!("◀ {auth_label} ▶")
     } else {
-        state.auth_type.label().to_string()
+        auth_label
     };
-    
+
     lines.push(Line::from(vec![
         Span::styled(
             if auth_type_focused { "▶ " } else { "  " },
@@ -494,7 +501,7 @@ pub fn render_edit_provider_modal(
         ),
         Span::styled("Auth Type: ", Style::default().fg(Color::Cyan)),
         Span::styled(
-            auth_type_display,
+            auth_display,
             if auth_type_focused {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
@@ -502,192 +509,132 @@ pub fn render_edit_provider_modal(
             }
         ),
     ]));
-    
-    if auth_type_focused && auth_options.len() > 1 {
+
+    if auth_type_focused && auth_method_count > 1 {
         lines.push(Line::from(Span::styled(
             "    (←/→ to change)",
             Style::default().fg(Color::DarkGray)
         )));
     }
     lines.push(Line::from(""));
-    
-    // Dynamic fields based on auth type
-    match state.auth_type {
-        ProviderAuthType::ApiKey => {
-            // API Key field (field 1)
-            let api_key_focused = state.field_index == 1;
-            let api_key_val = state.api_key();
-            let display_text = if api_key_focused && api_key_val.is_empty() {
-                "type your key...".to_string()
-            } else if api_key_val.is_empty() {
-                "".to_string()
+
+    // Dynamic fields from the current auth method's schema
+    if let Some(method) = state.current_auth_method() {
+        // Show hint if present
+        if method.fields.is_empty() {
+            if let Some(hint) = &method.hint {
+                lines.push(Line::from(Span::styled(
+                    format!("  {hint}"),
+                    Style::default().fg(Color::Gray)
+                )));
+                lines.push(Line::from(""));
+            }
+        }
+
+        // Render each field from the schema
+        for (i, field) in method.fields.iter().enumerate() {
+            let field_focused = state.field_index == i + 1;
+            let value = state.field_values
+                .get(i)
+                .map_or("", |(_, v)| v.as_str());
+
+            // Show env var detection for fields with env_var set
+            let env_detected = field.env_var.as_ref().and_then(|var| {
+                std::env::var(var).ok().map(|_| var.clone())
+            });
+
+            // Build label with required indicator
+            let label_text = if field.required {
+                format!("{} *", field.label)
             } else {
-                "*".repeat(api_key_val.len().min(30))
+                field.label.clone()
             };
-            let key_style = if api_key_focused {
+
+            // Choose display value: entered text > default > placeholder
+            let display_value = if field.secret && !value.is_empty() && !field_focused {
+                "*".repeat(value.len().min(30))
+            } else if value.is_empty() && !field_focused {
+                field.default.as_deref()
+                    .or(field.placeholder.as_deref())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                value.to_string()
+            };
+
+            let value_style = if field_focused {
                 Style::default().fg(Color::Yellow)
-            } else if api_key_val.is_empty() {
+            } else if !value.is_empty() {
+                if field.secret { Style::default().fg(Color::Green) } else { Style::default().fg(Color::White) }
+            } else if field.default.is_some() {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::DarkGray) // placeholder
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if field_focused { "▶ " } else { "  " },
+                    Style::default().fg(Color::Yellow)
+                ),
+                Span::styled(format!("{label_text}: "), Style::default().fg(Color::Cyan)),
+                Span::styled(display_value, value_style),
+                if field_focused {
+                    Span::styled("█", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::raw("")
+                },
+            ]));
+
+            // Show env var status below the field
+            if let Some(env_var) = &env_detected {
+                lines.push(Line::from(Span::styled(
+                    format!("    ✓ Found in ${env_var}"),
+                    Style::default().fg(Color::Green)
+                )));
+            } else if let Some(env_var) = &field.env_var {
+                if field_focused {
+                    lines.push(Line::from(Span::styled(
+                        format!("    env: ${env_var}"),
+                        Style::default().fg(Color::DarkGray)
+                    )));
+                }
+            }
+        }
+
+        // Show hint below fields (if fields exist and hint is present)
+        if !method.fields.is_empty() {
+            if let Some(hint) = &method.hint {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  {hint}"),
+                    Style::default().fg(Color::DarkGray)
+                )));
+            }
+        }
+
+        // Show docs URL
+        if let Some(url) = &method.docs_url {
+            lines.push(Line::from(Span::styled(
+                format!("  Docs: {url}"),
                 Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::Green)
-            };
-            
-            lines.push(Line::from(vec![
-                Span::styled(
-                    if api_key_focused { "▶ " } else { "  " },
-                    Style::default().fg(Color::Yellow)
-                ),
-                Span::styled("API Key: ", Style::default().fg(Color::Cyan)),
-                Span::styled(display_text, key_style),
-                if api_key_focused { Span::styled("█", Style::default().fg(Color::Yellow)) } else { Span::raw("") },
-            ]));
-            lines.push(Line::from(""));
-            
-            // Base URL field (field 2)
-            let base_url_focused = state.field_index == 2;
-            lines.push(Line::from(vec![
-                Span::styled(
-                    if base_url_focused { "▶ " } else { "  " },
-                    Style::default().fg(Color::Yellow)
-                ),
-                Span::styled("Base URL: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    state.base_url(),
-                    if base_url_focused {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::White)
-                    }
-                ),
-                if base_url_focused { Span::styled("█", Style::default().fg(Color::Yellow)) } else { Span::raw("") },
-            ]));
-        }
-        ProviderAuthType::SessionKey => {
-            // Session key info
-            lines.push(Line::from(Span::styled(
-                "  Uses Claude Code credentials (~/.claude/.credentials.json)",
-                Style::default().fg(Color::Gray)
             )));
-            lines.push(Line::from(""));
-            
-            // Check if credentials exist
-            let has_creds = if let Some(home) = dirs::home_dir() {
-                home.join(".claude").join(".credentials.json").exists()
-            } else {
-                false
-            };
-            
-            if has_creds {
-                lines.push(Line::from(Span::styled(
-                    "  ✓ Claude Code credentials found",
-                    Style::default().fg(Color::Green)
-                )));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    "  ✗ Run 'claude' to authenticate",
-                    Style::default().fg(Color::Red)
-                )));
-            }
-            lines.push(Line::from(""));
-            
-            // Base URL field (field 1)
-            let base_url_focused = state.field_index == 1;
-            lines.push(Line::from(vec![
-                Span::styled(
-                    if base_url_focused { "▶ " } else { "  " },
-                    Style::default().fg(Color::Yellow)
-                ),
-                Span::styled("Base URL: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    state.base_url(),
-                    if base_url_focused {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::White)
-                    }
-                ),
-                if base_url_focused { Span::styled("█", Style::default().fg(Color::Yellow)) } else { Span::raw("") },
-            ]));
         }
-        ProviderAuthType::None => {
-            lines.push(Line::from(Span::styled(
-                "  No authentication required (local service)",
-                Style::default().fg(Color::Green)
-            )));
-            lines.push(Line::from(""));
-            
-            // Base URL field (field 1)
-            let base_url_focused = state.field_index == 1;
-            lines.push(Line::from(vec![
-                Span::styled(
-                    if base_url_focused { "▶ " } else { "  " },
-                    Style::default().fg(Color::Yellow)
-                ),
-                Span::styled("Base URL: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    state.base_url(),
-                    if base_url_focused {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::White)
-                    }
-                ),
-                if base_url_focused { Span::styled("█", Style::default().fg(Color::Yellow)) } else { Span::raw("") },
-            ]));
-        }
-        ProviderAuthType::AwsCredentials => {
-            lines.push(Line::from(Span::styled(
-                "  Uses AWS credentials from environment/config",
-                Style::default().fg(Color::Gray)
-            )));
-            lines.push(Line::from(""));
-            
-            // Check AWS credentials
-            let has_aws = std::env::var("AWS_ACCESS_KEY_ID").is_ok() 
-                && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok();
-            
-            if has_aws {
-                lines.push(Line::from(Span::styled(
-                    "  ✓ AWS credentials found in environment",
-                    Style::default().fg(Color::Green)
-                )));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    "  ✗ Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
-                    Style::default().fg(Color::Red)
-                )));
-            }
-            lines.push(Line::from(""));
-            
-            // AWS Region field (field 1)
-            let region_focused = state.field_index == 1;
-            lines.push(Line::from(vec![
-                Span::styled(
-                    if region_focused { "▶ " } else { "  " },
-                    Style::default().fg(Color::Yellow)
-                ),
-                Span::styled("AWS Region: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    state.aws_region(),
-                    if region_focused {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::White)
-                    }
-                ),
-                if region_focused { Span::styled("█", Style::default().fg(Color::Yellow)) } else { Span::raw("") },
-            ]));
-        }
+    } else {
+        // No schema — legacy fallback message
+        lines.push(Line::from(Span::styled(
+            "  No configuration schema available for this provider.",
+            Style::default().fg(Color::Gray)
+        )));
     }
-    
+
     // Footer help
     lines.push(Line::from(""));
-    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Tab/↑↓: Navigate │ Enter: Save │ Esc: Cancel",
+        "Tab/↑↓: Navigate │ ←→: Auth Type │ Enter: Save │ Esc: Cancel",
         Style::default().fg(Color::DarkGray)
     )));
-    
+
     let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Left)
         .block(Block::default().borders(Borders::NONE));

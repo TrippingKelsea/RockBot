@@ -596,7 +596,7 @@ impl ProviderAuthType {
     pub fn from_auth_method_id(id: &str) -> Self {
         match id {
             "oauth" => Self::SessionKey,
-            "aws_credentials" => Self::AwsCredentials,
+            "aws_credentials" | "aws_bearer_token" | "agentcore_oauth2" | "agentcore_api_key" => Self::AwsCredentials,
             "api_key" | "personal_access_token" | "bot_token"
             | "long_lived_token" | "api_token" | "integration_token" => Self::ApiKey,
             _ if id.contains("none") => Self::None,

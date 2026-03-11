@@ -15,7 +15,7 @@ RockBot is a local-first AI agent framework that prioritizes security and creden
 - **👤 Human-in-the-Loop (HIL)** - Approval workflow for sensitive operations  
 - **📊 Terminal UI** - Full-featured TUI built with ratatui
 - **🌐 Web Dashboard** - Browser-based management interface
-- **🤖 Multi-Provider LLM** - Anthropic, OpenAI, Ollama, Bedrock (planned)
+- **🤖 Multi-Provider LLM** - Anthropic, OpenAI, AWS Bedrock
 - **🔧 Extensible Tools** - Plugin architecture for custom capabilities
 - **📝 Audit Logging** - Hash-chained tamper-evident logs
 
@@ -72,11 +72,18 @@ rockbot credentials add homeassistant \
 | `rockbot-cli` | CLI commands and TUI |
 | `rockbot-core` | Gateway, agents, sessions, web UI |
 | `rockbot-credentials` | Encrypted credential vault |
-| `rockbot-llm` | LLM provider abstraction |
+| `rockbot-credentials-schema` | Shared credential schema types |
+| `rockbot-llm` | LLM provider abstraction (Anthropic, OpenAI, Bedrock) |
 | `rockbot-memory` | Memory and search system |
 | `rockbot-security` | Capability system and sandboxing |
 | `rockbot-tools` | Built-in agent tools |
-| `rockbot-channels` | Communication channels |
+| `rockbot-tools-credentials` | Credential vault access tool |
+| `rockbot-tools-mcp` | MCP server connection tool |
+| `rockbot-tools-markdown` | Markdown processing tool |
+| `rockbot-channels` | Channel traits and registry |
+| `rockbot-channels-discord` | Discord channel (Serenity) |
+| `rockbot-channels-telegram` | Telegram channel (Teloxide) |
+| `rockbot-channels-signal` | Signal channel (placeholder) |
 | `rockbot-plugins` | Plugin system |
 
 See [Crate Structure](docs/architecture/crates.md) for details.
@@ -165,10 +172,13 @@ cargo build
 cargo build --release
 
 # Run tests
-cargo test
+cargo test --workspace
 
 # Run specific crate tests
 cargo test -p rockbot-credentials
+
+# Run clippy
+cargo clippy --workspace --all-features
 ```
 
 ### Project Status
@@ -176,10 +186,17 @@ cargo test -p rockbot-credentials
 See [STATUS.md](STATUS.md) for detailed implementation status and [FEATURES.md](docs/FEATURES.md) for the feature matrix.
 
 **Current focus:**
-- [ ] Real LLM provider (Anthropic)
-- [ ] Built-in tool implementations
-- [ ] TUI/Web UI real data binding
-- [ ] Channel integrations
+- [ ] Channel Manager — unified multi-channel coordination
+- [ ] Streaming responses — SSE/WebSocket for chat UI
+- [ ] Tool sandboxing — container or process-based sandbox
+- [ ] Credential injection — automatic injection into tool execution
+
+### Code Quality
+
+Workspace-level Clippy lint configuration enforces code quality:
+- `unwrap_used`, `expect_used`, `panic` — warned (tracked for elimination)
+- Style lints — `redundant_closure`, `derivable_impls`, `uninlined_format_args`, etc.
+- All original clippy warnings resolved; all tests passing
 
 ## Contributing
 

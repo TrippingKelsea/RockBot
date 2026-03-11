@@ -9,9 +9,11 @@
   - `--no-default-features`
   - `--features all-providers,all-channels,all-tools`
 
-✅ `cargo test` — 107 tests total:
-  - 71 pass across all crates (excluding rockbot-credentials)
-  - 36 pass in rockbot-credentials (17 pre-existing failures in vault storage/manager tests)
+✅ `cargo test` — 124 tests total, all passing
+
+✅ `cargo clippy` — workspace lint configuration enforced:
+  - Zero code quality warnings (redundant closures, derivable impls, unused imports, etc.)
+  - `unwrap_used`/`expect_used`/`panic` tracked at warn level (48 remaining, in test allows)
 
 ## Codebase Overview
 
@@ -98,6 +100,7 @@ The gateway is the **single source of truth** for all runtime state. TUI, WebUI,
 - **Config system** — TOML parsing, env var expansion, hot-reload watcher
 - **Credential management** — vault integration, auto-unlock, full CRUD API
 - **Dynamic provider registration** — LLM, Channel, and Tool schemas collected at startup
+- **Clippy lint configuration** — workspace-level lint rules with `[workspace.lints.clippy]`
 - **Agent directory management** — per-agent `SOUL.md` and `SYSTEM-PROMPT.md` files
 - **Web UI** — embedded HTML with cyberpunk theme, 6 navigation sections
 
@@ -271,7 +274,6 @@ Tool provider crates with self-registering credential schemas:
 
 ## Known Issues
 
-- `rockbot-credentials` has 17 pre-existing test failures in vault storage/manager tests
 - `aws_smithy_types::Document` doesn't impl `Serialize` — manual converters in `bedrock.rs`
 - Gateway uptime tracking returns 0 (TODO)
 - Memory usage reporting returns 0 (TODO)
@@ -327,7 +329,7 @@ region = "us-east-1"
 cargo build
 
 # Run tests
-cargo test --workspace --exclude rockbot-credentials
+cargo test --workspace
 
 # Run gateway (foreground)
 cargo run -- --config ~/.config/rockbot/config.toml gateway run

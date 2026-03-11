@@ -4,10 +4,10 @@
 //! `rockbot_tools::CredentialAccessor` and bridges tool credential
 //! requests to the `rockbot_credentials::CredentialManager`.
 
-use rockbot_credentials::{CredentialManager, PermissionLevel};
-use rockbot_tools::{CredentialAccessor, CredentialApplicationType, CredentialResult, Result, ToolError};
+use rockbot_credentials::CredentialManager;
+use rockbot_tools::{CredentialAccessor, CredentialApplicationType, CredentialResult, Result};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Credential accessor that bridges to the vault
 pub struct VaultCredentialAccessor {
@@ -34,7 +34,7 @@ impl CredentialAccessor for VaultCredentialAccessor {
         }
 
         // Request credential - this handles permission checking and HIL internally
-        match self.manager.request_credential(path, agent_id, &format!("Tool access to {}", path)).await {
+        match self.manager.request_credential(path, agent_id, &format!("Tool access to {path}")).await {
             Ok(result) => {
                 if let Some(credential) = result.credential {
                     // Credential was granted
@@ -79,6 +79,7 @@ impl CredentialAccessor for VaultCredentialAccessor {
 
 impl VaultCredentialAccessor {
     /// Infer credential application type from path patterns
+    #[allow(clippy::unused_self)]
     fn infer_credential_type(&self, path: &str) -> CredentialApplicationType {
         // Default to bearer token
         // TODO: Look up the endpoint and get the actual credential type
@@ -98,6 +99,7 @@ impl VaultCredentialAccessor {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

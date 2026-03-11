@@ -5,6 +5,9 @@ edition = "2021"
 description = "Credential vault access tool for RockBot agents"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 rockbot-tools = { path = "../rockbot-tools" }
 rockbot-credentials-schema = { path = "../rockbot-credentials-schema" }

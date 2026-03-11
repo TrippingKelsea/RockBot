@@ -29,6 +29,7 @@ pub struct Agent {
     /// Tool registry
     tool_registry: Arc<ToolRegistry>,
     /// Memory manager
+    #[allow(dead_code)]
     memory_manager: Arc<MemoryManager>,
     /// Security manager
     security_manager: Arc<SecurityManager>,
@@ -341,7 +342,7 @@ impl Agent {
     /// Build LLM chat completion request with system prompt assembly
     async fn build_llm_request(&self, context: &mut ProcessingContext) -> Result<ChatCompletionRequest> {
         // Assemble system prompt with context injection
-        let system_prompt = self.assemble_system_prompt(&context).await?;
+        let system_prompt = self.assemble_system_prompt(context).await?;
         
         // Convert messages to LLM format, injecting system message if needed
         let mut messages = Vec::new();
@@ -409,12 +410,12 @@ impl Agent {
         
         // Load and inject identity context (SOUL.md)
         if let Ok(soul_content) = self.load_context_file("SOUL.md").await {
-            prompt_parts.push(format!("# Agent Identity\n\n{}", soul_content));
+            prompt_parts.push(format!("# Agent Identity\n\n{soul_content}"));
         }
         
         // Load and inject operational context (AGENTS.md)
         if let Ok(agents_content) = self.load_context_file("AGENTS.md").await {
-            prompt_parts.push(format!("# Operational Guidelines\n\n{}", agents_content));
+            prompt_parts.push(format!("# Operational Guidelines\n\n{agents_content}"));
         }
         
         // Inject skills/tools information
@@ -435,7 +436,7 @@ impl Agent {
         
         // Add current timestamp
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-        prompt_parts.push(format!("# Current Time\n\n{}", timestamp));
+        prompt_parts.push(format!("# Current Time\n\n{timestamp}"));
         
         Ok(prompt_parts.join("\n\n---\n\n"))
     }
@@ -479,7 +480,7 @@ impl Agent {
         
         debug!("No fallback location found for context file: {}", filename);
         Err(crate::error::RockBotError::Agent(AgentError::ExecutionFailed {
-            message: format!("Context file {} not found", filename),
+            message: format!("Context file {filename} not found"),
         }))
     }
     
@@ -573,6 +574,7 @@ impl Agent {
     }
     
     /// Classify an LLM error for retry decisions
+    #[allow(clippy::unused_self)]
     fn classify_llm_error(&self, error: &LlmError) -> ErrorCategory {
         match error {
             LlmError::RateLimitExceeded => ErrorCategory::RateLimit { retry_after_ms: None },
@@ -616,6 +618,7 @@ impl Agent {
     }
     
     /// Determine if an error should be retried
+    #[allow(clippy::unused_self)]
     fn should_retry_error(&self, error_category: &ErrorCategory) -> bool {
         match error_category {
             ErrorCategory::Retryable => true,
@@ -628,6 +631,7 @@ impl Agent {
     }
     
     /// Calculate retry delay with exponential backoff and jitter
+    #[allow(clippy::unused_self)]
     fn calculate_retry_delay(&self, config: &RetryConfig, attempt: u32, error_category: &ErrorCategory) -> u64 {
         let base_delay = match error_category {
             ErrorCategory::RateLimit { retry_after_ms: Some(delay) } => *delay,
@@ -688,8 +692,7 @@ impl Agent {
             let has_tool_calls = current_response.choices
                 .first()
                 .and_then(|c| c.message.tool_calls.as_ref())
-                .map(|tc| !tc.is_empty())
-                .unwrap_or(false);
+                .is_some_and(|tc| !tc.is_empty());
             
             if !has_tool_calls {
                 // No more tool calls - extract final response and finish
@@ -800,13 +803,13 @@ impl Agent {
                             let tool_content = match &result.result {
                                 ToolResult::Text { content } => content.clone(),
                                 ToolResult::Error { message, .. } => {
-                                    format!("Error: {}", message)
+                                    format!("Error: {message}")
                                 }
                                 ToolResult::Json { data } => {
                                     serde_json::to_string_pretty(data).unwrap_or_else(|_| "Invalid JSON".to_string())
                                 }
                                 ToolResult::File { path, .. } => {
-                                    format!("[File: {}]", path)
+                                    format!("[File: {path}]")
                                 }
                             };
                             
@@ -825,7 +828,7 @@ impl Agent {
                             let error_message = Message::tool_result(
                                 tool_call.id.clone(),
                                 tool_call.function.name.clone(),
-                                format!("Tool execution failed: {}", e),
+                                format!("Tool execution failed: {e}"),
                             ).with_session_id(session_id);
                             
                             tool_messages.push(error_message);
@@ -924,6 +927,7 @@ pub struct AgentHealthStatus {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     
     #[test]

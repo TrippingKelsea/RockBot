@@ -52,7 +52,7 @@ impl std::fmt::Display for MatchedByType {
             Self::BindingChannel => "binding.channel",
             Self::Default => "default",
         };
-        write!(f, "{}", label)
+        write!(f, "{label}")
     }
 }
 
@@ -60,18 +60,15 @@ impl std::fmt::Display for MatchedByType {
 /// scoped sub-session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RoutePolicy {
     /// Use the main (shared) session.
     Main,
     /// Use a scoped per-context session.
+    #[default]
     Session,
 }
 
-impl Default for RoutePolicy {
-    fn default() -> Self {
-        Self::Session
-    }
-}
 
 /// The fully-resolved route for an incoming message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,12 +92,14 @@ pub struct ResolvedAgentRoute {
 /// Session scoping modes (SPEC Section 6.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum SessionScope {
     /// Separate session per unique sender.
     PerSender,
     /// Shared session across all senders.
     Global,
     /// Session per conversation/thread.
+    #[default]
     PerPeer,
     /// Session per channel + conversation.
     PerChannelPeer,
@@ -108,11 +107,6 @@ pub enum SessionScope {
     PerAccountChannelPeer,
 }
 
-impl Default for SessionScope {
-    fn default() -> Self {
-        Self::PerPeer
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Session key
@@ -368,7 +362,7 @@ impl RoutingEngine {
             let scope_json = binding
                 .session_scope
                 .as_ref()
-                .map(|s| serde_json::to_string(s))
+                .map(serde_json::to_string)
                 .transpose()?;
 
             db.execute(
@@ -422,7 +416,7 @@ impl RoutingEngine {
             let scope_json = binding
                 .session_scope
                 .as_ref()
-                .map(|s| serde_json::to_string(s))
+                .map(serde_json::to_string)
                 .transpose()?;
 
             db.execute(
@@ -458,7 +452,7 @@ impl RoutingEngine {
         let bindings = self.bindings.read().await;
         bindings
             .values()
-            .filter(|b| agent_id.map_or(true, |id| b.agent_id == id))
+            .filter(|b| agent_id.is_none_or(|id| b.agent_id == id))
             .cloned()
             .collect()
     }
@@ -605,6 +599,7 @@ impl RoutingEngine {
     }
 
     /// Compute the session key for the given context and scope.
+    #[allow(clippy::unused_self)]
     fn compute_session_key(&self, ctx: &MessageRoutingContext, scope: &SessionScope) -> String {
         match scope {
             SessionScope::Global => {
@@ -807,6 +802,7 @@ fn find_channel_binding<'a>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use tempfile::NamedTempFile;
 

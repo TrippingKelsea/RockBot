@@ -301,7 +301,7 @@ impl ChannelManager {
 
     /// List all channels
     pub fn list_channels(&self) -> Vec<&str> {
-        self.channels.keys().map(|k| k.as_str()).collect()
+        self.channels.keys().map(std::string::String::as_str).collect()
     }
 
     /// Get health status of all channels
@@ -406,8 +406,8 @@ impl Channel for MockChannel {
     async fn get_user_info(&self, user_id: &str) -> Result<UserInfo> {
         Ok(UserInfo {
             id: user_id.to_string(),
-            username: format!("user_{}", user_id),
-            display_name: Some(format!("User {}", user_id)),
+            username: format!("user_{user_id}"),
+            display_name: Some(format!("User {user_id}")),
             avatar_url: None,
             is_bot: false,
             is_verified: false,
@@ -417,7 +417,7 @@ impl Channel for MockChannel {
     async fn get_channel_info(&self, channel_id: &str) -> Result<ChannelInfo> {
         Ok(ChannelInfo {
             id: channel_id.to_string(),
-            name: format!("Channel {}", channel_id),
+            name: format!("Channel {channel_id}"),
             channel_type: "text".to_string(),
             description: Some("Mock channel for development".to_string()),
             member_count: Some(1),
@@ -428,6 +428,7 @@ impl Channel for MockChannel {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     
     #[tokio::test]

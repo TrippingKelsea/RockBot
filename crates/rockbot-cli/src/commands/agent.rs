@@ -22,21 +22,21 @@ pub async fn run(command: &AgentCommands, config_path: &PathBuf) -> Result<()> {
             }
         }
         AgentCommands::Status { agent_id } => {
-            println!("📊 Agent Status: {}", agent_id);
+            println!("📊 Agent Status: {agent_id}");
             println!("   Agent status coming soon...");
         }
         AgentCommands::Message { agent_id, session, message } => {
-            println!("💬 Sending message to agent '{}' (session: {})", agent_id, session);
-            println!("   Message: {}", message);
+            println!("💬 Sending message to agent '{agent_id}' (session: {session})");
+            println!("   Message: {message}");
             println!("   Agent messaging coming soon...");
         }
         AgentCommands::Create { agent_id, workspace, model } => {
-            println!("➕ Creating agent: {}", agent_id);
+            println!("➕ Creating agent: {agent_id}");
             if let Some(workspace) = workspace {
                 println!("   Workspace: {}", workspace.display());
             }
             if let Some(model) = model {
-                println!("   Model: {}", model);
+                println!("   Model: {model}");
             }
             println!("   Agent creation coming soon...");
         }

@@ -35,6 +35,7 @@ pub type Result<T> = std::result::Result<T, MemoryError>;
 pub struct MemoryManager {
     workspace_path: PathBuf,
     documents: tokio::sync::RwLock<HashMap<String, MemoryDocument>>,
+    #[allow(dead_code)]
     vector_index: tokio::sync::RwLock<VectorIndex>,
 }
 
@@ -63,7 +64,9 @@ pub struct MemoryChunk {
 /// Vector index for semantic search
 #[derive(Debug)]
 struct VectorIndex {
+    #[allow(dead_code)]
     embeddings: HashMap<String, Vec<f32>>,
+    #[allow(dead_code)]
     chunks: HashMap<String, MemoryChunk>,
 }
 
@@ -135,7 +138,7 @@ impl MemoryManager {
         let yesterday = (Utc::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
         
         for date in [current_date, yesterday] {
-            let daily_log = memory_dir.join(format!("{}.md", date));
+            let daily_log = memory_dir.join(format!("{date}.md"));
             if daily_log.exists() {
                 self.load_document(&daily_log).await?;
             }
@@ -178,6 +181,7 @@ impl MemoryManager {
     }
     
     /// Create chunks from document content
+    #[allow(clippy::unused_self)]
     fn create_chunks(&self, document_id: &str, content: &str) -> Vec<MemoryChunk> {
         let mut chunks = Vec::new();
         let lines: Vec<&str> = content.lines().collect();
@@ -189,7 +193,7 @@ impl MemoryManager {
             let end_line = start_line + chunk_lines.len();
             
             let chunk = MemoryChunk {
-                id: format!("{}:chunk:{}", document_id, i),
+                id: format!("{document_id}:chunk:{i}"),
                 document_id: document_id.to_string(),
                 content: chunk_content,
                 start_offset: start_line,
@@ -261,6 +265,7 @@ impl MemoryManager {
     }
     
     /// Create a highlight snippet
+    #[allow(clippy::unused_self)]
     fn create_highlight(&self, content: &str, query: &str) -> String {
         let query_lower = query.to_lowercase();
         let content_lower = content.to_lowercase();
@@ -271,7 +276,7 @@ impl MemoryManager {
             let snippet = &content[start..end];
             
             // Replace query with highlighted version
-            snippet.replace(query, &format!("**{}**", query))
+            snippet.replace(query, &format!("**{query}**"))
         } else {
             content.chars().take(100).collect()
         }
@@ -280,7 +285,7 @@ impl MemoryManager {
     /// Write to daily log
     pub async fn write_daily_log(&self, content: &str) -> Result<()> {
         let date = Utc::now().format("%Y-%m-%d").to_string();
-        let log_path = self.workspace_path.join("memory").join(format!("{}.md", date));
+        let log_path = self.workspace_path.join("memory").join(format!("{date}.md"));
         
         // Append to daily log
         let mut file = tokio::fs::OpenOptions::new()
@@ -338,6 +343,12 @@ impl Default for VectorIndex {
 /// Mock memory manager for testing
 pub struct MockMemoryManager;
 
+impl Default for MockMemoryManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockMemoryManager {
     pub fn new() -> Self {
         Self
@@ -353,6 +364,7 @@ impl MockMemoryManager {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use tempfile::TempDir;
     

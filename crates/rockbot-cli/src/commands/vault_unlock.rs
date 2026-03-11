@@ -72,14 +72,11 @@ pub async fn unlock_vault_for_gateway(
     }
 
     // Determine unlock method
-    let unlock_method = match manager.get_unlock_method().await {
-        Some(method) => method,
-        None => {
-            // Vault not initialized
-            return Err(anyhow!(
-                "Vault not initialized. Run 'rockbot credentials init' first."
-            ));
-        }
+    let Some(unlock_method) = manager.get_unlock_method().await else {
+        // Vault not initialized
+        return Err(anyhow!(
+            "Vault not initialized. Run 'rockbot credentials init' first."
+        ));
     };
     info!("Vault unlock method: {:?}", unlock_method);
 
@@ -87,17 +84,14 @@ pub async fn unlock_vault_for_gateway(
         UnlockMethod::Keyfile { path_hint } => {
             // Auto-unlock with keyfile
             let keyfile_path = path_hint
-                .as_ref()
-                .map(|p| std::path::PathBuf::from(p))
-                .unwrap_or_else(|| vault_path.join("keyfile"));
+                .as_ref().map_or_else(|| vault_path.join("keyfile"), std::path::PathBuf::from);
 
             if keyfile_path.exists() {
                 info!("Unlocking vault with keyfile: {:?}", keyfile_path);
                 manager.unlock_with_keyfile(&keyfile_path).await?;
             } else {
                 return Err(anyhow!(
-                    "Keyfile not found at {:?}. Create it or change unlock method.",
-                    keyfile_path
+                    "Keyfile not found at {keyfile_path:?}. Create it or change unlock method."
                 ));
             }
         }
@@ -145,15 +139,11 @@ pub async fn unlock_vault_for_gateway(
             // Check if key requires passphrase
             let passphrase = if interactive {
                 // Try without passphrase first, prompt if needed
-                match manager.unlock_with_ssh(&key_path, None).await {
-                    Ok(_) => None,
-                    Err(_) => {
-                        let pass = prompt_password(&format!(
-                            "Enter passphrase for {:?}: ",
-                            key_path
-                        ))?;
-                        Some(pass)
-                    }
+                if manager.unlock_with_ssh(&key_path, None).await.is_ok() { None } else {
+                    let pass = prompt_password(&format!(
+                        "Enter passphrase for {key_path:?}: "
+                    ))?;
+                    Some(pass)
                 }
             } else {
                 // Try without passphrase in non-interactive mode
@@ -167,7 +157,7 @@ pub async fn unlock_vault_for_gateway(
             }
         }
 
-        UnlockMethod::Age { public_key, .. } => {
+        UnlockMethod::Age { public_key: _, .. } => {
             // Age identity from environment or prompt
             let identity = std::env::var("AGE_IDENTITY").ok();
 
@@ -212,13 +202,13 @@ async fn retrieve_llm_credentials(
 
     for (provider_name, env_var_name) in LLM_PROVIDERS {
         // Look for endpoint with matching name
-        if let Some(endpoint) = endpoints.iter().find(|e| {
+        if let Some(_endpoint) = endpoints.iter().find(|e| {
             e.name.to_lowercase() == *provider_name
                 || e.name.to_lowercase().contains(provider_name)
         }) {
             // Try to decrypt the credential
             match manager.request_credential(
-                &format!("saggyclaw://{}/api_key", provider_name),
+                &format!("saggyclaw://{provider_name}/api_key"),
                 "gateway",
                 "Gateway startup credential retrieval",
             ).await {
@@ -268,7 +258,7 @@ async fn retrieve_llm_credentials(
 
 /// Prompt for password (hidden input)
 fn prompt_password(prompt: &str) -> Result<String> {
-    print!("{}", prompt);
+    print!("{prompt}");
     io::stdout().flush()?;
 
     // Use rpassword for hidden input
@@ -277,6 +267,7 @@ fn prompt_password(prompt: &str) -> Result<String> {
 }
 
 /// Prompt for password with confirmation
+#[allow(dead_code)]
 fn prompt_password_confirm(prompt: &str) -> Result<String> {
     loop {
         let password = prompt_password(prompt)?;
@@ -292,6 +283,7 @@ fn prompt_password_confirm(prompt: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

@@ -161,7 +161,7 @@ fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
 
         content.push(Line::from(vec![
             Span::styled("Max Calls: ", Style::default().fg(Color::Cyan)),
-            Span::raw(agent.max_tool_calls.map(|n| n.to_string()).unwrap_or("-".to_string())),
+            Span::raw(agent.max_tool_calls.map_or("-".to_string(), |n| n.to_string())),
         ]));
 
         content.push(Line::from(vec![
@@ -181,7 +181,7 @@ fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
         let content = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!("Error: {}", err),
+                format!("Error: {err}"),
                 Style::default().fg(Color::Red),
             )),
         ];

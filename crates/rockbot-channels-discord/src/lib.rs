@@ -19,16 +19,15 @@ use chrono::{DateTime, Utc};
 /// Convert time::OffsetDateTime (used by serenity) to chrono::DateTime<Utc>
 fn serenity_time_to_chrono(ts: time::OffsetDateTime) -> DateTime<Utc> {
     DateTime::from_timestamp(ts.unix_timestamp(), ts.nanosecond())
-        .unwrap_or_else(|| Utc::now())
+        .unwrap_or_else(Utc::now)
 }
 use async_trait::async_trait;
 use futures::Stream;
 use serenity::all::{
-    ChannelId, Context, CreateEmbed, CreateEmbedFooter, CreateMessage, EditMessage, EventHandler,
-    GatewayIntents, GuildId, Http, Message as SerenityMessage, MessageId, Ready, UserId,
+    ChannelId, Context, CreateEmbed, CreateMessage, EditMessage, EventHandler,
+    GatewayIntents, Http, Message as SerenityMessage, MessageId, Ready, UserId,
 };
 use serenity::Client;
-use std::collections::HashMap;
 use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,6 +36,7 @@ use tokio::sync::{mpsc, RwLock};
 /// Discord channel implementation
 pub struct DiscordChannel {
     token: String,
+    #[allow(dead_code)]
     client: Option<Client>,
     http: Option<Arc<Http>>,
     event_tx: mpsc::UnboundedSender<ChannelEvent>,
@@ -44,6 +44,7 @@ pub struct DiscordChannel {
     connected: Arc<RwLock<bool>>,
     bot_user_id: Arc<RwLock<Option<u64>>>,
     /// Callback for incoming messages
+    #[allow(clippy::type_complexity)]
     message_handler: Arc<RwLock<Option<Box<dyn Fn(IncomingMessage) + Send + Sync>>>>,
 }
 
@@ -66,6 +67,7 @@ struct DiscordEventHandler {
     event_tx: mpsc::UnboundedSender<ChannelEvent>,
     connected: Arc<RwLock<bool>>,
     bot_user_id: Arc<RwLock<Option<u64>>>,
+    #[allow(clippy::type_complexity)]
     message_handler: Arc<RwLock<Option<Box<dyn Fn(IncomingMessage) + Send + Sync>>>>,
 }
 
@@ -77,7 +79,7 @@ impl EventHandler for DiscordEventHandler {
         *self.bot_user_id.write().await = Some(ready.user.id.get());
     }
 
-    async fn message(&self, ctx: Context, msg: SerenityMessage) {
+    async fn message(&self, _ctx: Context, msg: SerenityMessage) {
         // Ignore messages from the bot itself
         if let Some(bot_id) = *self.bot_user_id.read().await {
             if msg.author.id.get() == bot_id {
@@ -355,7 +357,7 @@ impl Channel for DiscordChannel {
 
     async fn send_message(&self, target: &str, message: ChannelMessage) -> Result<String> {
         let channel_id: u64 = target.parse().map_err(|_| ChannelError::InvalidMessageFormat {
-            message: format!("Invalid channel ID: {}", target),
+            message: format!("Invalid channel ID: {target}"),
         })?;
 
         let http = self.http.as_ref().ok_or(ChannelError::ConnectionFailed {
@@ -402,7 +404,7 @@ impl Channel for DiscordChannel {
             }
             MessageContent::Media { url, caption, .. } => {
                 let text = if let Some(cap) = caption {
-                    format!("{}\n{}", cap, url)
+                    format!("{cap}\n{url}")
                 } else {
                     url
                 };
@@ -536,7 +538,7 @@ impl Channel for DiscordChannel {
             serenity::all::Channel::Guild(gc) => {
                 (gc.name.clone(), gc.kind.name().to_string(), gc.topic.clone())
             }
-            serenity::all::Channel::Private(pc) => {
+            serenity::all::Channel::Private(_pc) => {
                 ("DM".to_string(), "dm".to_string(), None)
             }
             _ => ("Unknown".to_string(), "unknown".to_string(), None),
@@ -578,6 +580,7 @@ impl Channel for DiscordChannel {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

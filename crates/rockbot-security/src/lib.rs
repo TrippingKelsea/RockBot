@@ -276,6 +276,12 @@ pub struct MockSecurityManager {
     default_context: SecurityContext,
 }
 
+impl Default for MockSecurityManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockSecurityManager {
     pub fn new() -> Self {
         let mut capabilities = Capabilities::new();
@@ -300,6 +306,7 @@ impl MockSecurityManager {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     
     #[test]

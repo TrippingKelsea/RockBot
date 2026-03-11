@@ -53,7 +53,7 @@ fn render_session_list(frame: &mut Frame, area: Rect, state: &AppState, effect_s
     } else {
         state.sessions.iter().map(|session| {
             let channel_indicator = session.channel.as_ref()
-                .map(|c| format!("[{}] ", c))
+                .map(|c| format!("[{c}] "))
                 .unwrap_or_default();
             
             ListItem::new(Line::from(vec![
@@ -167,7 +167,7 @@ fn render_session_details(frame: &mut Frame, area: Rect, state: &AppState) {
         let content = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!("Error: {}", err),
+                format!("Error: {err}"),
                 Style::default().fg(Color::Red),
             )),
         ];
@@ -244,7 +244,7 @@ fn render_chat_messages(frame: &mut Frame, area: Rect, state: &AppState) {
         
         // Add timestamp if available
         let timestamp = msg.timestamp.as_ref()
-            .map(|t| format!("[{}] ", t))
+            .map(|t| format!("[{t}] "))
             .unwrap_or_default();
         
         // First line with prefix
@@ -256,7 +256,7 @@ fn render_chat_messages(frame: &mut Frame, area: Rect, state: &AppState) {
         
         // Wrap message content
         for line in msg.content.lines() {
-            lines.push(Line::from(Span::styled(format!("  {}", line), style)));
+            lines.push(Line::from(Span::styled(format!("  {line}"), style)));
         }
         lines.push(Line::from("")); // Spacing between messages
     }

@@ -124,7 +124,7 @@ async fn init_vault(
         
     } else {
         // Keyfile (default) - generate or use specified
-        let kf_path = keyfile.map(|p| p.clone()).unwrap_or_else(|| {
+        let kf_path = keyfile.cloned().unwrap_or_else(|| {
             dirs::config_dir()
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
                 .join("rockbot")
@@ -203,7 +203,7 @@ async fn add_credential(
         "spotify" => EndpointType::Spotify,
         "generic_rest" => EndpointType::GenericRest,
         "generic_oauth2" => EndpointType::GenericOAuth2,
-        _ => anyhow::bail!("Unknown endpoint type: {}", endpoint_type),
+        _ => anyhow::bail!("Unknown endpoint type: {endpoint_type}"),
     };
 
     // Create endpoint
@@ -216,7 +216,7 @@ async fn add_credential(
             "bearer_token" => CredentialType::BearerToken,
             "basic_auth" => CredentialType::BasicAuth { username: String::new() },
             "api_key" => CredentialType::ApiKey { header_name: "X-API-Key".to_string() },
-            _ => anyhow::bail!("Unknown credential type: {}", credential_type),
+            _ => anyhow::bail!("Unknown credential type: {credential_type}"),
         };
 
         manager.store_credential(endpoint.id, cred_type, secret_value.as_bytes()).await?;
@@ -266,7 +266,7 @@ async fn remove_endpoint(config: &Config, endpoint: &str) -> Result<()> {
 
     // TODO: Implement when delete_endpoint is added to CredentialManager
     println!("❌ Remove endpoint not yet implemented");
-    println!("   Endpoint to remove: {}", endpoint);
+    println!("   Endpoint to remove: {endpoint}");
     
     Ok(())
 }
@@ -286,7 +286,7 @@ async fn handle_permissions(config: &Config, command: &PermissionsCommands) -> R
                 "allow_hil" => PermissionLevel::AllowHil,
                 "allow_hil_2fa" => PermissionLevel::AllowHil2fa,
                 "deny" => PermissionLevel::Deny,
-                _ => anyhow::bail!("Unknown permission level: {}", level),
+                _ => anyhow::bail!("Unknown permission level: {level}"),
             };
 
             let permission = PathPermission {
@@ -297,7 +297,7 @@ async fn handle_permissions(config: &Config, command: &PermissionsCommands) -> R
             };
 
             manager.add_permission(permission.clone()).await;
-            println!("✅ Added permission rule: {} -> {}", pattern, level);
+            println!("✅ Added permission rule: {pattern} -> {level}");
             println!("   Rule ID: {}", permission.id);
         }
         PermissionsCommands::List => {
@@ -308,7 +308,7 @@ async fn handle_permissions(config: &Config, command: &PermissionsCommands) -> R
         PermissionsCommands::Remove { rule_id } => {
             // TODO: Implement when remove_permission is added
             println!("❌ Remove permission not yet implemented");
-            println!("   Rule to remove: {}", rule_id);
+            println!("   Rule to remove: {rule_id}");
         }
     }
 
@@ -335,7 +335,7 @@ async fn view_audit(config: &Config, verify: bool, _limit: usize) -> Result<()> 
         } else {
             println!("❌ Audit log verification FAILED");
             if let Some(error) = result.error {
-                println!("   Error: {}", error);
+                println!("   Error: {error}");
             }
         }
     } else {
@@ -364,7 +364,7 @@ async fn show_status(config: &Config) -> Result<()> {
         let endpoints = manager.list_endpoints().await;
         
         println!("\nVault Status:");
-        println!("  Locked: {}", locked);
+        println!("  Locked: {locked}");
         println!("  Endpoints: {}", endpoints.len());
     }
 
@@ -407,32 +407,28 @@ async fn unlock_vault(
             manager.unlock_with_password(&password).await?;
         }
         UnlockMethod::Keyfile { path_hint } => {
-            let kf_path = match keyfile {
-                Some(p) => p.clone(),
-                None => {
-                    // Try default path first
-                    let default_path = dirs::config_dir()
-                        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
-                        .join("rockbot")
-                        .join("vault.key");
-                    
-                    if default_path.exists() {
-                        default_path
-                    } else if let Some(hint) = path_hint {
-                        let hint_path = PathBuf::from(hint);
-                        if hint_path.exists() {
-                            println!("Using key file: {}", hint);
-                            hint_path
-                        } else {
-                            anyhow::bail!(
-                                "Key file not found. Use --keyfile <path>\n\
-                                 (Previously used: {})",
-                                hint
-                            );
-                        }
+            let kf_path = if let Some(p) = keyfile { p.clone() } else {
+                // Try default path first
+                let default_path = dirs::config_dir()
+                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+                    .join("rockbot")
+                    .join("vault.key");
+                
+                if default_path.exists() {
+                    default_path
+                } else if let Some(hint) = path_hint {
+                    let hint_path = PathBuf::from(hint);
+                    if hint_path.exists() {
+                        println!("Using key file: {hint}");
+                        hint_path
                     } else {
-                        anyhow::bail!("Key file not found. Use --keyfile <path>");
+                        anyhow::bail!(
+                            "Key file not found. Use --keyfile <path>\n\
+                             (Previously used: {hint})"
+                        );
                     }
+                } else {
+                    anyhow::bail!("Key file not found. Use --keyfile <path>");
                 }
             };
             manager.unlock_with_keyfile(&kf_path).await?;
@@ -452,22 +448,18 @@ async fn unlock_vault(
             manager.unlock_with_age(&identity).await?;
         }
         UnlockMethod::SshKey { public_key_path, .. } => {
-            let privkey_path = match ssh_privkey {
-                Some(p) => p.clone(),
-                None => {
-                    // Try to find corresponding private key
-                    let pubkey = PathBuf::from(public_key_path);
-                    let privkey = pubkey.with_extension(""); // Remove .pub extension
-                    if privkey.exists() {
-                        privkey
-                    } else {
-                        anyhow::bail!(
-                            "This vault uses SSH key encryption.\n\
-                             Unlock with: --ssh-key <private_key_path>\n\
-                             Public key used: {}",
-                            public_key_path
-                        );
-                    }
+            let privkey_path = if let Some(p) = ssh_privkey { p.clone() } else {
+                // Try to find corresponding private key
+                let pubkey = PathBuf::from(public_key_path);
+                let privkey = pubkey.with_extension(""); // Remove .pub extension
+                if privkey.exists() {
+                    privkey
+                } else {
+                    anyhow::bail!(
+                        "This vault uses SSH key encryption.\n\
+                         Unlock with: --ssh-key <private_key_path>\n\
+                         Public key used: {public_key_path}"
+                    );
                 }
             };
             manager.unlock_with_ssh(&privkey_path, ssh_passphrase).await?;
@@ -496,7 +488,7 @@ async fn lock_vault(config: &Config) -> Result<()> {
 
 /// Prompt for password with hidden input
 fn prompt_password_hidden(prompt: &str) -> Result<String> {
-    print!("{}", prompt);
+    print!("{prompt}");
     io::stdout().flush()?;
     
     let password = rpassword::read_password()?;

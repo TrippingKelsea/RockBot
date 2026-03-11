@@ -382,7 +382,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     };
     
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("rockbot={}", log_level)));
+        .unwrap_or_else(|_| EnvFilter::new(format!("rockbot={log_level}")));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .init();

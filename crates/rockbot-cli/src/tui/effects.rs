@@ -144,9 +144,9 @@ pub fn render_tab_bar(tabs: &[&str], active_index: usize) -> String {
         .enumerate()
         .map(|(i, tab)| {
             if i == active_index {
-                format!("▸ {} ◂", tab)
+                format!("▸ {tab} ◂")
             } else {
-                format!("  {}  ", tab)
+                format!("  {tab}  ")
             }
         })
         .collect::<Vec<_>>()
@@ -155,6 +155,7 @@ pub fn render_tab_bar(tabs: &[&str], active_index: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

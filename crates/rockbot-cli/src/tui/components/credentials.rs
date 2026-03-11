@@ -234,7 +234,7 @@ fn render_endpoints(frame: &mut Frame, area: Rect, state: &AppState, effect_stat
             
             ListItem::new(Line::from(vec![
                 cred_indicator,
-                Span::styled(format!("{} ", icon), Style::default().fg(category_color)),
+                Span::styled(format!("{icon} "), Style::default().fg(category_color)),
                 Span::raw(&e.name),
                 Span::styled(format!(" ({})", &e.endpoint_type), Style::default().fg(Color::DarkGray)),
             ]))
@@ -425,7 +425,7 @@ fn render_category_providers(frame: &mut Frame, area: Rect, state: &AppState, ca
     }
 
     // Render as a navigable list
-    let items: Vec<ListItem> = filtered.iter().enumerate().map(|(_idx, schema)| {
+    let items: Vec<ListItem> = filtered.iter().map(|schema| {
         let configured = check_provider_configured(state, &schema.provider_id);
         let indicator = if configured { "●" } else { "○" };
         let ind_color = if configured { Color::Green } else { Color::Yellow };
@@ -441,7 +441,7 @@ fn render_category_providers(frame: &mut Frame, area: Rect, state: &AppState, ca
 
         ListItem::new(Line::from(vec![
             Span::raw(prefix),
-            Span::styled(format!("{} ", indicator), Style::default().fg(ind_color)),
+            Span::styled(format!("{indicator} "), Style::default().fg(ind_color)),
             Span::styled(schema.provider_name.as_str(), Style::default().fg(Color::White)),
             Span::styled(format!(" ({})", schema.provider_id), Style::default().fg(Color::DarkGray)),
         ]))

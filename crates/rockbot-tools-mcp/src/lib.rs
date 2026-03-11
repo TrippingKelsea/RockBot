@@ -72,8 +72,7 @@ impl Tool for McpTool {
                 })?;
 
             Ok(ToolResult::error(format!(
-                "MCP tool not yet implemented (server: {})",
-                server_url
+                "MCP tool not yet implemented (server: {server_url})"
             )))
         })
     }

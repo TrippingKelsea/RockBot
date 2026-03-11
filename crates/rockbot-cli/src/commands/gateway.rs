@@ -8,7 +8,7 @@ use rockbot_tools::ToolRegistry;
 use rockbot_memory::MemoryManager;
 use rockbot_security::SecurityManager;
 use rockbot_llm::LlmProviderRegistry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::process::Command;
 use tracing::{debug, error, info, warn};
@@ -156,7 +156,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         let llm_provider = match llm_registry.get_provider_for_model(model).await {
             Ok(provider) => provider,
             Err(e) => {
-                let reason = format!("{}", e);
+                let reason = format!("{e}");
                 tracing::warn!(
                     "Agent '{}' pending: {} (use POST /api/gateway/reload after adding credentials)",
                     agent_id, reason
@@ -223,12 +223,9 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
 }
 
 /// Get the service name based on whether it's user or system level
-fn get_service_name(system: bool) -> &'static str {
-    if system {
-        "rockbot-gateway"
-    } else {
-        "rockbot-gateway"
-    }
+#[allow(dead_code)]
+fn get_service_name(_system: bool) -> &'static str {
+    "rockbot-gateway"
 }
 
 /// Start the gateway service
@@ -342,8 +339,8 @@ async fn show_status() -> Result<()> {
             let health: serde_json::Value = resp.json().await?;
             println!("Gateway is running:");
             println!("  Version: {}", health.get("version").and_then(|v| v.as_str()).unwrap_or("unknown"));
-            println!("  Agents: {}", health.get("agents").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0));
-            println!("  Active sessions: {}", health.get("active_sessions").and_then(|v| v.as_u64()).unwrap_or(0));
+            println!("  Agents: {}", health.get("agents").and_then(|v| v.as_array()).map_or(0, std::vec::Vec::len));
+            println!("  Active sessions: {}", health.get("active_sessions").and_then(serde_json::Value::as_u64).unwrap_or(0));
         }
         Ok(resp) => {
             println!("Gateway responded with status: {}", resp.status());
@@ -357,9 +354,9 @@ async fn show_status() -> Result<()> {
 }
 
 /// Install the gateway as a systemd service
-async fn install_service(system: bool, name: &str, config_path: &PathBuf) -> Result<()> {
+async fn install_service(system: bool, name: &str, config_path: &Path) -> Result<()> {
     let exe_path = std::env::current_exe()?;
-    let config_path = config_path.canonicalize().unwrap_or_else(|_| config_path.clone());
+    let config_path = config_path.canonicalize().unwrap_or_else(|_| config_path.to_path_buf());
     
     let service_content = if system {
         // System service
@@ -410,12 +407,12 @@ WantedBy=default.target
     };
 
     let service_path = if system {
-        PathBuf::from(format!("/etc/systemd/system/{}.service", name))
+        PathBuf::from(format!("/etc/systemd/system/{name}.service"))
     } else {
         dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config"))
             .join("systemd/user")
-            .join(format!("{}.service", name))
+            .join(format!("{name}.service"))
     };
 
     // Create parent directory if needed
@@ -450,14 +447,14 @@ WantedBy=default.target
             .args(["enable", name])
             .status()?;
         if status.success() {
-            println!("✅ Enabled system service: {}", name);
+            println!("✅ Enabled system service: {name}");
         }
     } else {
         let status = Command::new("systemctl")
             .args(["--user", "enable", name])
             .status()?;
         if status.success() {
-            println!("✅ Enabled user service: {}", name);
+            println!("✅ Enabled user service: {name}");
         }
         
         // Enable lingering so service runs without login
@@ -466,7 +463,7 @@ WantedBy=default.target
             let _ = Command::new("loginctl")
                 .args(["enable-linger", &username])
                 .status();
-            println!("✅ Enabled lingering for user: {}", username);
+            println!("✅ Enabled lingering for user: {username}");
         }
     }
 
@@ -475,15 +472,15 @@ WantedBy=default.target
     println!();
     println!("Commands:");
     if system {
-        println!("  Start:   sudo systemctl start {}", name);
-        println!("  Stop:    sudo systemctl stop {}", name);
-        println!("  Status:  sudo systemctl status {}", name);
-        println!("  Logs:    sudo journalctl -u {} -f", name);
+        println!("  Start:   sudo systemctl start {name}");
+        println!("  Stop:    sudo systemctl stop {name}");
+        println!("  Status:  sudo systemctl status {name}");
+        println!("  Logs:    sudo journalctl -u {name} -f");
     } else {
-        println!("  Start:   systemctl --user start {}", name);
-        println!("  Stop:    systemctl --user stop {}", name);
-        println!("  Status:  systemctl --user status {}", name);
-        println!("  Logs:    journalctl --user -u {} -f", name);
+        println!("  Start:   systemctl --user start {name}");
+        println!("  Stop:    systemctl --user stop {name}");
+        println!("  Status:  systemctl --user status {name}");
+        println!("  Logs:    journalctl --user -u {name} -f");
     }
     println!();
     println!("Or use: rockbot gateway start/stop/status/logs");
@@ -512,12 +509,12 @@ async fn remove_service(system: bool, name: &str) -> Result<()> {
 
     // Remove service file
     let service_path = if system {
-        PathBuf::from(format!("/etc/systemd/system/{}.service", name))
+        PathBuf::from(format!("/etc/systemd/system/{name}.service"))
     } else {
         dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config"))
             .join("systemd/user")
-            .join(format!("{}.service", name))
+            .join(format!("{name}.service"))
     };
 
     if service_path.exists() {

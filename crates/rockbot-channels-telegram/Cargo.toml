@@ -5,6 +5,9 @@ edition = "2021"
 description = "Telegram channel plugin for RockBot"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 rockbot-channels = { path = "../rockbot-channels", default-features = false }
 rockbot-credentials-schema = { path = "../rockbot-credentials-schema" }

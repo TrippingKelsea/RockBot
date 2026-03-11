@@ -17,7 +17,7 @@ pub async fn run(config_path: &PathBuf) -> Result<()> {
             c
         }
         Err(e) => {
-            println!("❌ Invalid - {}", e);
+            println!("❌ Invalid - {e}");
             return Ok(());
         }
     };

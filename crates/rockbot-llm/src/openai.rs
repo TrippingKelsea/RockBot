@@ -4,7 +4,7 @@ use crate::{
     AuthMethod, ChatCompletionRequest, ChatCompletionResponse, Choice, CompletionStream,
     CredentialCategory, CredentialField, CredentialSchema, LlmError, LlmProvider, Message,
     MessageRole, ModelInfo, ProviderCapabilities, Result, ToolCall, FunctionCall, Usage,
-    StreamingChunk, StreamingChoice, StreamingDelta,
+    StreamingChunk,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -105,15 +105,18 @@ struct OpenAiErrorDetail {
     message: String,
     #[serde(rename = "type")]
     error_type: Option<String>,
+    #[allow(dead_code)]
     code: Option<String>,
 }
 
 /// OpenAI models list response
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OpenAiModelsResponse {
     data: Vec<OpenAiModelInfo>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OpenAiModelInfo {
     id: String,
@@ -151,6 +154,7 @@ impl OpenAiProvider {
     }
 
     /// Extract model name from full ID (e.g., "openai/gpt-4" -> "gpt-4")
+    #[allow(clippy::unused_self)]
     fn normalize_model(&self, model_id: &str) -> String {
         model_id
             .strip_prefix("openai/")
@@ -159,6 +163,7 @@ impl OpenAiProvider {
     }
 
     /// Convert our message format to OpenAI format
+    #[allow(clippy::unused_self)]
     fn convert_message(&self, msg: &Message) -> OpenAiMessage {
         let role = match msg.role {
             MessageRole::User => "user",
@@ -295,7 +300,7 @@ impl LlmProvider for OpenAiProvider {
                 });
             }
             return Err(LlmError::ApiError {
-                message: format!("HTTP {}: {}", status, body),
+                message: format!("HTTP {status}: {body}"),
             });
         }
 
@@ -400,7 +405,7 @@ impl LlmProvider for OpenAiProvider {
                 });
             }
             return Err(LlmError::ApiError {
-                message: format!("HTTP {}: {}", status, body),
+                message: format!("HTTP {status}: {body}"),
             });
         }
 
@@ -493,7 +498,7 @@ impl LlmProvider for OpenAiProvider {
                 });
             }
             return Err(LlmError::ApiError {
-                message: format!("HTTP {}: {}", status, body),
+                message: format!("HTTP {status}: {body}"),
             });
         }
 
@@ -585,8 +590,8 @@ impl LlmProvider for OpenAiProvider {
 /// Parse OpenAI Server-Sent Events (SSE) format
 fn parse_openai_sse_event(event_data: &str) -> Option<String> {
     for line in event_data.lines() {
-        if line.starts_with("data: ") {
-            let data = &line[6..]; // Skip "data: "
+        if let Some(data) = line.strip_prefix("data: ") {
+            // Skip "data: "
             return Some(data.to_string());
         }
     }
@@ -601,7 +606,7 @@ fn handle_openai_stream_event(
     // OpenAI returns complete streaming chunks in JSON format
     let chunk: StreamingChunk = serde_json::from_str(data)
         .map_err(|e| LlmError::ApiError {
-            message: format!("Failed to parse OpenAI streaming chunk: {}", e),
+            message: format!("Failed to parse OpenAI streaming chunk: {e}"),
         })?;
     
     // Update the model in the chunk to match our request
@@ -613,6 +618,7 @@ fn handle_openai_stream_event(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

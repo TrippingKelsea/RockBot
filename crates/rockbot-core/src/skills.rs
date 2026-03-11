@@ -123,8 +123,10 @@ fn default_true() -> bool {
 
 /// Source from which a skill was discovered.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SkillSource {
     /// Bundled with the package
+    #[default]
     Bundled,
     /// From workspace configuration
     Workspace,
@@ -306,7 +308,7 @@ impl SkillManager {
             .values()
             .filter(|ls| {
                 // OS filter
-                if !ls.skill.metadata.as_ref().map_or(true, |m| {
+                if !ls.skill.metadata.as_ref().is_none_or(|m| {
                     m.os.is_empty() || m.os.iter().any(|o| o.eq_ignore_ascii_case(current_os))
                 }) {
                     return false;
@@ -334,7 +336,7 @@ impl SkillManager {
                 ls.skill
                     .metadata
                     .as_ref()
-                    .map_or(false, |m| m.always)
+                    .is_some_and(|m| m.always)
             })
             .collect()
     }
@@ -413,7 +415,7 @@ impl SkillManager {
                     .skill
                     .metadata
                     .as_ref()
-                    .map_or(false, |m| m.always),
+                    .is_some_and(|m| m.always),
                 emoji: ls
                     .skill
                     .metadata
@@ -436,17 +438,11 @@ pub struct SkillSummary {
     pub emoji: Option<String>,
 }
 
-impl Default for SkillSource {
-    fn default() -> Self {
-        Self::Bundled
-    }
-}
 
 /// Check whether a skill's requirements are satisfied on the current system.
 fn check_skill_requirements(skill: &Skill, config_keys: &[String]) -> bool {
-    let reqs = match skill.metadata.as_ref().map(|m| &m.requires) {
-        Some(reqs) => reqs,
-        None => return true, // No requirements means always available
+    let Some(reqs) = skill.metadata.as_ref().map(|m| &m.requires) else {
+        return true; // No requirements means always available
     };
 
     // Check required binaries
@@ -522,6 +518,7 @@ pub fn current_os() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     fn make_skill(name: &str, always: bool) -> Skill {

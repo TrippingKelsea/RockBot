@@ -10,24 +10,24 @@ pub async fn run(command: &SessionCommands, config_path: &PathBuf) -> Result<()>
     
     match command {
         SessionCommands::List { agent, active } => {
-            println!("📋 Sessions (agent: {:?}, active: {})", agent, active);
+            println!("📋 Sessions (agent: {agent:?}, active: {active})");
             println!("   Session management coming soon...");
         }
         SessionCommands::Show { session_id } => {
-            println!("📄 Session: {}", session_id);
+            println!("📄 Session: {session_id}");
             println!("   Session details coming soon...");
         }
         SessionCommands::History { session_id, limit } => {
-            println!("💬 History for session {} (limit: {})", session_id, limit);
+            println!("💬 History for session {session_id} (limit: {limit})");
             println!("   Message history coming soon...");
         }
         SessionCommands::Archive { session_id } => {
-            println!("📦 Archiving session: {}", session_id);
+            println!("📦 Archiving session: {session_id}");
             println!("   Session archiving coming soon...");
         }
         SessionCommands::Delete { session_id, force } => {
             if *force || confirm_delete(session_id)? {
-                println!("🗑️  Deleting session: {}", session_id);
+                println!("🗑️  Deleting session: {session_id}");
                 println!("   Session deletion coming soon...");
             }
         }
@@ -37,7 +37,7 @@ pub async fn run(command: &SessionCommands, config_path: &PathBuf) -> Result<()>
 }
 
 fn confirm_delete(session_id: &str) -> Result<bool> {
-    println!("Are you sure you want to delete session '{}'? [y/N]", session_id);
+    println!("Are you sure you want to delete session '{session_id}'? [y/N]");
     
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;

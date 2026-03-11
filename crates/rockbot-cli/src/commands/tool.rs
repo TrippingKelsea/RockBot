@@ -14,13 +14,13 @@ pub async fn run(command: &ToolCommands, config_path: &PathBuf) -> Result<()> {
             println!("   Tool listing coming soon...");
         }
         ToolCommands::Info { tool_name } => {
-            println!("ℹ️  Tool Info: {}", tool_name);
+            println!("ℹ️  Tool Info: {tool_name}");
             println!("   Tool information coming soon...");
         }
         ToolCommands::Test { tool_name, params } => {
-            println!("🧪 Testing tool: {}", tool_name);
+            println!("🧪 Testing tool: {tool_name}");
             if let Some(params) = params {
-                println!("   Parameters: {}", params);
+                println!("   Parameters: {params}");
             }
             println!("   Tool testing coming soon...");
         }

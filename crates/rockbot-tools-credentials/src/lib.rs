@@ -3,7 +3,7 @@
 //! Allows agents to securely access credentials stored in the vault.
 //! No external credentials needed — this tool accesses the local vault.
 
-use rockbot_credentials_schema::{CredentialCategory, CredentialSchema};
+use rockbot_credentials_schema::CredentialSchema;
 use rockbot_security::Capabilities;
 use rockbot_tools::{Tool, ToolError, message::ToolResult, ToolExecutionContext};
 use std::future::Future;
@@ -64,11 +64,11 @@ impl Tool for CredentialVaultTool {
 
             if let Some(accessor) = &context.credential_accessor {
                 match accessor.get_credential(path, &context.agent_id).await {
-                    Ok(result) => Ok(ToolResult::json(serde_json::json!({
+                    Ok(_result) => Ok(ToolResult::json(serde_json::json!({
                         "status": "ok",
                         "path": path,
                     }))),
-                    Err(e) => Ok(ToolResult::error(format!("Credential access failed: {}", e))),
+                    Err(e) => Ok(ToolResult::error(format!("Credential access failed: {e}"))),
                 }
             } else {
                 Ok(ToolResult::error("No credential accessor available"))

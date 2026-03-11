@@ -14,6 +14,12 @@ use std::io::BufRead;
 /// File reading tool
 pub struct ReadTool;
 
+impl Default for ReadTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReadTool {
     pub fn new() -> Self {
         Self
@@ -65,8 +71,8 @@ impl Tool for ReadTool {
                 })?
                 .to_string();
             
-            let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
-            let offset = params.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(1);
+            let limit = params.get("limit").and_then(serde_json::Value::as_u64).map(|v| v as usize);
+            let offset = params.get("offset").and_then(serde_json::Value::as_u64).map_or(1, |v| v as usize);
             
             // Resolve path relative to workspace
             let path = if PathBuf::from(&file_path).is_absolute() {
@@ -78,7 +84,7 @@ impl Tool for ReadTool {
             // Read file content
             let content = tokio::fs::read_to_string(&path).await
                 .map_err(|e| crate::ToolError::ExecutionFailed { 
-                    message: format!("Failed to read file: {}", e)
+                    message: format!("Failed to read file: {e}")
                 })?;
             
             // Apply offset and limit
@@ -100,6 +106,12 @@ impl Tool for ReadTool {
 
 /// File writing tool
 pub struct WriteTool;
+
+impl Default for WriteTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl WriteTool {
     pub fn new() -> Self {
@@ -164,14 +176,14 @@ impl Tool for WriteTool {
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await
                     .map_err(|e| crate::ToolError::ExecutionFailed { 
-                        message: format!("Failed to create directories: {}", e)
+                        message: format!("Failed to create directories: {e}")
                     })?;
             }
             
             // Write content to file
             tokio::fs::write(&path, content.as_bytes()).await
                 .map_err(|e| crate::ToolError::ExecutionFailed { 
-                    message: format!("Failed to write file: {}", e)
+                    message: format!("Failed to write file: {e}")
                 })?;
             
             let bytes_written = content.len();
@@ -182,6 +194,12 @@ impl Tool for WriteTool {
 
 /// File editing tool
 pub struct EditTool;
+
+impl Default for EditTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl EditTool {
     pub fn new() -> Self {
@@ -258,7 +276,7 @@ impl Tool for EditTool {
             // Read current content
             let content = tokio::fs::read_to_string(&path).await
                 .map_err(|e| crate::ToolError::ExecutionFailed { 
-                    message: format!("Failed to read file: {}", e)
+                    message: format!("Failed to read file: {e}")
                 })?;
             
             // Replace text
@@ -274,7 +292,7 @@ impl Tool for EditTool {
             // Write updated content
             tokio::fs::write(&path, new_content.as_bytes()).await
                 .map_err(|e| crate::ToolError::ExecutionFailed { 
-                    message: format!("Failed to write file: {}", e)
+                    message: format!("Failed to write file: {e}")
                 })?;
             
             Ok(ToolResult::text(format!("Successfully replaced text in {}", path.display())))
@@ -284,6 +302,12 @@ impl Tool for EditTool {
 
 /// Command execution tool
 pub struct ExecTool;
+
+impl Default for ExecTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ExecTool {
     pub fn new() -> Self {
@@ -335,12 +359,10 @@ impl Tool for ExecTool {
                 .to_string();
             
             let workdir = params.get("workdir")
-                .and_then(|v| v.as_str())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| context.workspace_path.clone());
+                .and_then(|v| v.as_str()).map_or_else(|| context.workspace_path.clone(), PathBuf::from);
             
             let timeout = params.get("timeout")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .unwrap_or(30); // Default 30 second timeout
             
             // Execute command with timeout
@@ -355,7 +377,7 @@ impl Tool for ExecTool {
                 message: "Command timed out".to_string()
             })?
             .map_err(|e| crate::ToolError::ExecutionFailed { 
-                message: format!("Failed to execute command: {}", e)
+                message: format!("Failed to execute command: {e}")
             })?;
             
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -376,6 +398,12 @@ impl Tool for ExecTool {
 
 /// File glob pattern matching tool
 pub struct GlobTool;
+
+impl Default for GlobTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GlobTool {
     pub fn new() -> Self {
@@ -423,9 +451,7 @@ impl Tool for GlobTool {
                 .to_string();
 
             let base_dir = params.get("path")
-                .and_then(|v| v.as_str())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| context.workspace_path.clone());
+                .and_then(|v| v.as_str()).map_or_else(|| context.workspace_path.clone(), PathBuf::from);
 
             // Build full glob pattern
             let full_pattern = if PathBuf::from(&pattern).is_absolute() {
@@ -436,7 +462,7 @@ impl Tool for GlobTool {
 
             let entries = glob::glob(&full_pattern)
                 .map_err(|e| crate::ToolError::InvalidParameters {
-                    message: format!("Invalid glob pattern: {}", e)
+                    message: format!("Invalid glob pattern: {e}")
                 })?;
 
             let mut matches: Vec<String> = Vec::new();
@@ -444,9 +470,7 @@ impl Tool for GlobTool {
                 match entry {
                     Ok(path) => {
                         // Return paths relative to base_dir when possible
-                        let display_path = path.strip_prefix(&base_dir)
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|_| path.display().to_string());
+                        let display_path = path.strip_prefix(&base_dir).map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
                         matches.push(display_path);
                     }
                     Err(e) => {
@@ -467,6 +491,12 @@ impl Tool for GlobTool {
 
 /// Content search tool using regex
 pub struct GrepTool;
+
+impl Default for GrepTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GrepTool {
     pub fn new() -> Self {
@@ -522,24 +552,22 @@ impl Tool for GrepTool {
                 .to_string();
 
             let search_path = params.get("path")
-                .and_then(|v| v.as_str())
-                .map(|p| {
+                .and_then(|v| v.as_str()).map_or_else(|| context.workspace_path.clone(), |p| {
                     let pb = PathBuf::from(p);
                     if pb.is_absolute() { pb } else { context.workspace_path.join(p) }
-                })
-                .unwrap_or_else(|| context.workspace_path.clone());
+                });
 
             let include_pattern = params.get("include")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
 
             let max_results = params.get("max_results")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .unwrap_or(100) as usize;
 
             let regex = Regex::new(&pattern_str)
                 .map_err(|e| crate::ToolError::InvalidParameters {
-                    message: format!("Invalid regex: {}", e)
+                    message: format!("Invalid regex: {e}")
                 })?;
 
             let mut results: Vec<serde_json::Value> = Vec::new();
@@ -556,31 +584,27 @@ impl Tool for GrepTool {
 
                 glob::glob(&glob_pattern)
                     .map_err(|e| crate::ToolError::ExecutionFailed {
-                        message: format!("Glob error: {}", e)
+                        message: format!("Glob error: {e}")
                     })?
-                    .filter_map(|e| e.ok())
+                    .filter_map(std::result::Result::ok)
                     .filter(|p| p.is_file())
                     .collect()
             };
 
             'outer: for file_path in files {
                 // Skip binary files
-                let file = match std::fs::File::open(&file_path) {
-                    Ok(f) => f,
-                    Err(_) => continue,
+                let Ok(file) = std::fs::File::open(&file_path) else {
+                    continue;
                 };
                 let reader = std::io::BufReader::new(file);
 
                 for (line_num, line) in reader.lines().enumerate() {
-                    let line = match line {
-                        Ok(l) => l,
-                        Err(_) => continue,
+                    let Ok(line) = line else {
+                        continue;
                     };
 
                     if regex.is_match(&line) {
-                        let display_path = file_path.strip_prefix(&context.workspace_path)
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|_| file_path.display().to_string());
+                        let display_path = file_path.strip_prefix(&context.workspace_path).map_or_else(|_| file_path.display().to_string(), |p| p.display().to_string());
 
                         results.push(json!({
                             "file": display_path,
@@ -606,6 +630,12 @@ impl Tool for GrepTool {
 
 /// Unified diff patch application tool
 pub struct PatchTool;
+
+impl Default for PatchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl PatchTool {
     pub fn new() -> Self {
@@ -670,14 +700,15 @@ impl Tool for PatchTool {
             // Read existing file content
             let content = tokio::fs::read_to_string(&path).await
                 .map_err(|e| crate::ToolError::ExecutionFailed {
-                    message: format!("Failed to read file: {}", e)
+                    message: format!("Failed to read file: {e}")
                 })?;
 
-            let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+            let mut lines: Vec<String> = content.lines().map(std::string::ToString::to_string).collect();
             let mut hunks_applied = 0;
             let mut offset: i64 = 0;
 
             // Parse unified diff hunks
+            #[allow(clippy::unwrap_used)] // static pattern, can never fail to compile
             let hunk_re = Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
                 .unwrap();
 
@@ -686,13 +717,14 @@ impl Tool for PatchTool {
 
             while i < patch_lines.len() {
                 if let Some(caps) = hunk_re.captures(patch_lines[i]) {
+                    #[allow(clippy::unwrap_used)] // group 1 is non-optional in the regex, always present when caps exists
                     let orig_start: i64 = caps.get(1).unwrap().as_str().parse().unwrap_or(1);
 
                     i += 1;
 
                     let mut removals: Vec<usize> = Vec::new();
                     let mut additions: Vec<(usize, String)> = Vec::new();
-                    let mut pos = ((orig_start - 1) as i64 + offset) as usize;
+                    let mut pos = ((orig_start - 1) + offset) as usize;
 
                     while i < patch_lines.len() && !patch_lines[i].starts_with("@@") {
                         let line = patch_lines[i];
@@ -716,7 +748,7 @@ impl Tool for PatchTool {
                     }
 
                     // Apply additions
-                    let add_offset = removals.iter().filter(|&&r| r <= additions.first().map(|a| a.0).unwrap_or(usize::MAX)).count();
+                    let add_offset = removals.iter().filter(|&&r| r <= additions.first().map_or(usize::MAX, |a| a.0)).count();
                     for (j, (idx, content)) in additions.iter().enumerate() {
                         let insert_pos = (*idx - add_offset + j).min(lines.len());
                         lines.insert(insert_pos, content.clone());
@@ -737,7 +769,7 @@ impl Tool for PatchTool {
             let new_content = lines.join("\n");
             tokio::fs::write(&path, new_content.as_bytes()).await
                 .map_err(|e| crate::ToolError::ExecutionFailed {
-                    message: format!("Failed to write patched file: {}", e)
+                    message: format!("Failed to write patched file: {e}")
                 })?;
 
             Ok(ToolResult::text(format!("Successfully applied {} hunk(s) to {}", hunks_applied, path.display())))
@@ -747,6 +779,12 @@ impl Tool for PatchTool {
 
 /// Memory retrieval tool
 pub struct MemoryGetTool;
+
+impl Default for MemoryGetTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MemoryGetTool {
     pub fn new() -> Self {
@@ -802,12 +840,12 @@ impl Tool for MemoryGetTool {
 
             let content = tokio::fs::read_to_string(&memory_path).await
                 .map_err(|e| crate::ToolError::ExecutionFailed {
-                    message: format!("Failed to read memory: {}", e)
+                    message: format!("Failed to read memory: {e}")
                 })?;
 
             let memory: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|e| crate::ToolError::ExecutionFailed {
-                    message: format!("Failed to parse memory: {}", e)
+                    message: format!("Failed to parse memory: {e}")
                 })?;
 
             let value = memory.get(&key);
@@ -823,6 +861,12 @@ impl Tool for MemoryGetTool {
 
 /// Memory search tool
 pub struct MemorySearchTool;
+
+impl Default for MemorySearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MemorySearchTool {
     pub fn new() -> Self {
@@ -870,7 +914,7 @@ impl Tool for MemorySearchTool {
                 .to_string();
 
             let limit = params.get("limit")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .unwrap_or(10) as usize;
 
             let memory_dir = context.workspace_path.join(".memory");
@@ -890,13 +934,12 @@ impl Tool for MemorySearchTool {
             let glob_pattern = format!("{}/**/*", memory_dir.display());
             let entries = glob::glob(&glob_pattern)
                 .map_err(|e| crate::ToolError::ExecutionFailed {
-                    message: format!("Glob error: {}", e)
+                    message: format!("Glob error: {e}")
                 })?;
 
-            for entry in entries.filter_map(|e| e.ok()).filter(|p| p.is_file()) {
-                let content = match std::fs::read_to_string(&entry) {
-                    Ok(c) => c,
-                    Err(_) => continue,
+            for entry in entries.filter_map(std::result::Result::ok).filter(|p| p.is_file()) {
+                let Ok(content) = std::fs::read_to_string(&entry) else {
+                    continue;
                 };
 
                 let content_lower = content.to_lowercase();
@@ -907,9 +950,7 @@ impl Tool for MemorySearchTool {
                     .count();
 
                 if score > 0 {
-                    let display_path = entry.strip_prefix(&memory_dir)
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| entry.display().to_string());
+                    let display_path = entry.strip_prefix(&memory_dir).map_or_else(|_| entry.display().to_string(), |p| p.display().to_string());
 
                     // Extract relevant snippet
                     let snippet = content.lines()
@@ -931,8 +972,8 @@ impl Tool for MemorySearchTool {
 
             // Sort by score descending
             results.sort_by(|a, b| {
-                b.get("score").and_then(|v| v.as_u64()).unwrap_or(0)
-                    .cmp(&a.get("score").and_then(|v| v.as_u64()).unwrap_or(0))
+                b.get("score").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                    .cmp(&a.get("score").and_then(serde_json::Value::as_u64).unwrap_or(0))
             });
             results.truncate(limit);
 

@@ -272,12 +272,12 @@ impl App {
                                 self.state.status_message = Some(("✅ Vault auto-unlocked".to_string(), false));
                             }
                             Err(e) => {
-                                self.state.status_message = Some((format!("❌ Auto-unlock failed: {}", e), true));
+                                self.state.status_message = Some((format!("❌ Auto-unlock failed: {e}"), true));
                             }
                         }
                     }
                     Err(e) => {
-                        self.state.status_message = Some((format!("❌ Failed to open vault: {}", e), true));
+                        self.state.status_message = Some((format!("❌ Failed to open vault: {e}"), true));
                     }
                 }
             }
@@ -302,7 +302,7 @@ impl App {
             InputMode::Normal => self.handle_normal_mode(key),
             InputMode::PasswordInput { masked, action, .. } => {
                 let masked = *masked;
-                let action = action.clone();
+                let action = *action;
                 self.handle_password_input(key, masked, action)
             }
             InputMode::AddCredential(state) => {
@@ -605,7 +605,7 @@ impl App {
                 // Debug: log keyfile unlock attempt
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/rockbot_debug.log") {
                     use std::io::Write;
-                    let _ = writeln!(f, "Keyfile unlock: path={:?}", path);
+                    let _ = writeln!(f, "Keyfile unlock: path={path:?}");
                 }
 
                 // Auto-unlock with keyfile - no password needed
@@ -638,19 +638,19 @@ impl App {
                                         self.state.vault.locked = false;
                                         self.state.vault.endpoint_count = endpoints.len();
                                         self.state.endpoints = endpoints;
-                                        self.state.status_message = Some((format!("✅ Unlocked with keyfile"), false));
+                                        self.state.status_message = Some(("✅ Unlocked with keyfile".to_string(), false));
                                     }
                                     Err(e) => {
-                                        self.state.status_message = Some((format!("❌ Keyfile unlock failed: {}", e), true));
+                                        self.state.status_message = Some((format!("❌ Keyfile unlock failed: {e}"), true));
                                     }
                                 }
                             }
                             Err(e) => {
-                                self.state.status_message = Some((format!("❌ Failed to open vault: {}", e), true));
+                                self.state.status_message = Some((format!("❌ Failed to open vault: {e}"), true));
                             }
                         }
                     } else {
-                        self.state.status_message = Some((format!("Keyfile not found: {}", kf_path), true));
+                        self.state.status_message = Some((format!("Keyfile not found: {kf_path}"), true));
                     }
                 } else {
                     self.state.status_message = Some(("No keyfile path configured".to_string(), true));
@@ -673,7 +673,7 @@ impl App {
                 // Try SSH agent unlock
                 let ssh_path = path.clone().unwrap_or_else(|| "~/.ssh/id_ed25519".to_string());
                 // TODO: Actually unlock via SSH agent
-                self.state.status_message = Some((format!("SSH unlock not yet implemented (key: {})", ssh_path), true));
+                self.state.status_message = Some((format!("SSH unlock not yet implemented (key: {ssh_path})"), true));
             }
             UnlockMethod::Unknown => {
                 // Default to password prompt
@@ -792,76 +792,61 @@ impl App {
     }
 
     fn handle_kill_action(&mut self) {
-        match self.state.menu_item {
-            MenuItem::Sessions => {
-                if let Some(session) = self.state.sessions.get(self.state.selected_session) {
-                    self.state.input_mode = InputMode::Confirm {
-                        message: format!("Kill session '{}'?", session.key),
-                        action: ConfirmAction::KillSession(session.key.clone()),
-                    };
-                } else {
-                    self.state.status_message = Some(("No session selected".to_string(), true));
-                }
+        if self.state.menu_item == MenuItem::Sessions {
+            if let Some(session) = self.state.sessions.get(self.state.selected_session) {
+                self.state.input_mode = InputMode::Confirm {
+                    message: format!("Kill session '{}'?", session.key),
+                    action: ConfirmAction::KillSession(session.key.clone()),
+                };
+            } else {
+                self.state.status_message = Some(("No session selected".to_string(), true));
             }
-            _ => {}
         }
     }
 
     fn handle_view_action(&mut self) {
-        match self.state.menu_item {
-            MenuItem::Sessions => {
-                if let Some(session) = self.state.sessions.get(self.state.selected_session) {
-                    self.state.input_mode = InputMode::ViewSession {
-                        session_key: session.key.clone()
-                    };
-                    // Spawn async task to load session details
-                    self.spawn_session_details(&session.key);
-                } else {
-                    self.state.status_message = Some(("No session selected".to_string(), true));
-                }
+        if self.state.menu_item == MenuItem::Sessions {
+            if let Some(session) = self.state.sessions.get(self.state.selected_session) {
+                self.state.input_mode = InputMode::ViewSession {
+                    session_key: session.key.clone()
+                };
+                // Spawn async task to load session details
+                self.spawn_session_details(&session.key);
+            } else {
+                self.state.status_message = Some(("No session selected".to_string(), true));
             }
-            _ => {}
         }
     }
 
     fn handle_test_action(&mut self) {
-        match self.state.menu_item {
-            MenuItem::Models => {
-                let provider_names = ["Anthropic", "OpenAI", "Google AI", "AWS Bedrock", "Ollama"];
-                if let Some(name) = provider_names.get(self.state.selected_provider) {
-                    self.state.status_message = Some((format!("Testing {} connection...", name), false));
-                    self.spawn_model_test(self.state.selected_provider);
-                }
+        if self.state.menu_item == MenuItem::Models {
+            let provider_names = ["Anthropic", "OpenAI", "Google AI", "AWS Bedrock", "Ollama"];
+            if let Some(name) = provider_names.get(self.state.selected_provider) {
+                self.state.status_message = Some((format!("Testing {name} connection..."), false));
+                self.spawn_model_test(self.state.selected_provider);
             }
-            _ => {}
         }
     }
 
     fn handle_start_action(&mut self) {
-        match self.state.menu_item {
-            MenuItem::Settings => {
-                if self.state.gateway.connected {
-                    self.state.status_message = Some(("Gateway already running".to_string(), false));
-                } else {
-                    self.state.status_message = Some(("Starting gateway...".to_string(), false));
-                    self.spawn_gateway_control("start");
-                }
+        if self.state.menu_item == MenuItem::Settings {
+            if self.state.gateway.connected {
+                self.state.status_message = Some(("Gateway already running".to_string(), false));
+            } else {
+                self.state.status_message = Some(("Starting gateway...".to_string(), false));
+                self.spawn_gateway_control("start");
             }
-            _ => {}
         }
     }
 
     fn handle_stop_action(&mut self) {
-        match self.state.menu_item {
-            MenuItem::Settings => {
-                if !self.state.gateway.connected {
-                    self.state.status_message = Some(("Gateway not running".to_string(), false));
-                } else {
-                    self.state.status_message = Some(("Stopping gateway...".to_string(), false));
-                    self.spawn_gateway_control("stop");
-                }
+        if self.state.menu_item == MenuItem::Settings {
+            if !self.state.gateway.connected {
+                self.state.status_message = Some(("Gateway not running".to_string(), false));
+            } else {
+                self.state.status_message = Some(("Stopping gateway...".to_string(), false));
+                self.spawn_gateway_control("stop");
             }
-            _ => {}
         }
     }
 
@@ -879,12 +864,13 @@ impl App {
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(Message::SetStatus(format!("❌ {}", e), true));
+                    let _ = tx.send(Message::SetStatus(format!("❌ {e}"), true));
                 }
             }
         });
     }
 
+    #[allow(clippy::unused_self)]
     fn spawn_session_details(&self, _session_key: &str) {
         // TODO: Load session details from gateway API
         // For now, just show the view modal with basic info
@@ -926,29 +912,29 @@ impl App {
                 match test_ollama_connection().await {
                     Ok(models) => {
                         let _ = tx.send(Message::SetStatus(
-                            format!("✅ Ollama connected ({} models)", models),
+                            format!("✅ Ollama connected ({models} models)"),
                             false
                         ));
                     }
                     Err(e) => {
-                        let _ = tx.send(Message::SetStatus(format!("❌ Ollama: {}", e), true));
+                        let _ = tx.send(Message::SetStatus(format!("❌ Ollama: {e}"), true));
                     }
                 }
             } else if let Some(key) = api_key {
                 match test_api_connection(provider_index, &key).await {
                     Ok(()) => {
                         let _ = tx.send(Message::SetStatus(
-                            format!("✅ {} API key valid", provider_name),
+                            format!("✅ {provider_name} API key valid"),
                             false
                         ));
                     }
                     Err(e) => {
-                        let _ = tx.send(Message::SetStatus(format!("❌ {}: {}", provider_name, e), true));
+                        let _ = tx.send(Message::SetStatus(format!("❌ {provider_name}: {e}"), true));
                     }
                 }
             } else {
                 let _ = tx.send(Message::SetStatus(
-                    format!("❌ No API key found for {}", provider_name),
+                    format!("❌ No API key found for {provider_name}"),
                     true
                 ));
             }
@@ -980,15 +966,16 @@ impl App {
         tokio::spawn(async move {
             match kill_session(&key).await {
                 Ok(()) => {
-                    let _ = tx.send(Message::SetStatus(format!("✅ Session killed: {}", key), false));
+                    let _ = tx.send(Message::SetStatus(format!("✅ Session killed: {key}"), false));
                 }
                 Err(e) => {
-                    let _ = tx.send(Message::SetStatus(format!("❌ Failed to kill session: {}", e), true));
+                    let _ = tx.send(Message::SetStatus(format!("❌ Failed to kill session: {e}"), true));
                 }
             }
         });
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn handle_password_input(&mut self, key: KeyEvent, _masked: bool, action: PasswordAction) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
@@ -1019,7 +1006,7 @@ impl App {
                                     self.state.status_message = Some(("✅ Vault initialized!".to_string(), false));
                                 }
                                 Err(e) => {
-                                    self.state.status_message = Some((format!("❌ Init failed: {}", e), true));
+                                    self.state.status_message = Some((format!("❌ Init failed: {e}"), true));
                                 }
                             }
                         }
@@ -1050,12 +1037,12 @@ impl App {
                                         self.state.status_message = Some(("✅ Vault unlocked".to_string(), false));
                                     }
                                     Err(e) => {
-                                        self.state.status_message = Some((format!("❌ Wrong password: {}", e), true));
+                                        self.state.status_message = Some((format!("❌ Wrong password: {e}"), true));
                                     }
                                 }
                             }
                             Err(e) => {
-                                self.state.status_message = Some((format!("❌ Failed to open vault: {}", e), true));
+                                self.state.status_message = Some((format!("❌ Failed to open vault: {e}"), true));
                             }
                         }
                     }
@@ -1116,11 +1103,11 @@ impl App {
                                         })
                                         .collect();
                                     self.state.vault.endpoint_count = self.state.endpoints.len();
-                                    self.state.status_message = Some((format!("✅ Added: {}", endpoint_name), false));
+                                    self.state.status_message = Some((format!("✅ Added: {endpoint_name}"), false));
                                     self.state.input_mode = InputMode::Normal;
                                 }
                                 Err(e) => {
-                                    self.state.status_message = Some((format!("❌ Failed: {}", e), true));
+                                    self.state.status_message = Some((format!("❌ Failed: {e}"), true));
                                 }
                             }
                         } else {
@@ -1207,11 +1194,11 @@ impl App {
                                         })
                                         .collect();
                                     self.state.vault.endpoint_count = self.state.endpoints.len();
-                                    self.state.status_message = Some((format!("✅ Updated: {}", endpoint_name), false));
+                                    self.state.status_message = Some((format!("✅ Updated: {endpoint_name}"), false));
                                     self.state.input_mode = InputMode::Normal;
                                 }
                                 Err(e) => {
-                                    self.state.status_message = Some((format!("❌ Failed: {}", e), true));
+                                    self.state.status_message = Some((format!("❌ Failed: {e}"), true));
                                 }
                             }
                         } else {
@@ -1349,7 +1336,7 @@ impl App {
                             }
                             Err(e) => {
                                 self.state.status_message = Some((
-                                    format!("❌ Failed to store API key: {}", e),
+                                    format!("❌ Failed to store API key: {e}"),
                                     true
                                 ));
                             }
@@ -1391,7 +1378,7 @@ impl App {
                                     }
                                     Err(e) => {
                                         self.state.status_message = Some((
-                                            format!("❌ Failed to store API key: {}", e),
+                                            format!("❌ Failed to store API key: {e}"),
                                             true
                                         ));
                                     }
@@ -1399,7 +1386,7 @@ impl App {
                             }
                             Err(e) => {
                                 self.state.status_message = Some((
-                                    format!("❌ Failed to create endpoint: {}", e),
+                                    format!("❌ Failed to create endpoint: {e}"),
                                     true
                                 ));
                             }
@@ -1410,7 +1397,7 @@ impl App {
                 // Vault not unlocked - just show a message with env var hint
                 if let Some(env_var) = state.env_var_hint() {
                     self.state.status_message = Some((
-                        format!("💡 Set {} environment variable to persist API key", env_var),
+                        format!("💡 Set {env_var} environment variable to persist API key"),
                         false
                     ));
                 }
@@ -1553,7 +1540,7 @@ impl App {
                 .unwrap();
 
             let gateway_result = if is_edit {
-                client.put(format!("http://127.0.0.1:18080/api/agents/{}", agent_id))
+                client.put(format!("http://127.0.0.1:18080/api/agents/{agent_id}"))
                     .json(&json_body)
                     .send()
                     .await
@@ -1568,12 +1555,12 @@ impl App {
                 Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 202 => {
                     let action = if is_edit { "updated" } else { "created" };
                     let _ = tx.send(Message::AgentSaved(agent_id));
-                    let _ = tx.send(Message::SetStatus(format!("Agent {}", action), false));
+                    let _ = tx.send(Message::SetStatus(format!("Agent {action}"), false));
                     let _ = tx.send(Message::ReloadAgents);
                 }
                 Ok(resp) => {
                     let err_text = resp.text().await.unwrap_or_default();
-                    let _ = tx.send(Message::AgentSaveError(format!("Gateway error: {}", err_text)));
+                    let _ = tx.send(Message::AgentSaveError(format!("Gateway error: {err_text}")));
                 }
                 Err(_) => {
                     // Gateway unreachable — fall back to direct config file edit
@@ -1581,7 +1568,7 @@ impl App {
                         Ok(()) => {
                             let action = if is_edit { "updated" } else { "created" };
                             let _ = tx.send(Message::AgentSaved(agent_id));
-                            let _ = tx.send(Message::SetStatus(format!("Agent {} (offline)", action), false));
+                            let _ = tx.send(Message::SetStatus(format!("Agent {action} (offline)"), false));
                             let _ = tx.send(Message::ReloadAgents);
                         }
                         Err(e) => {
@@ -1593,7 +1580,6 @@ impl App {
         });
 
         // Let the spawn handle the result — we return to normal mode immediately
-        return;
     }
 }
 
@@ -1606,7 +1592,7 @@ fn save_agent_to_config_file(
 ) -> Result<()> {
     let content = std::fs::read_to_string(config_path)?;
     let mut doc: toml_edit::DocumentMut = content.parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse config: {e}"))?;
 
     if !doc.contains_key("agents") {
         doc["agents"] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -1650,13 +1636,13 @@ fn apply_agent_fields_to_table(table: &mut toml_edit::Table, json: &serde_json::
     if let Some(workspace) = json.get("workspace").and_then(|v| v.as_str()) {
         if workspace.is_empty() { table.remove("workspace"); } else { table["workspace"] = toml_edit::value(workspace); }
     }
-    if let Some(max_tool_calls) = json.get("max_tool_calls").and_then(|v| v.as_i64()) {
+    if let Some(max_tool_calls) = json.get("max_tool_calls").and_then(serde_json::Value::as_i64) {
         table["max_tool_calls"] = toml_edit::value(max_tool_calls);
     }
     if let Some(system_prompt) = json.get("system_prompt").and_then(|v| v.as_str()) {
         if system_prompt.is_empty() { table.remove("system_prompt"); } else { table["system_prompt"] = toml_edit::value(system_prompt); }
     }
-    if let Some(enabled) = json.get("enabled").and_then(|v| v.as_bool()) {
+    if let Some(enabled) = json.get("enabled").and_then(serde_json::Value::as_bool) {
         table["enabled"] = toml_edit::value(enabled);
     }
 }
@@ -1700,15 +1686,15 @@ impl App {
                                             if self.state.selected_endpoint >= self.state.endpoints.len() {
                                                 self.state.selected_endpoint = self.state.endpoints.len().saturating_sub(1);
                                             }
-                                            self.state.status_message = Some((format!("✅ Deleted endpoint"), false));
+                                            self.state.status_message = Some(("✅ Deleted endpoint".to_string(), false));
                                         }
                                         Err(e) => {
-                                            self.state.status_message = Some((format!("❌ Delete failed: {}", e), true));
+                                            self.state.status_message = Some((format!("❌ Delete failed: {e}"), true));
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    self.state.status_message = Some((format!("❌ Invalid endpoint ID: {}", e), true));
+                                    self.state.status_message = Some((format!("❌ Invalid endpoint ID: {e}"), true));
                                 }
                             }
                         } else {
@@ -1721,7 +1707,7 @@ impl App {
                         if self.state.selected_agent >= self.state.agents.len() {
                             self.state.selected_agent = self.state.agents.len().saturating_sub(1);
                         }
-                        self.state.status_message = Some((format!("Disabled agent: {} (edit config to persist)", id), false));
+                        self.state.status_message = Some((format!("Disabled agent: {id} (edit config to persist)"), false));
                     }
                     ConfirmAction::KillSession(key) => {
                         // Spawn async task to kill session via gateway API
@@ -1733,7 +1719,7 @@ impl App {
                         if self.state.selected_agent >= self.state.agents.len() {
                             self.state.selected_agent = self.state.agents.len().saturating_sub(1);
                         }
-                        self.state.status_message = Some((format!("Disabled agent: {}", id), false));
+                        self.state.status_message = Some((format!("Disabled agent: {id}"), false));
                     }
                 }
                 self.state.input_mode = InputMode::Normal;
@@ -1822,7 +1808,7 @@ impl App {
         }
 
         // Ensure [providers.<provider>] section exists
-        if !doc["providers"].as_table().map(|t| t.contains_key(provider_section)).unwrap_or(false) {
+        if !doc["providers"].as_table().is_some_and(|t| t.contains_key(provider_section)) {
             doc["providers"][provider_section] = toml_edit::Item::Table(toml_edit::Table::new());
         }
 
@@ -1846,7 +1832,7 @@ impl App {
         if let Err(e) = std::fs::write(config_path, doc.to_string()) {
             tracing::warn!("Failed to save provider config: {}", e);
             self.state.status_message = Some((
-                format!("⚠️ Auth mode set but failed to save config: {}", e),
+                format!("⚠️ Auth mode set but failed to save config: {e}"),
                 true
             ));
         } else {
@@ -2087,7 +2073,7 @@ fn update_credential_in_vault(
     vault: &mut rockbot_credentials::CredentialVault,
     state: &EditCredentialState,
 ) -> Result<String> {
-    use rockbot_credentials::{EndpointType, CredentialType};
+    
 
     let endpoint_id = uuid::Uuid::parse_str(&state.endpoint_id)?;
 
@@ -2237,9 +2223,9 @@ async fn check_gateway_status() -> Result<GatewayStatus> {
                 return Ok(GatewayStatus {
                     connected: true,
                     version: json.get("version").and_then(|v| v.as_str()).map(String::from),
-                    uptime_secs: json.get("uptime_secs").and_then(|v| v.as_u64()),
-                    active_sessions: json.get("active_sessions").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                    pending_agents: json.get("pending_agents").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                    uptime_secs: json.get("uptime_secs").and_then(serde_json::Value::as_u64),
+                    active_sessions: json.get("active_sessions").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize,
+                    pending_agents: json.get("pending_agents").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize,
                 });
             }
             // Connected but couldn't parse response
@@ -2299,9 +2285,9 @@ async fn load_agents_from_gateway() -> Result<Vec<AgentInfo>> {
         let parent_id = entry.get("parent_id").and_then(|v| v.as_str()).map(String::from);
         let system_prompt = entry.get("system_prompt").and_then(|v| v.as_str()).map(String::from);
         let workspace = entry.get("workspace").and_then(|v| v.as_str()).map(String::from);
-        let max_tool_calls = entry.get("max_tool_calls").and_then(|v| v.as_u64()).map(|n| n as u32);
-        let enabled = entry.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-        let session_count = entry.get("session_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let max_tool_calls = entry.get("max_tool_calls").and_then(serde_json::Value::as_u64).map(|n| n as u32);
+        let enabled = entry.get("enabled").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        let session_count = entry.get("session_count").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
 
         let status = match entry.get("status").and_then(|v| v.as_str()) {
             Some("active") => AgentStatus::Active,
@@ -2345,8 +2331,8 @@ async fn load_agents_from_config(config_path: &PathBuf) -> Result<Vec<AgentInfo>
                 let parent_id = entry.get("parent_id").and_then(|v| v.as_str()).map(String::from);
                 let system_prompt = entry.get("system_prompt").and_then(|v| v.as_str()).map(String::from);
                 let workspace = entry.get("workspace").and_then(|v| v.as_str()).map(String::from);
-                let max_tool_calls = entry.get("max_tool_calls").and_then(|v| v.as_integer()).map(|n| n as u32);
-                let enabled = entry.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let max_tool_calls = entry.get("max_tool_calls").and_then(toml::Value::as_integer).map(|n| n as u32);
+                let enabled = entry.get("enabled").and_then(toml::Value::as_bool).unwrap_or(true);
 
                 let status = if enabled { AgentStatus::Active } else { AgentStatus::Disabled };
 
@@ -2388,14 +2374,14 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     // Debug logging
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/rockbot_debug.log") {
         use std::io::Write;
-        let _ = writeln!(f, "check_vault_status: path={:?}", vault_path);
+        let _ = writeln!(f, "check_vault_status: path={vault_path:?}");
     }
 
     let exists = CredentialVault::exists(vault_path);
 
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/rockbot_debug.log") {
         use std::io::Write;
-        let _ = writeln!(f, "check_vault_status: exists={}", exists);
+        let _ = writeln!(f, "check_vault_status: exists={exists}");
     }
 
     if !exists {
@@ -2414,7 +2400,7 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
             let method = vault.unlock_method();
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/rockbot_debug.log") {
                 use std::io::Write;
-                let _ = writeln!(f, "check_vault_status: raw unlock_method={:?}", method);
+                let _ = writeln!(f, "check_vault_status: raw unlock_method={method:?}");
             }
             match method {
                 Some(rockbot_credentials::UnlockMethod::Password { .. }) => {
@@ -2435,7 +2421,7 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
         Err(e) => {
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/rockbot_debug.log") {
                 use std::io::Write;
-                let _ = writeln!(f, "check_vault_status: open error={:?}", e);
+                let _ = writeln!(f, "check_vault_status: open error={e:?}");
             }
             UnlockMethod::Unknown
         }
@@ -2443,7 +2429,7 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
 
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/rockbot_debug.log") {
         use std::io::Write;
-        let _ = writeln!(f, "check_vault_status: final unlock_method={:?}", unlock_method);
+        let _ = writeln!(f, "check_vault_status: final unlock_method={unlock_method:?}");
     }
 
     Ok(VaultStatus {
@@ -2460,10 +2446,10 @@ async fn send_chat_message(
     chat_history: &[(bool, String)], // (is_user, content)
     user_message: &str,
 ) -> Result<String> {
-    use rockbot_llm::{LlmProvider, LlmProviderRegistry, ChatCompletionRequest, Message, MessageRole};
+    use rockbot_llm::{LlmProviderRegistry, ChatCompletionRequest, Message, MessageRole};
 
     let registry = LlmProviderRegistry::new().await
-        .map_err(|e| anyhow::anyhow!("Failed to create provider registry: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to create provider registry: {e}"))?;
 
     // Use the first non-mock provider available
     let providers = registry.list_providers();
@@ -2473,7 +2459,7 @@ async fn send_chat_message(
         .ok_or_else(|| anyhow::anyhow!("No LLM providers available"))?;
 
     let provider = registry.get_provider_for_model(provider_id).await
-        .map_err(|e| anyhow::anyhow!("Failed to get provider: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to get provider: {e}"))?;
 
     // Build messages from history
     let mut messages: Vec<Message> = chat_history
@@ -2493,10 +2479,8 @@ async fn send_chat_message(
     });
 
     let models = provider.list_models().await
-        .map_err(|e| anyhow::anyhow!("Failed to list models: {}", e))?;
-    let model_id = models.first()
-        .map(|m| m.id.clone())
-        .unwrap_or_else(|| "mock-model".to_string());
+        .map_err(|e| anyhow::anyhow!("Failed to list models: {e}"))?;
+    let model_id = models.first().map_or_else(|| "mock-model".to_string(), |m| m.id.clone());
 
     let request = ChatCompletionRequest {
         model: model_id,
@@ -2508,13 +2492,11 @@ async fn send_chat_message(
     };
 
     let response = provider.chat_completion(request).await
-        .map_err(|e| anyhow::anyhow!("Chat completion failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Chat completion failed: {e}"))?;
 
     // Extract the assistant's response
     let content = response.choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_else(|| "No response received".to_string());
+        .first().map_or_else(|| "No response received".to_string(), |c| c.message.content.clone());
 
     Ok(content)
 }
@@ -2538,7 +2520,7 @@ async fn run_gateway_control(action: &str) -> Result<String> {
         Ok(msg.to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(anyhow::anyhow!("Gateway {} failed: {}", action, stderr))
+        Err(anyhow::anyhow!("Gateway {action} failed: {stderr}"))
     }
 }
 
@@ -2556,8 +2538,7 @@ async fn test_ollama_connection() -> Result<usize> {
         let model_count = json
             .get("models")
             .and_then(|m| m.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
+            .map_or(0, std::vec::Vec::len);
         Ok(model_count)
     } else {
         Err(anyhow::anyhow!("Ollama returned status {}", response.status()))
@@ -2581,7 +2562,7 @@ async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()>
 
             // Use appropriate auth header
             request = if is_session_key {
-                request.header("Authorization", format!("Bearer {}", api_key))
+                request.header("Authorization", format!("Bearer {api_key}"))
             } else {
                 request.header("x-api-key", api_key)
             };
@@ -2609,7 +2590,7 @@ async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()>
             // OpenAI
             let response = client
                 .get("https://api.openai.com/v1/models")
-                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Authorization", format!("Bearer {api_key}"))
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await?;
@@ -2626,8 +2607,7 @@ async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()>
             // Google AI
             let response = client
                 .get(format!(
-                    "https://generativelanguage.googleapis.com/v1/models?key={}",
-                    api_key
+                    "https://generativelanguage.googleapis.com/v1/models?key={api_key}"
                 ))
                 .timeout(Duration::from_secs(10))
                 .send()
@@ -2649,7 +2629,7 @@ async fn test_api_connection(provider_index: usize, api_key: &str) -> Result<()>
 async fn kill_session(session_key: &str) -> Result<()> {
     let client = reqwest::Client::new();
     let response = client
-        .delete(format!("http://127.0.0.1:18080/api/sessions/{}", session_key))
+        .delete(format!("http://127.0.0.1:18080/api/sessions/{session_key}"))
         .timeout(Duration::from_secs(5))
         .send()
         .await?;
@@ -2684,11 +2664,11 @@ async fn load_providers_from_gateway() -> Result<Vec<ModelProvider>> {
                         .filter_map(|p| {
                             let id = p.get("id")?.as_str()?.to_string();
                             let name = p.get("name")?.as_str()?.to_string();
-                            let available = p.get("available").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let available = p.get("available").and_then(serde_json::Value::as_bool).unwrap_or(false);
                             let auth_type = p.get("auth_type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                            let supports_streaming = p.get("supports_streaming").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let supports_tools = p.get("supports_tools").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let supports_vision = p.get("supports_vision").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let supports_streaming = p.get("supports_streaming").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                            let supports_tools = p.get("supports_tools").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                            let supports_vision = p.get("supports_vision").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
                             let models = p
                                 .get("models")
@@ -2702,7 +2682,7 @@ async fn load_providers_from_gateway() -> Result<Vec<ModelProvider>> {
                                                 name: m.get("name")?.as_str()?.to_string(),
                                                 description: m.get("description")?.as_str()?.to_string(),
                                                 context_window: m.get("context_window")?.as_u64()? as u32,
-                                                max_output_tokens: m.get("max_output_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+                                                max_output_tokens: m.get("max_output_tokens").and_then(serde_json::Value::as_u64).map(|v| v as u32),
                                             })
                                         })
                                         .collect()
@@ -2774,10 +2754,10 @@ async fn load_credential_schemas() -> Result<Vec<CredentialSchemaInfo>> {
                                                                 Some(CredentialFieldInfo {
                                                                     id: f.get("id")?.as_str()?.to_string(),
                                                                     label: f.get("label")?.as_str()?.to_string(),
-                                                                    secret: f.get("secret").and_then(|v| v.as_bool()).unwrap_or(false),
+                                                                    secret: f.get("secret").and_then(serde_json::Value::as_bool).unwrap_or(false),
                                                                     default: f.get("default").and_then(|v| v.as_str()).map(String::from),
                                                                     placeholder: f.get("placeholder").and_then(|v| v.as_str()).map(String::from),
-                                                                    required: f.get("required").and_then(|v| v.as_bool()).unwrap_or(true),
+                                                                    required: f.get("required").and_then(serde_json::Value::as_bool).unwrap_or(true),
                                                                     env_var: f.get("env_var").and_then(|v| v.as_str()).map(String::from),
                                                                 })
                                                             })

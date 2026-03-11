@@ -186,7 +186,7 @@ fn render_provider_details(
             ("✗", Color::DarkGray)
         };
         content.push(Line::from(vec![
-            Span::styled(format!("  {} ", icon), Style::default().fg(color)),
+            Span::styled(format!("  {icon} "), Style::default().fg(color)),
             Span::raw(name),
         ]));
     }
@@ -201,9 +201,7 @@ fn render_provider_details(
 
         for model in provider.models.iter().take(8) {
             let tokens_info = model
-                .max_output_tokens
-                .map(|t| format!(" ({}k ctx, {}k out)", model.context_window / 1000, t / 1000))
-                .unwrap_or_else(|| format!(" ({}k ctx)", model.context_window / 1000));
+                .max_output_tokens.map_or_else(|| format!(" ({}k ctx)", model.context_window / 1000), |t| format!(" ({}k ctx, {}k out)", model.context_window / 1000, t / 1000));
 
             content.push(Line::from(vec![
                 Span::styled("  • ", Style::default().fg(Color::DarkGray)),

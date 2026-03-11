@@ -42,8 +42,7 @@ impl MasterKey {
     pub fn derive_from_password(password: &str, salt: &[u8]) -> Result<Self> {
         if salt.len() < SALT_SIZE {
             return Err(CredentialError::Internal(format!(
-                "salt must be at least {} bytes",
-                SALT_SIZE
+                "salt must be at least {SALT_SIZE} bytes"
             )));
         }
 
@@ -52,12 +51,12 @@ impl MasterKey {
 
         // Create a SaltString from the raw bytes
         let salt_string = SaltString::encode_b64(salt)
-            .map_err(|e| CredentialError::Internal(format!("failed to encode salt: {}", e)))?;
+            .map_err(|e| CredentialError::Internal(format!("failed to encode salt: {e}")))?;
 
         // Hash the password
         let hash = argon2
             .hash_password(password.as_bytes(), &salt_string)
-            .map_err(|e| CredentialError::Internal(format!("failed to derive key: {}", e)))?;
+            .map_err(|e| CredentialError::Internal(format!("failed to derive key: {e}")))?;
 
         // Extract the hash output (should be 32 bytes)
         let hash_output = hash
@@ -81,8 +80,7 @@ impl MasterKey {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != KEY_SIZE {
             return Err(CredentialError::Internal(format!(
-                "key must be exactly {} bytes",
-                KEY_SIZE
+                "key must be exactly {KEY_SIZE} bytes"
             )));
         }
         let mut key = [0u8; KEY_SIZE];
@@ -123,7 +121,7 @@ pub fn generate_nonce() -> [u8; NONCE_SIZE] {
 /// Encrypts plaintext using AES-256-GCM with the provided key and nonce.
 pub fn encrypt(key: &MasterKey, nonce: &[u8; NONCE_SIZE], plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
-        .map_err(|e| CredentialError::Internal(format!("failed to create cipher: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("failed to create cipher: {e}")))?;
 
     let nonce = Nonce::from_slice(nonce);
 
@@ -135,7 +133,7 @@ pub fn encrypt(key: &MasterKey, nonce: &[u8; NONCE_SIZE], plaintext: &[u8]) -> R
 /// Decrypts ciphertext using AES-256-GCM with the provided key and nonce.
 pub fn decrypt(key: &MasterKey, nonce: &[u8; NONCE_SIZE], ciphertext: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
-        .map_err(|e| CredentialError::Internal(format!("failed to create cipher: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("failed to create cipher: {e}")))?;
 
     let nonce = Nonce::from_slice(nonce);
 
@@ -161,6 +159,7 @@ pub fn sha256_str(data: &str) -> Hash256 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::types::hex_encode;
 

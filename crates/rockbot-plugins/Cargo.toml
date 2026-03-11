@@ -5,6 +5,9 @@ edition = "2021"
 description = "Plugin system for RockBot"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }

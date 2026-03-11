@@ -68,11 +68,11 @@ impl AuditLog {
             }
 
             let entry: AuditEntry = serde_json::from_str(&line)
-                .map_err(|e| CredentialError::AuditReadFailed(format!("failed to parse entry: {}", e)))?;
+                .map_err(|e| CredentialError::AuditReadFailed(format!("failed to parse entry: {e}")))?;
 
             last_hash = entry
                 .entry_hash_bytes()
-                .map_err(|e| CredentialError::AuditReadFailed(format!("invalid hash: {}", e)))?;
+                .map_err(|e| CredentialError::AuditReadFailed(format!("invalid hash: {e}")))?;
             next_sequence = entry.sequence + 1;
         }
 
@@ -99,12 +99,12 @@ impl AuditLog {
     }
 
     /// Appends an entry to the audit log.
-    pub fn append(&mut self, entry: AuditEntry) -> Result<()> {
+    pub fn append(&mut self, entry: &AuditEntry) -> Result<()> {
         // Verify chain integrity
         let expected_prev = self.last_hash;
         let actual_prev = entry
             .previous_hash_bytes()
-            .map_err(|e| CredentialError::AuditWriteFailed(format!("invalid previous hash: {}", e)))?;
+            .map_err(|e| CredentialError::AuditWriteFailed(format!("invalid previous hash: {e}")))?;
 
         if actual_prev != expected_prev {
             return Err(CredentialError::AuditChainBroken(entry.sequence));
@@ -119,10 +119,10 @@ impl AuditLog {
         }
 
         // Verify entry hash
-        let computed_hash = compute_entry_hash(&entry);
+        let computed_hash = compute_entry_hash(entry);
         let stored_hash = entry
             .entry_hash_bytes()
-            .map_err(|e| CredentialError::AuditWriteFailed(format!("invalid entry hash: {}", e)))?;
+            .map_err(|e| CredentialError::AuditWriteFailed(format!("invalid entry hash: {e}")))?;
 
         if computed_hash != stored_hash {
             return Err(CredentialError::AuditWriteFailed(
@@ -137,9 +137,9 @@ impl AuditLog {
             .open(&self.path)?;
 
         let json = serde_json::to_string(&entry)
-            .map_err(|e| CredentialError::AuditWriteFailed(format!("failed to serialize: {}", e)))?;
+            .map_err(|e| CredentialError::AuditWriteFailed(format!("failed to serialize: {e}")))?;
 
-        writeln!(file, "{}", json)?;
+        writeln!(file, "{json}")?;
         file.sync_all()?;
 
         // Update state
@@ -428,6 +428,7 @@ fn compute_entry_hash(entry: &AuditEntry) -> Hash256 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use std::fs;
     use tempfile::tempdir;
@@ -449,7 +450,7 @@ mod tests {
             .result_status(ResultStatus::Success)
             .build();
 
-        log.append(entry).unwrap();
+        log.append(&entry).unwrap();
         assert_eq!(log.next_sequence(), 2);
 
         // Verify file was written
@@ -471,7 +472,7 @@ mod tests {
                 .method(HttpMethod::Get)
                 .path("/test")
                 .build();
-            log.append(entry).unwrap();
+            log.append(&entry).unwrap();
         }
 
         // Reopen and continue
@@ -485,7 +486,7 @@ mod tests {
                 .method(HttpMethod::Post)
                 .path("/test2")
                 .build();
-            log.append(entry).unwrap();
+            log.append(&entry).unwrap();
             assert_eq!(log.next_sequence(), 3);
         }
     }
@@ -505,7 +506,7 @@ mod tests {
                 .method(HttpMethod::Get)
                 .path(format!("/test/{}", i))
                 .build();
-            log.append(entry).unwrap();
+            log.append(&entry).unwrap();
         }
 
         // Verify
@@ -530,7 +531,7 @@ mod tests {
                     .method(HttpMethod::Get)
                     .path(format!("/test/{}", i))
                     .build();
-                log.append(entry).unwrap();
+                log.append(&entry).unwrap();
             }
         }
 
@@ -559,7 +560,7 @@ mod tests {
             .method(HttpMethod::Get)
             .path("/test")
             .build();
-        log.append(entry).unwrap();
+        log.append(&entry).unwrap();
 
         // Try to append entry with wrong sequence (create from scratch)
         let wrong_entry = AuditEntryBuilder {
@@ -579,7 +580,7 @@ mod tests {
         }
         .build();
 
-        let result = log.append(wrong_entry);
+        let result = log.append(&wrong_entry);
         assert!(result.is_err());
     }
 }

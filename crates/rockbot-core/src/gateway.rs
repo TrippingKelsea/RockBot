@@ -5,7 +5,7 @@
 
 use crate::agent::{Agent, AgentResponse};
 use crate::config::{Config, CredentialsConfig, GatewayConfig};
-use rockbot_credentials::{CredentialManager, MasterKey, generate_salt, PermissionLevel, PathPermission, HilApprovalResponse};
+use rockbot_credentials::{CredentialManager, MasterKey, generate_salt};
 
 /// Simple base64 decoding (using standard alphabet)
 fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, &'static str> {
@@ -125,13 +125,18 @@ pub struct Gateway {
 
 /// WebSocket connection information
 struct WsConnection {
+    #[allow(dead_code)]
     id: String,
     sender: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    #[allow(dead_code)]
     user_id: Option<String>,
+    #[allow(dead_code)]
     connected_at: std::time::Instant,
 }
 
 /// WebSocket message types
+#[allow(dead_code)]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum WsMessageType {
@@ -156,6 +161,8 @@ enum WsMessageType {
 }
 
 /// WebSocket response types
+#[allow(dead_code)]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum WsResponseType {
@@ -292,7 +299,7 @@ impl Gateway {
     async fn init_credential_manager(config: &CredentialsConfig) -> Result<CredentialManager> {
         let manager = CredentialManager::new(&config.vault_path)
             .map_err(|e| GatewayError::InvalidRequest {
-                message: format!("Failed to open credential vault: {}", e),
+                message: format!("Failed to open credential vault: {e}"),
             })?;
         
         // Auto-unlock if configured
@@ -302,11 +309,11 @@ impl Gateway {
                     let salt = generate_salt();
                     let master_key = MasterKey::derive_from_password(&password, &salt)
                         .map_err(|e| GatewayError::InvalidRequest {
-                            message: format!("Failed to derive master key: {}", e),
+                            message: format!("Failed to derive master key: {e}"),
                         })?;
                     manager.unlock(master_key).await
                         .map_err(|e| GatewayError::InvalidRequest {
-                            message: format!("Failed to unlock vault: {}", e),
+                            message: format!("Failed to unlock vault: {e}"),
                         })?;
                     info!("Vault unlocked via environment variable");
                 } else {
@@ -519,7 +526,7 @@ impl Gateway {
             (&Method::DELETE, p) if p.starts_with("/api/credentials/") && !p.contains("/permissions/") && !p.contains("/approvals/") => {
                 // DELETE /api/credentials/{id} - alternative to /api/credentials/endpoints/{id}
                 let id = path.strip_prefix("/api/credentials/").unwrap_or("");
-                let endpoint_path = format!("/api/credentials/endpoints/{}", id);
+                let endpoint_path = format!("/api/credentials/endpoints/{id}");
                 self.handle_delete_endpoint(&endpoint_path).await
             }
             (&Method::POST, p) if p.starts_with("/api/credentials/endpoints/") && p.ends_with("/credential") => {
@@ -647,7 +654,7 @@ impl Gateway {
 
         let request: CreateEndpointRequest = match serde_json::from_slice(&body) {
             Ok(req) => req,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         let endpoint_type = match request.endpoint_type.as_str() {
@@ -678,9 +685,8 @@ impl Gateway {
         };
 
         let endpoint_id = path.strip_prefix("/api/credentials/endpoints/").unwrap_or("");
-        let uuid = match uuid::Uuid::parse_str(endpoint_id) {
-            Ok(id) => id,
-            Err(_) => return Ok(Self::json_error("Invalid endpoint ID", StatusCode::BAD_REQUEST)),
+        let Ok(uuid) = uuid::Uuid::parse_str(endpoint_id) else {
+            return Ok(Self::json_error("Invalid endpoint ID", StatusCode::BAD_REQUEST));
         };
 
         match manager.delete_endpoint(uuid).await {
@@ -704,9 +710,8 @@ impl Gateway {
             .strip_prefix("/api/credentials/endpoints/")
             .and_then(|s| s.strip_suffix("/credential"))
             .unwrap_or("");
-        let endpoint_uuid = match uuid::Uuid::parse_str(endpoint_id) {
-            Ok(id) => id,
-            Err(_) => return Ok(Self::json_error("Invalid endpoint ID", StatusCode::BAD_REQUEST)),
+        let Ok(endpoint_uuid) = uuid::Uuid::parse_str(endpoint_id) else {
+            return Ok(Self::json_error("Invalid endpoint ID", StatusCode::BAD_REQUEST));
         };
 
         let body = match req.collect().await {
@@ -722,7 +727,7 @@ impl Gateway {
 
         let request: StoreCredentialRequest = match serde_json::from_slice(&body) {
             Ok(req) => req,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         let credential_type = match request.credential_type.as_str() {
@@ -731,9 +736,8 @@ impl Gateway {
         };
 
         // Decode base64 secret
-        let secret = match base64_decode(&request.secret) {
-            Ok(s) => s,
-            Err(_) => return Ok(Self::json_error("Invalid base64 secret", StatusCode::BAD_REQUEST)),
+        let Ok(secret) = base64_decode(&request.secret) else {
+            return Ok(Self::json_error("Invalid base64 secret", StatusCode::BAD_REQUEST));
         };
 
         match manager.store_credential(endpoint_uuid, credential_type, &secret).await {
@@ -771,7 +775,7 @@ impl Gateway {
 
         let response: rockbot_credentials::HilApprovalResponse = match serde_json::from_slice(&body) {
             Ok(req) => req,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         match manager.respond_to_approval(response).await {
@@ -835,13 +839,13 @@ impl Gateway {
 
         let request: UnlockRequest = match serde_json::from_slice(&body) {
             Ok(req) => req,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         let salt = generate_salt();
         let master_key = match MasterKey::derive_from_password(&request.password, &salt) {
             Ok(key) => key,
-            Err(e) => return Ok(Self::json_error(&format!("Failed to derive key: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Failed to derive key: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         match manager.unlock(master_key).await {
@@ -896,7 +900,7 @@ impl Gateway {
 
         let request: InitRequest = match serde_json::from_slice(&body) {
             Ok(req) => req,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         let method = request.method.as_deref().unwrap_or("password");
@@ -914,19 +918,17 @@ impl Gateway {
                         info!("Vault initialized with password at {}", self.credentials_config.vault_path.display());
                         Ok(Self::json_response(r#"{"status":"initialized","method":"password"}"#, StatusCode::CREATED))
                     }
-                    Err(e) => Ok(Self::json_error(&format!("Failed to initialize vault: {}", e), StatusCode::INTERNAL_SERVER_ERROR)),
+                    Err(e) => Ok(Self::json_error(&format!("Failed to initialize vault: {e}"), StatusCode::INTERNAL_SERVER_ERROR)),
                 }
             }
             "keyfile" => {
                 use std::os::unix::fs::OpenOptionsExt;
                 
-                let keyfile_path = request.keyfile_path
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| {
+                let keyfile_path = request.keyfile_path.map_or_else(|| {
                         self.credentials_config.vault_path.parent()
                             .unwrap_or(std::path::Path::new("."))
                             .join("vault.key")
-                    });
+                    }, std::path::PathBuf::from);
 
                 // Create parent directory if needed
                 if let Some(parent) = keyfile_path.parent() {
@@ -948,10 +950,10 @@ impl Gateway {
                         Ok(mut file) => {
                             use std::io::Write;
                             if let Err(e) = file.write_all(&key_bytes) {
-                                return Ok(Self::json_error(&format!("Failed to write keyfile: {}", e), StatusCode::INTERNAL_SERVER_ERROR));
+                                return Ok(Self::json_error(&format!("Failed to write keyfile: {e}"), StatusCode::INTERNAL_SERVER_ERROR));
                             }
                         }
-                        Err(e) => return Ok(Self::json_error(&format!("Failed to create keyfile: {}", e), StatusCode::INTERNAL_SERVER_ERROR)),
+                        Err(e) => return Ok(Self::json_error(&format!("Failed to create keyfile: {e}"), StatusCode::INTERNAL_SERVER_ERROR)),
                     }
                 }
 
@@ -965,7 +967,7 @@ impl Gateway {
                         });
                         Ok(Self::json_response(&body.to_string(), StatusCode::CREATED))
                     }
-                    Err(e) => Ok(Self::json_error(&format!("Failed to initialize vault: {}", e), StatusCode::INTERNAL_SERVER_ERROR)),
+                    Err(e) => Ok(Self::json_error(&format!("Failed to initialize vault: {e}"), StatusCode::INTERNAL_SERVER_ERROR)),
                 }
             }
             _ => Ok(Self::json_error("Invalid method. Use 'password' or 'keyfile'", StatusCode::BAD_REQUEST)),
@@ -1008,7 +1010,7 @@ impl Gateway {
 
         let request: AddPermissionRequest = match serde_json::from_slice(&body) {
             Ok(req) => req,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         let level = match request.level.as_str() {
@@ -1046,9 +1048,8 @@ impl Gateway {
         };
 
         let permission_id = path.strip_prefix("/api/credentials/permissions/").unwrap_or("");
-        let uuid = match uuid::Uuid::parse_str(permission_id) {
-            Ok(id) => id,
-            Err(_) => return Ok(Self::json_error("Invalid permission ID", StatusCode::BAD_REQUEST)),
+        let Ok(uuid) = uuid::Uuid::parse_str(permission_id) else {
+            return Ok(Self::json_error("Invalid permission ID", StatusCode::BAD_REQUEST));
         };
 
         if manager.remove_permission(uuid).await {
@@ -1103,9 +1104,8 @@ impl Gateway {
             .and_then(|s| s.strip_suffix("/approve"))
             .unwrap_or("");
         
-        let uuid = match uuid::Uuid::parse_str(request_id) {
-            Ok(id) => id,
-            Err(_) => return Ok(Self::json_error("Invalid request ID", StatusCode::BAD_REQUEST)),
+        let Ok(uuid) = uuid::Uuid::parse_str(request_id) else {
+            return Ok(Self::json_error("Invalid request ID", StatusCode::BAD_REQUEST));
         };
 
         // Parse optional body for resolved_by
@@ -1156,9 +1156,8 @@ impl Gateway {
             .and_then(|s| s.strip_suffix("/deny"))
             .unwrap_or("");
         
-        let uuid = match uuid::Uuid::parse_str(request_id) {
-            Ok(id) => id,
-            Err(_) => return Ok(Self::json_error("Invalid request ID", StatusCode::BAD_REQUEST)),
+        let Ok(uuid) = uuid::Uuid::parse_str(request_id) else {
+            return Ok(Self::json_error("Invalid request ID", StatusCode::BAD_REQUEST));
         };
 
         // Parse body for resolved_by and denial_reason
@@ -1300,7 +1299,7 @@ impl Gateway {
 
         // Try to get the provider and list models as a connectivity test
         let result = if reg.has_provider(provider_id) {
-            match reg.get_provider_for_model(&format!("{}/test", provider_id)).await {
+            match reg.get_provider_for_model(&format!("{provider_id}/test")).await {
                 Ok(provider) => match provider.list_models().await {
                     Ok(models) => serde_json::json!({
                         "status": "ok",
@@ -1423,14 +1422,10 @@ impl Gateway {
                     .collect();
 
                 let name = schema
-                    .as_ref()
-                    .map(|s| s.provider_name.clone())
-                    .unwrap_or_else(|| provider_id.clone());
+                    .as_ref().map_or_else(|| provider_id.clone(), |s| s.provider_name.clone());
                 let auth_type = schema
                     .as_ref()
-                    .and_then(|s| s.auth_methods.first())
-                    .map(|m| m.id.clone())
-                    .unwrap_or_else(|| "none".to_string());
+                    .and_then(|s| s.auth_methods.first()).map_or_else(|| "none".to_string(), |m| m.id.clone());
 
                 statuses.push(ProviderStatus {
                     id: provider_id,
@@ -1538,6 +1533,7 @@ impl Gateway {
     }
 
     /// Get the directory path for an agent
+    #[allow(clippy::unused_self)]
     fn agent_directory(&self, agent_id: &str) -> std::path::PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
@@ -1685,7 +1681,7 @@ impl Gateway {
     /// Handle WebSocket upgrade request
     async fn handle_websocket_upgrade(
         &self,
-        req: Request<IncomingBody>,
+        _req: Request<IncomingBody>,
     ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
         // For simplicity, we'll return an error for now
         // In a full implementation, this would handle the WebSocket upgrade protocol
@@ -1822,7 +1818,7 @@ impl Gateway {
 
         let req: CreateAgentRequest = match serde_json::from_slice(&body) {
             Ok(r) => r,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         if req.id.trim().is_empty() {
@@ -1923,7 +1919,7 @@ impl Gateway {
 
         let update: UpdateAgentRequest = match serde_json::from_slice(&body) {
             Ok(r) => r,
-            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {}", e), StatusCode::BAD_REQUEST)),
+            Err(e) => return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST)),
         };
 
         // Check if agent exists in config or runtime
@@ -1935,7 +1931,7 @@ impl Gateway {
         drop(agents);
 
         if config_entry.is_none() && !exists_active {
-            return Ok(Self::json_error(&format!("Agent '{}' not found", agent_id), StatusCode::NOT_FOUND));
+            return Ok(Self::json_error(&format!("Agent '{agent_id}' not found"), StatusCode::NOT_FOUND));
         }
 
         // Update in-memory config
@@ -2003,7 +1999,7 @@ impl Gateway {
             let body = serde_json::json!({ "status": "deleted", "id": agent_id });
             Ok(Self::json_response(&body.to_string(), StatusCode::OK))
         } else {
-            Ok(Self::json_error(&format!("Agent '{}' not found", agent_id), StatusCode::NOT_FOUND))
+            Ok(Self::json_error(&format!("Agent '{agent_id}' not found"), StatusCode::NOT_FOUND))
         }
     }
     
@@ -2082,7 +2078,7 @@ impl Gateway {
         let agents = self.agents.read().await;
         let agent = agents.get(agent_id)
             .ok_or_else(|| GatewayError::InvalidRequest {
-                message: format!("Agent '{}' not found", agent_id),
+                message: format!("Agent '{agent_id}' not found"),
             })?;
         
         // Create session ID from session key
@@ -2111,7 +2107,7 @@ impl Gateway {
         
         // Get session statistics
         let session_stats = self.session_manager.get_statistics().await
-            .unwrap_or_else(|_| crate::session::SessionStatistics {
+            .unwrap_or(crate::session::SessionStatistics {
                 total_sessions: 0,
                 active_sessions: 0,
                 total_messages: 0,
@@ -2188,6 +2184,7 @@ struct ErrorResponse {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::config::{AgentConfig, AgentDefaults, AgentInstance, ToolConfig, SecurityConfig, SandboxConfig, ProvidersConfig};
     use std::collections::HashMap;

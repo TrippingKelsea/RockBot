@@ -3,7 +3,6 @@
 //! Provides a thread-safe, async-compatible interface to the credential vault
 //! suitable for use in the rockbot gateway.
 
-use crate::audit::AuditLog;
 use crate::crypto::MasterKey;
 use crate::error::{CredentialError, Result};
 use crate::storage::CredentialVault;
@@ -129,6 +128,7 @@ impl PathPermissionEvaluator {
                     Some((_, best_specificity)) => {
                         // Prefer longer (more specific) patterns
                         // If tied, prefer more restrictive
+                        #[allow(clippy::unwrap_used)] // best_match is Some(_) - we're in the Some arm
                         if specificity > *best_specificity
                             || (specificity == *best_specificity
                                 && self.restriction_level(perm.level) > self.restriction_level(best_match.as_ref().unwrap().0.level))
@@ -154,6 +154,7 @@ impl PathPermissionEvaluator {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn restriction_level(&self, level: PermissionLevel) -> u8 {
         match level {
             PermissionLevel::Allow => 0,
@@ -223,6 +224,7 @@ impl PathPermissionEvaluator {
     }
 
     /// Match a single segment with wildcards
+    #[allow(clippy::unused_self)]
     fn glob_match_segment(&self, pattern: &str, text: &str) -> bool {
         let mut pi = 0;
         let mut ti = 0;
@@ -241,8 +243,10 @@ impl PathPermissionEvaluator {
                 ti += 1;
             } else if let Some(sp) = star_pi {
                 pi = sp + 1;
-                star_ti = Some(star_ti.unwrap() + 1);
-                ti = star_ti.unwrap();
+                #[allow(clippy::unwrap_used)] // star_ti is always set together with star_pi
+                { star_ti = Some(star_ti.unwrap() + 1); }
+                #[allow(clippy::unwrap_used)] // star_ti was just assigned Some(...) above
+                { ti = star_ti.unwrap(); }
             } else {
                 return false;
             }
@@ -535,7 +539,7 @@ impl CredentialManager {
                 Ok(CredentialRequestResult {
                     permission: permission_result,
                     credential: None,
-                    reason: Some(format!("Access denied by policy: {}", path)),
+                    reason: Some(format!("Access denied by policy: {path}")),
                 })
             }
             PermissionLevel::AllowHil => {
@@ -655,6 +659,7 @@ impl CredentialManager {
     }
 
     /// Resolve a credential from a path string
+    #[allow(clippy::unused_self)]
     fn resolve_credential_from_path(
         &self,
         vault: &CredentialVault,
@@ -672,7 +677,7 @@ impl CredentialManager {
                 .iter()
                 .find(|e| e.name.to_lowercase() == endpoint_name.to_lowercase())
                 .ok_or_else(|| CredentialError::ValidationFailed(
-                    format!("endpoint '{}' not found", endpoint_name),
+                    format!("endpoint '{endpoint_name}' not found"),
                 ))?;
             
             vault.decrypt_credential_for_endpoint(endpoint.id)
@@ -686,7 +691,7 @@ impl CredentialManager {
                 .iter()
                 .find(|e| e.name.to_lowercase() == path.to_lowercase())
                 .ok_or_else(|| CredentialError::ValidationFailed(
-                    format!("endpoint '{}' not found", path),
+                    format!("endpoint '{path}' not found"),
                 ))?;
             
             vault.decrypt_credential_for_endpoint(endpoint.id)
@@ -715,18 +720,16 @@ impl CredentialManager {
 
         let audit_path = self.vault_path.join("audit.log");
         
-        let file = match File::open(&audit_path) {
-            Ok(f) => f,
-            Err(_) => return Vec::new(),
+        let Ok(file) = File::open(&audit_path) else {
+            return Vec::new();
         };
         
         let reader = BufReader::new(file);
         let mut entries: Vec<AuditEntry> = Vec::new();
         
         for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
+            let Ok(line) = line else {
+                continue;
             };
             if line.trim().is_empty() {
                 continue;
@@ -771,12 +774,14 @@ impl Clone for CredentialManager {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::crypto::generate_salt;
     use tempfile::TempDir;
 
     fn create_test_manager() -> (CredentialManager, TempDir) {
         let temp_dir = TempDir::new().unwrap();
+        CredentialVault::init_with_password(temp_dir.path(), "test").unwrap();
         let manager = CredentialManager::new(temp_dir.path()).unwrap();
         (manager, temp_dir)
     }
@@ -859,6 +864,7 @@ mod tests {
     async fn test_hil_approval_flow() {
         // Create manager with short timeout for testing
         let temp_dir = TempDir::new().unwrap();
+        CredentialVault::init_with_password(temp_dir.path(), "test").unwrap();
         let manager = CredentialManager::with_hil_timeout(temp_dir.path(), 2).unwrap();
         
         let salt = generate_salt();
@@ -918,6 +924,7 @@ mod tests {
     async fn test_hil_timeout() {
         // Create manager with very short timeout
         let temp_dir = TempDir::new().unwrap();
+        CredentialVault::init_with_password(temp_dir.path(), "test").unwrap();
         let manager = CredentialManager::with_hil_timeout(temp_dir.path(), 1).unwrap();
         
         manager.add_permission(PathPermission {

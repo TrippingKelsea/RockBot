@@ -34,6 +34,7 @@ use std::path::PathBuf;
 /// Anthropic provider using Claude Code SDK (OAuth only)
 pub struct AnthropicProvider {
     /// Default model to use
+    #[allow(dead_code)]
     default_model: String,
 }
 
@@ -64,8 +65,7 @@ impl AnthropicProvider {
     /// Check if Claude Code credentials exist
     pub fn has_credentials() -> bool {
         Self::credentials_path()
-            .map(|p| p.exists())
-            .unwrap_or(false)
+            .is_some_and(|p| p.exists())
     }
     
     /// Get the Claude Code credentials file path
@@ -113,6 +113,7 @@ impl AnthropicProvider {
     }
     
     /// Normalize model ID (strip provider prefix)
+    #[allow(clippy::unused_self)]
     fn normalize_model(&self, model_id: &str) -> String {
         model_id
             .strip_prefix("anthropic/")
@@ -229,7 +230,7 @@ impl LlmProvider for AnthropicProvider {
         // Query Claude Code SDK
         let stream = query(&conversation, Some(options)).await.map_err(|e| {
             LlmError::ApiError {
-                message: format!("Claude Code SDK error: {}", e),
+                message: format!("Claude Code SDK error: {e}"),
             }
         })?;
         
@@ -251,17 +252,16 @@ impl LlmProvider for AnthropicProvider {
                                 }
                             }
                         }
-                        SdkMessage::Result { usage, .. } => {
+                        SdkMessage::Result { usage: Some(usage_val), .. } => {
                             // Final result with usage stats
-                            if let Some(usage_val) = usage {
-                                input_tokens = usage_val.get("input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                                output_tokens = usage_val.get("output_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                            }
+                            input_tokens = usage_val.get("input_tokens")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
+                            output_tokens = usage_val.get("output_tokens")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
                         }
+                        SdkMessage::Result { usage: None, .. } => {}
                         _ => {}
                     }
                 }
@@ -272,7 +272,7 @@ impl LlmProvider for AnthropicProvider {
                         continue;
                     }
                     return Err(LlmError::ApiError {
-                        message: format!("Stream error: {}", e),
+                        message: format!("Stream error: {e}"),
                     });
                 }
             }
@@ -281,6 +281,7 @@ impl LlmProvider for AnthropicProvider {
         Ok(ChatCompletionResponse {
             id: format!("claude-{}", uuid::Uuid::new_v4()),
             object: "chat.completion".to_string(),
+            #[allow(clippy::unwrap_used)] // SystemTime::now() is always after UNIX_EPOCH
             created: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -354,7 +355,7 @@ impl LlmProvider for AnthropicProvider {
                 Ok(s) => s,
                 Err(e) => {
                     yield Err(LlmError::ApiError {
-                        message: format!("Claude Code SDK error: {}", e),
+                        message: format!("Claude Code SDK error: {e}"),
                     });
                     return;
                 }
@@ -372,6 +373,7 @@ impl LlmProvider for AnthropicProvider {
                                         let chunk = StreamingChunk {
                                             id: format!("stream-{}", uuid::Uuid::new_v4()),
                                             object: "chat.completion.chunk".to_string(),
+                                            #[allow(clippy::unwrap_used)] // SystemTime::now() is always after UNIX_EPOCH
                                             created: std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap()
@@ -396,6 +398,7 @@ impl LlmProvider for AnthropicProvider {
                                 let chunk = StreamingChunk {
                                     id: format!("stream-{}", uuid::Uuid::new_v4()),
                                     object: "chat.completion.chunk".to_string(),
+                                    #[allow(clippy::unwrap_used)] // SystemTime::now() is always after UNIX_EPOCH
                                     created: std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap()
@@ -423,7 +426,7 @@ impl LlmProvider for AnthropicProvider {
                             continue;
                         }
                         yield Err(LlmError::ApiError {
-                            message: format!("Stream error: {}", e),
+                            message: format!("Stream error: {e}"),
                         });
                     }
                 }

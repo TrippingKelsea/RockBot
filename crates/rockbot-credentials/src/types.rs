@@ -178,6 +178,7 @@ impl HttpMethod {
     }
 
     /// Parses an HTTP method from a string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "GET" => Some(HttpMethod::Get),
@@ -420,20 +421,21 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write;
-        write!(s, "{:02x}", byte).unwrap();
+        #[allow(clippy::unwrap_used)] // writing to a String via fmt::Write is infallible
+        write!(s, "{byte:02x}").unwrap();
     }
     s
 }
 
 /// Decodes a hex string to bytes.
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("hex string must have even length".to_string());
     }
     let mut bytes = Vec::with_capacity(s.len() / 2);
     for i in (0..s.len()).step_by(2) {
         let byte = u8::from_str_radix(&s[i..i + 2], 16)
-            .map_err(|_| format!("invalid hex character at position {}", i))?;
+            .map_err(|_| format!("invalid hex character at position {i}"))?;
         bytes.push(byte);
     }
     Ok(bytes)
@@ -457,6 +459,7 @@ pub fn hex_encode_hash(hash: &Hash256) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

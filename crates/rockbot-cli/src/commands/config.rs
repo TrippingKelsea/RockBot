@@ -23,7 +23,7 @@ async fn show_config(config_path: &PathBuf) -> Result<()> {
     let config = load_config(config_path).await?;
     
     let toml_string = toml::to_string_pretty(&config)?;
-    println!("{}", toml_string);
+    println!("{toml_string}");
     
     Ok(())
 }
@@ -39,7 +39,7 @@ async fn validate_config(config_path: &PathBuf) -> Result<()> {
             println!("   Security: {} sandbox", config.security.sandbox.mode);
         }
         Err(e) => {
-            println!("❌ Configuration is invalid: {}", e);
+            println!("❌ Configuration is invalid: {e}");
             std::process::exit(1);
         }
     }

@@ -11,6 +11,9 @@ anthropic = ["dep:claude-agent-sdk"]
 openai = []
 bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
 
+[lints]
+workspace = true
+
 [dependencies]
 rockbot-credentials-schema = { path = "../rockbot-credentials-schema" }
 tokio = { workspace = true }

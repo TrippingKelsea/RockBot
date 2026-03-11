@@ -404,6 +404,12 @@ pub mod message {
 /// Mock tool registry for testing
 pub struct MockToolRegistry;
 
+impl Default for MockToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockToolRegistry {
     pub fn new() -> Self {
         Self
@@ -420,6 +426,7 @@ impl MockToolRegistry {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     
     #[tokio::test]

@@ -68,8 +68,10 @@ pub enum RunStatus {
 /// How the scheduler should target a session when executing a job
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SessionTarget {
     /// Use an existing session identified by session_key
+    #[default]
     Existing,
     /// Create a new ephemeral session each run
     Ephemeral,
@@ -77,27 +79,19 @@ pub enum SessionTarget {
     Persistent,
 }
 
-impl Default for SessionTarget {
-    fn default() -> Self {
-        Self::Existing
-    }
-}
 
 /// How to wake/invoke the agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum WakeMode {
     /// Inject the payload as a new user turn
+    #[default]
     Turn,
     /// Fire a system event that the agent can observe
     Event,
 }
 
-impl Default for WakeMode {
-    fn default() -> Self {
-        Self::Turn
-    }
-}
 
 /// Where to deliver results after job execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +135,7 @@ pub enum CronPayload {
 
 /// Runtime state tracked per job
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CronJobState {
     pub next_run_at_ms: Option<u64>,
     pub last_run_at_ms: Option<u64>,
@@ -149,17 +144,6 @@ pub struct CronJobState {
     pub consecutive_errors: u32,
 }
 
-impl Default for CronJobState {
-    fn default() -> Self {
-        Self {
-            next_run_at_ms: None,
-            last_run_at_ms: None,
-            last_run_status: None,
-            last_error: None,
-            consecutive_errors: 0,
-        }
-    }
-}
 
 /// A scheduled cron job
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,12 +422,9 @@ impl CronScheduler {
     ) {
         let job = {
             let jobs_read = jobs.read().await;
-            match jobs_read.get(job_id) {
-                Some(j) => j.clone(),
-                None => {
-                    warn!("Cron job {} not found for execution", job_id);
-                    return;
-                }
+            if let Some(j) = jobs_read.get(job_id) { j.clone() } else {
+                warn!("Cron job {} not found for execution", job_id);
+                return;
             }
         };
 
@@ -537,14 +518,14 @@ impl CronScheduler {
                     serde_json::to_string(&job.wake_mode)?,
                     job.delivery
                         .as_ref()
-                        .map(|d| serde_json::to_string(d))
+                        .map(serde_json::to_string)
                         .transpose()?,
                     job.state.next_run_at_ms.map(|v| v as i64),
                     job.state.last_run_at_ms.map(|v| v as i64),
                     job.state
                         .last_run_status
                         .as_ref()
-                        .map(|s| serde_json::to_string(s))
+                        .map(serde_json::to_string)
                         .transpose()?,
                     &job.state.last_error,
                     job.state.consecutive_errors,
@@ -604,14 +585,14 @@ impl CronScheduler {
                     serde_json::to_string(&job.wake_mode)?,
                     job.delivery
                         .as_ref()
-                        .map(|d| serde_json::to_string(d))
+                        .map(serde_json::to_string)
                         .transpose()?,
                     job.state.next_run_at_ms.map(|v| v as i64),
                     job.state.last_run_at_ms.map(|v| v as i64),
                     job.state
                         .last_run_status
                         .as_ref()
-                        .map(|s| serde_json::to_string(s))
+                        .map(serde_json::to_string)
                         .transpose()?,
                     &job.state.last_error,
                     job.state.consecutive_errors,
@@ -728,7 +709,7 @@ impl CronScheduler {
                 job.state
                     .last_run_status
                     .as_ref()
-                    .map(|s| serde_json::to_string(s))
+                    .map(serde_json::to_string)
                     .transpose()?,
                 &job.state.last_error,
                 job.state.consecutive_errors,
@@ -823,6 +804,7 @@ impl CronScheduler {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use tempfile::NamedTempFile;
 

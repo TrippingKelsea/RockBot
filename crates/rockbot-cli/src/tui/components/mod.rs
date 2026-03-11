@@ -38,7 +38,7 @@ pub fn render_spinner(frame: &mut Frame, area: Rect, message: &str, tick: usize)
     let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spinner = spinner_chars[tick % spinner_chars.len()];
     
-    let text = format!("{} {}", spinner, message);
+    let text = format!("{spinner} {message}");
     let paragraph = Paragraph::new(text)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center);
@@ -105,5 +105,5 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 /// Create styled key hint spans
 pub fn key_hint(key: &str, action: &str) -> String {
-    format!("{}:{} ", key, action)
+    format!("{key}:{action} ")
 }

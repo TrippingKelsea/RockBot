@@ -30,6 +30,7 @@ use tracing::{debug, error, info, warn};
 /// Telegram channel implementation
 pub struct TelegramChannel {
     bot: Bot,
+    #[allow(dead_code)]
     token: String,
     event_tx: mpsc::UnboundedSender<ChannelEvent>,
     event_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<ChannelEvent>>>>,
@@ -39,6 +40,7 @@ pub struct TelegramChannel {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct TelegramChatInfo {
     id: i64,
     title: Option<String>,
@@ -112,6 +114,7 @@ impl TelegramChannel {
     }
 
     /// Convert Telegram user to UserInfo
+    #[allow(dead_code)]
     fn user_to_user_info(user: &User) -> UserInfo {
         UserInfo {
             id: user.id.0.to_string(),
@@ -128,7 +131,7 @@ impl TelegramChannel {
         target.parse::<i64>()
             .map(ChatId)
             .map_err(|_| ChannelError::InvalidMessageFormat {
-                message: format!("Invalid chat ID: {}", target),
+                message: format!("Invalid chat ID: {target}"),
             })
     }
 
@@ -141,10 +144,10 @@ impl TelegramChannel {
 
                 for embed in embeds {
                     if let Some(title) = &embed.title {
-                        result.push_str(&format!("\n\n*{}*", title));
+                        result.push_str(&format!("\n\n*{title}*"));
                     }
                     if let Some(description) = &embed.description {
-                        result.push_str(&format!("\n{}", description));
+                        result.push_str(&format!("\n{description}"));
                     }
                     for field in &embed.fields {
                         result.push_str(&format!("\n\n*{}:* {}", field.name, field.value));
@@ -181,8 +184,8 @@ impl TelegramChannel {
                                 let chat = &msg.chat;
                                 chats.insert(chat.id.0, TelegramChatInfo {
                                     id: chat.id.0,
-                                    title: chat.title().map(|s| s.to_string()),
-                                    username: chat.username().map(|s| s.to_string()),
+                                    title: chat.title().map(std::string::ToString::to_string),
+                                    username: chat.username().map(std::string::ToString::to_string),
                                     chat_type: "telegram".to_string(),
                                     member_count: None,
                                 });
@@ -306,16 +309,16 @@ impl Channel for TelegramChannel {
             .parse_mode(ParseMode::MarkdownV2)
             .await
             .map_err(|e| ChannelError::MessageSendFailed {
-                message: format!("Failed to send Telegram message: {}", e),
+                message: format!("Failed to send Telegram message: {e}"),
             })?;
 
         Ok(sent_message.id.0.to_string())
     }
 
-    async fn edit_message(&self, message_id: &str, new_content: &str) -> Result<()> {
+    async fn edit_message(&self, message_id: &str, _new_content: &str) -> Result<()> {
         let _msg_id: i32 = message_id.parse()
             .map_err(|_| ChannelError::InvalidMessageFormat {
-                message: format!("Invalid message ID: {}", message_id),
+                message: format!("Invalid message ID: {message_id}"),
             })?;
 
         warn!("Telegram message editing requires chat ID - message ID {} cannot be edited without chat context", message_id);
@@ -328,7 +331,7 @@ impl Channel for TelegramChannel {
     async fn delete_message(&self, message_id: &str) -> Result<()> {
         let _msg_id: i32 = message_id.parse()
             .map_err(|_| ChannelError::InvalidMessageFormat {
-                message: format!("Invalid message ID: {}", message_id),
+                message: format!("Invalid message ID: {message_id}"),
             })?;
 
         warn!("Telegram message deletion requires chat ID - message ID {} cannot be deleted without chat context", message_id);
@@ -353,13 +356,13 @@ impl Channel for TelegramChannel {
     async fn get_user_info(&self, user_id: &str) -> Result<UserInfo> {
         let user_id_num: u64 = user_id.parse()
             .map_err(|_| ChannelError::InvalidMessageFormat {
-                message: format!("Invalid user ID: {}", user_id),
+                message: format!("Invalid user ID: {user_id}"),
             })?;
 
         Ok(UserInfo {
             id: user_id.to_string(),
-            username: format!("user_{}", user_id_num),
-            display_name: Some(format!("User {}", user_id_num)),
+            username: format!("user_{user_id_num}"),
+            display_name: Some(format!("User {user_id_num}")),
             avatar_url: None,
             is_bot: false,
             is_verified: false,
@@ -375,14 +378,14 @@ impl Channel for TelegramChannel {
                     id: chat.id.0.to_string(),
                     name: chat.title().unwrap_or("Private Chat").to_string(),
                     channel_type: "telegram".to_string(),
-                    description: chat.description().map(|s| s.to_string()),
+                    description: chat.description().map(std::string::ToString::to_string),
                     member_count: None,
                     created_at: None,
                 })
             }
             Err(e) => {
                 Err(ChannelError::NotFound {
-                    name: format!("Telegram chat {}: {}", channel_id, e),
+                    name: format!("Telegram chat {channel_id}: {e}"),
                 })
             }
         }
@@ -414,6 +417,7 @@ impl Channel for TelegramChannel {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

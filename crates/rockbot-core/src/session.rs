@@ -54,8 +54,10 @@ pub struct TokenStats {
 /// Current state of a session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum SessionState {
     /// Session is active and ready for messages
+    #[default]
     Active,
     /// Session is temporarily paused
     Paused,
@@ -105,11 +107,6 @@ pub struct StoredMessage {
     pub message: Message,
 }
 
-impl Default for SessionState {
-    fn default() -> Self {
-        Self::Active
-    }
-}
 
 impl Session {
     /// Create a new session
@@ -406,7 +403,7 @@ impl SessionManager {
             let content_str: String = row.get(4)?;
             let metadata_str: String = row.get(5)?;
             
-            let role = serde_json::from_str(&role_str).unwrap_or(MessageRole::User);
+            let _role = serde_json::from_str(&role_str).unwrap_or(MessageRole::User);
             let content = serde_json::from_str(&content_str)
                 .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
                     4, 
@@ -472,15 +469,15 @@ impl SessionManager {
         sql.push_str(" ORDER BY updated_at DESC");
         
         if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
+            sql.push_str(&format!(" LIMIT {limit}"));
         }
         
         if let Some(offset) = query.offset {
-            sql.push_str(&format!(" OFFSET {}", offset));
+            sql.push_str(&format!(" OFFSET {offset}"));
         }
         
         let mut stmt = db.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(std::convert::AsRef::as_ref).collect();
         let session_iter = stmt.query_map(params_refs.as_slice(), |row| {
             let created_at = DateTime::from_timestamp(row.get::<_, i64>(3)?, 0)
                 .unwrap_or_else(Utc::now);
@@ -607,6 +604,7 @@ pub struct SessionStatistics {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use tempfile::NamedTempFile;
     

@@ -5,6 +5,9 @@ edition = "2021"
 description = "Secure credential storage for RockBot agents"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Age encryption
 age = { version = "0.10", features = ["armor"] }

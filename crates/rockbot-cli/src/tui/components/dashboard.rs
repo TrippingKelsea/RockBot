@@ -102,13 +102,13 @@ fn render_status_cards(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         vec![
             Line::from(Span::styled(
-                format!("{}", active_count),
+                format!("{active_count}"),
                 Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled("active", Style::default().fg(Color::DarkGray))),
             if pending_count > 0 {
                 Line::from(Span::styled(
-                    format!("+{} pending", pending_count),
+                    format!("+{pending_count} pending"),
                     Style::default().fg(Color::Yellow),
                 ))
             } else {

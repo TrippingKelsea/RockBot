@@ -379,7 +379,7 @@ impl LlmProviderRegistry {
                     _ => "",
                 };
                 LlmError::ApiError {
-                    message: format!("Provider '{}' not available for model '{}'{}", provider_id, model_id, hint),
+                    message: format!("Provider '{provider_id}' not available for model '{model_id}'{hint}"),
                 }
             })
     }
@@ -417,6 +417,12 @@ impl LlmProviderRegistry {
 /// Mock LLM provider for development and testing
 pub struct MockLlmProvider;
 
+impl Default for MockLlmProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockLlmProvider {
     pub fn new() -> Self {
         Self
@@ -451,6 +457,7 @@ impl LlmProvider for MockLlmProvider {
         Ok(ChatCompletionResponse {
             id: format!("mock-{}", uuid::Uuid::new_v4()),
             object: "chat.completion".to_string(),
+            #[allow(clippy::unwrap_used)] // SystemTime::now() is always after UNIX_EPOCH
             created: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -488,6 +495,7 @@ impl LlmProvider for MockLlmProvider {
                 let chunk = StreamingChunk {
                     id: format!("mock-stream-{}", uuid::Uuid::new_v4()),
                     object: "chat.completion.chunk".to_string(),
+                    #[allow(clippy::unwrap_used)] // SystemTime::now() is always after UNIX_EPOCH
                     created: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
@@ -497,7 +505,7 @@ impl LlmProvider for MockLlmProvider {
                         index: 0,
                         delta: StreamingDelta {
                             role: if i == 0 { Some(MessageRole::Assistant) } else { None },
-                            content: Some(format!("{} ", word)),
+                            content: Some(format!("{word} ")),
                             tool_calls: None,
                         },
                         finish_reason: if i == words.len() - 1 { Some("stop".to_string()) } else { None },

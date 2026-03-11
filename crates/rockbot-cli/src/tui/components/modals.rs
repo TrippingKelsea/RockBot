@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -73,7 +73,7 @@ pub fn render_password_modal(
         input.to_string()
     };
     
-    let input_para = Paragraph::new(format!("{}█", display_value))
+    let input_para = Paragraph::new(format!("{display_value}█"))
         .style(Style::default().fg(Color::Yellow))
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(input_para, chunks[1]);
@@ -126,7 +126,7 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
-        .title(format!("Add {} Endpoint", title_type_name));
+        .title(format!("Add {title_type_name} Endpoint"));
     
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
@@ -162,7 +162,7 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
     
     // Render Type selector - use render_input_field with arrows in the value
     let selector_type_name = get_endpoint_type_name(state.endpoint_type);
-    let type_value = format!("◀ {} ▶", selector_type_name);
+    let type_value = format!("◀ {selector_type_name} ▶");
     render_input_field(
         frame,
         chunks[1],
@@ -176,7 +176,7 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
     
     // Render dynamic fields
     for (i, field) in fields.iter().enumerate() {
-        let value = state.field_values.get(i).map(|s| s.as_str()).unwrap_or("");
+        let value = state.field_values.get(i).map_or("", std::string::String::as_str);
         let is_active = state.dynamic_field_index() == Some(i);
         
         // Add required indicator
@@ -217,6 +217,7 @@ pub fn render_add_credential_modal(frame: &mut Frame, area: Rect, state: &AddCre
 }
 
 /// Render a single input field
+#[allow(clippy::too_many_arguments)]
 fn render_input_field(
     frame: &mut Frame,
     area: Rect,
@@ -260,7 +261,7 @@ fn render_input_field(
     let cursor = if active { "█" } else { "" };
     
     let text = Line::from(vec![
-        Span::styled(format!("{}: ", label), label_style),
+        Span::styled(format!("{label}: "), label_style),
         Span::styled(display_value, value_style),
         Span::styled(cursor, Style::default().fg(Color::Yellow)),
     ]);
@@ -289,7 +290,7 @@ pub fn render_edit_credential_modal(frame: &mut Frame, area: Rect, state: &EditC
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Green))
-        .title(format!("Edit {} Endpoint", title_type_name));
+        .title(format!("Edit {title_type_name} Endpoint"));
     
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
@@ -324,7 +325,7 @@ pub fn render_edit_credential_modal(frame: &mut Frame, area: Rect, state: &EditC
     
     // Render dynamic fields
     for (i, field) in fields.iter().enumerate() {
-        let value = state.field_values.get(i).map(|s| s.as_str()).unwrap_or("");
+        let value = state.field_values.get(i).map_or("", std::string::String::as_str);
         let is_active = state.dynamic_field_index() == Some(i);
         
         // Add required indicator and modified indicator for secrets
@@ -377,7 +378,7 @@ pub fn render_view_session_modal(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
-        .title(format!("Session: {}", session_key));
+        .title(format!("Session: {session_key}"));
     
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
@@ -762,7 +763,7 @@ pub fn render_edit_agent_modal(
     } else {
         "empty = top-level agent"
     };
-    let parent_label = format!("Parent Agent {}", parent_hint);
+    let parent_label = format!("Parent Agent {parent_hint}");
     render_input_field(
         frame, chunks[2], &parent_label, &state.parent_id,
         "leave empty for top-level", state.field_index == 2, false, false,

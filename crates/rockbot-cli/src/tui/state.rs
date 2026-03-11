@@ -409,7 +409,7 @@ pub enum InputMode {
     ViewSession { session_key: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordAction {
     InitVault,
     UnlockVault,
@@ -552,7 +552,7 @@ impl EditCredentialState {
         
         let fields = get_fields_for_endpoint_type(self.endpoint_type);
         for (i, field) in fields.iter().enumerate() {
-            if field.required && self.field_values.get(i).map(|v| v.trim().is_empty()).unwrap_or(true) {
+            if field.required && self.field_values.get(i).is_none_or(|v| v.trim().is_empty()) {
                 return Some(format!("{} is required", field.label));
             }
         }
@@ -565,7 +565,7 @@ impl EditCredentialState {
         let fields = get_fields_for_endpoint_type(self.endpoint_type);
         for (i, field) in fields.iter().enumerate() {
             if field.id == id {
-                return self.field_values.get(i).map(|s| s.as_str());
+                return self.field_values.get(i).map(std::string::String::as_str);
             }
         }
         None
@@ -685,8 +685,7 @@ impl EditProviderState {
         let auth_type = schema
             .auth_methods
             .first()
-            .map(|m| ProviderAuthType::from_auth_method_id(&m.id))
-            .unwrap_or(ProviderAuthType::ApiKey);
+            .map_or(ProviderAuthType::ApiKey, |m| ProviderAuthType::from_auth_method_id(&m.id));
 
         let field_values = schema
             .auth_methods
@@ -739,8 +738,7 @@ impl EditProviderState {
     pub fn total_fields(&self) -> usize {
         let field_count = self
             .current_auth_method()
-            .map(|m| m.fields.len())
-            .unwrap_or(0);
+            .map_or(0, |m| m.fields.len());
         1 + field_count // auth_type selector + fields
     }
 
@@ -765,8 +763,7 @@ impl EditProviderState {
         let count = self
             .schema
             .as_ref()
-            .map(|s| s.auth_methods.len())
-            .unwrap_or(1);
+            .map_or(1, |s| s.auth_methods.len());
         if count <= 1 {
             return;
         }
@@ -823,8 +820,7 @@ impl EditProviderState {
         let field_idx = self.field_index - 1;
         self.current_auth_method()
             .and_then(|m| m.fields.get(field_idx))
-            .map(|f| f.secret)
-            .unwrap_or(false)
+            .is_some_and(|f| f.secret)
     }
 
     /// Validate the form — check that all required fields are filled
@@ -835,8 +831,7 @@ impl EditProviderState {
                     let value = self
                         .field_values
                         .get(i)
-                        .map(|(_, v)| v.as_str())
-                        .unwrap_or("");
+                        .map_or("", |(_, v)| v.as_str());
                     if value.trim().is_empty() {
                         return Some(format!("{} is required", field.label));
                     }
@@ -916,6 +911,12 @@ pub struct EditAgentState {
     pub enabled: bool,
 }
 
+impl Default for EditAgentState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EditAgentState {
     /// Field labels in order
     pub const FIELD_LABELS: &'static [&'static str] = &[
@@ -949,7 +950,7 @@ impl EditAgentState {
             model: agent.model.clone().unwrap_or_default(),
             parent_id: agent.parent_id.clone().unwrap_or_default(),
             workspace: agent.workspace.clone().unwrap_or_default(),
-            max_tool_calls: agent.max_tool_calls.map(|n| n.to_string()).unwrap_or_else(|| "10".to_string()),
+            max_tool_calls: agent.max_tool_calls.map_or_else(|| "10".to_string(), |n| n.to_string()),
             system_prompt: agent.system_prompt.clone().unwrap_or_default(),
             enabled: agent.enabled,
         }
@@ -1007,11 +1008,10 @@ impl EditAgentState {
         if self.id.contains(' ') || self.id.contains('/') {
             return Some("Agent ID cannot contain spaces or slashes".to_string());
         }
-        if !self.max_tool_calls.is_empty() {
-            if self.max_tool_calls.parse::<u32>().is_err() {
+        if !self.max_tool_calls.is_empty()
+            && self.max_tool_calls.parse::<u32>().is_err() {
                 return Some("Max tool calls must be a number".to_string());
             }
-        }
         None
     }
 }
@@ -1292,7 +1292,7 @@ impl AddCredentialState {
         
         let fields = get_fields_for_endpoint_type(self.endpoint_type);
         for (i, field) in fields.iter().enumerate() {
-            if field.required && self.field_values.get(i).map(|v| v.trim().is_empty()).unwrap_or(true) {
+            if field.required && self.field_values.get(i).is_none_or(|v| v.trim().is_empty()) {
                 return Some(format!("{} is required", field.label));
             }
         }
@@ -1305,13 +1305,14 @@ impl AddCredentialState {
         let fields = get_fields_for_endpoint_type(self.endpoint_type);
         for (i, field) in fields.iter().enumerate() {
             if field.id == id {
-                return self.field_values.get(i).map(|s| s.as_str());
+                return self.field_values.get(i).map(std::string::String::as_str);
             }
         }
         None
     }
 }
 
+#[allow(deprecated)]
 // Keep the old enum for backwards compatibility but mark it deprecated
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[deprecated(note = "Use AddCredentialState.field_index instead")]
@@ -1415,10 +1416,10 @@ impl AppState {
                 self.agents_loading = true;
             }
             Message::AgentSaved(id) => {
-                self.status_message = Some((format!("Agent '{}' saved", id), false));
+                self.status_message = Some((format!("Agent '{id}' saved"), false));
             }
             Message::AgentSaveError(err) => {
-                self.status_message = Some((format!("Failed to save agent: {}", err), true));
+                self.status_message = Some((format!("Failed to save agent: {err}"), true));
             }
             
             Message::SessionsLoaded(sessions) => {
@@ -1455,10 +1456,10 @@ impl AppState {
                 self.endpoints = endpoints;
             }
             Message::CredentialAdded(name) => {
-                self.status_message = Some((format!("✅ Added: {}", name), false));
+                self.status_message = Some((format!("✅ Added: {name}"), false));
             }
             Message::CredentialAddError(err) => {
-                self.status_message = Some((format!("❌ Failed: {}", err), true));
+                self.status_message = Some((format!("❌ Failed: {err}"), true));
             }
             
             Message::ModelsLoaded(providers) => {
@@ -1474,7 +1475,7 @@ impl AppState {
                 self.chat_loading = false;
             }
             Message::ChatError(err) => {
-                self.chat_messages.push(ChatMessage::system(format!("Error: {}", err)));
+                self.chat_messages.push(ChatMessage::system(format!("Error: {err}")));
                 self.chat_loading = false;
             }
             Message::ChatStreamChunk(_chunk) => {
@@ -1595,7 +1596,7 @@ impl AppState {
             _ => return None,
         };
 
-        filtered.get(idx).cloned()
+        filtered.get(idx).copied()
     }
 }
 

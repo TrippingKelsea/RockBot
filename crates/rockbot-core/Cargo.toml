@@ -20,6 +20,9 @@ tools-credentials = ["dep:rockbot-tools-credentials"]
 tools-mcp = ["dep:rockbot-tools-mcp"]
 tools-markdown = ["dep:rockbot-tools-markdown"]
 
+[lints]
+workspace = true
+
 [dependencies]
 rockbot-tools = { path = "../rockbot-tools" }
 rockbot-memory = { path = "../rockbot-memory" }

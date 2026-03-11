@@ -5,5 +5,8 @@ edition = "2021"
 description = "Credential schema types shared across RockBot provider plugins"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true }

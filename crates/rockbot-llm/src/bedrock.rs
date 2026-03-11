@@ -36,6 +36,7 @@ use aws_sdk_bedrockruntime::{
 /// AWS Bedrock provider
 pub struct BedrockProvider {
     client: Client,
+    #[allow(dead_code)]
     region: String,
 }
 
@@ -60,9 +61,7 @@ impl BedrockProvider {
             .await;
 
         let region = config
-            .region()
-            .map(|r| r.to_string())
-            .unwrap_or_else(|| "us-east-1".to_string());
+            .region().map_or_else(|| "us-east-1".to_string(), std::string::ToString::to_string);
 
         Ok(Self {
             client: Client::new(&config),
@@ -71,6 +70,7 @@ impl BedrockProvider {
     }
 
     /// Normalize model ID (strip provider prefix)
+    #[allow(clippy::unused_self)]
     fn normalize_model(&self, model_id: &str) -> String {
         model_id
             .strip_prefix("bedrock/")
@@ -79,6 +79,7 @@ impl BedrockProvider {
     }
 
     /// Convert our messages to Bedrock format, extracting system prompt
+    #[allow(clippy::unused_self)]
     fn convert_messages(
         &self,
         messages: &[Message],
@@ -95,6 +96,7 @@ impl BedrockProvider {
                 }
                 MessageRole::User | MessageRole::Tool => {
                     let content = ContentBlock::Text(msg.content.clone());
+                    #[allow(clippy::expect_used)] // builder is always valid when role and content are set
                     bedrock_messages.push(
                         BedrockMessage::builder()
                             .role(ConversationRole::User)
@@ -105,6 +107,7 @@ impl BedrockProvider {
                 }
                 MessageRole::Assistant => {
                     let content = ContentBlock::Text(msg.content.clone());
+                    #[allow(clippy::expect_used)] // builder is always valid when role and content are set
                     bedrock_messages.push(
                         BedrockMessage::builder()
                             .role(ConversationRole::Assistant)
@@ -156,8 +159,8 @@ impl BedrockProvider {
         match doc {
             aws_smithy_types::Document::Null => "null".to_string(),
             aws_smithy_types::Document::Bool(b) => b.to_string(),
-            aws_smithy_types::Document::Number(n) => format!("{:?}", n),
-            aws_smithy_types::Document::String(s) => format!("\"{}\"", s),
+            aws_smithy_types::Document::Number(n) => format!("{n:?}"),
+            aws_smithy_types::Document::String(s) => format!("\"{s}\""),
             aws_smithy_types::Document::Array(arr) => {
                 let items: Vec<String> = arr.iter().map(Self::document_to_json_string).collect();
                 format!("[{}]", items.join(","))
@@ -172,12 +175,14 @@ impl BedrockProvider {
     }
 
     /// Convert tool definitions to Bedrock format
+    #[allow(clippy::unused_self)]
     fn convert_tools(&self, tools: &[ToolDefinition]) -> ToolConfiguration {
         let bedrock_tools: Vec<Tool> = tools
             .iter()
             .map(|t| {
                 let doc = Self::json_to_document(&t.parameters);
 
+                #[allow(clippy::expect_used)] // builder is always valid when required fields are set
                 Tool::ToolSpec(
                     ToolSpecification::builder()
                         .name(&t.name)
@@ -189,6 +194,7 @@ impl BedrockProvider {
             })
             .collect();
 
+        #[allow(clippy::expect_used)] // builder is always valid when tools list is set
         ToolConfiguration::builder()
             .set_tools(Some(bedrock_tools))
             .build()
@@ -289,7 +295,7 @@ impl LlmProvider for BedrockProvider {
         }
 
         let response = req.send().await.map_err(|e| LlmError::ApiError {
-            message: format!("Bedrock API error: {}", e),
+            message: format!("Bedrock API error: {e}"),
         })?;
 
         let mut content = String::new();
@@ -317,14 +323,14 @@ impl LlmProvider for BedrockProvider {
             }
         }
 
-        let usage = response.usage().map(|u| Usage {
-            prompt_tokens: u.input_tokens() as u64,
-            completion_tokens: u.output_tokens() as u64,
-            total_tokens: u.total_tokens() as u64,
-        }).unwrap_or(Usage {
+        let usage = response.usage().map_or(Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
+        }, |u| Usage {
+            prompt_tokens: u.input_tokens() as u64,
+            completion_tokens: u.output_tokens() as u64,
+            total_tokens: u.total_tokens() as u64,
         });
 
         let finish_reason = response.stop_reason().as_str().to_string();
@@ -332,6 +338,7 @@ impl LlmProvider for BedrockProvider {
         Ok(ChatCompletionResponse {
             id: format!("bedrock-{}", uuid::Uuid::new_v4()),
             object: "chat.completion".to_string(),
+            #[allow(clippy::unwrap_used)] // SystemTime::now() is always after UNIX_EPOCH
             created: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -387,7 +394,7 @@ impl LlmProvider for BedrockProvider {
         }
 
         let output = req.send().await.map_err(|e| LlmError::ApiError {
-            message: format!("Bedrock streaming error: {}", e),
+            message: format!("Bedrock streaming error: {e}"),
         })?;
 
         let model_clone = model.clone();
@@ -400,19 +407,21 @@ impl LlmProvider for BedrockProvider {
                         match event {
                             ConverseStreamOutput::ContentBlockDelta(delta_event) => {
                                 if let Some(ContentBlockDelta::Text(text)) = delta_event.delta() {
+                                    #[allow(clippy::unwrap_used)]
+                                    let created_ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs();
                                     yield Ok(StreamingChunk {
                                         id: format!("stream-{}", uuid::Uuid::new_v4()),
                                         object: "chat.completion.chunk".to_string(),
-                                        created: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs(),
+                                        created: created_ts,
                                         model: model_clone.clone(),
                                         choices: vec![StreamingChoice {
                                             index: 0,
                                             delta: StreamingDelta {
                                                 role: None,
-                                                content: Some(text.to_string()),
+                                                content: Some(text.clone()),
                                                 tool_calls: None,
                                             },
                                             finish_reason: None,
@@ -421,13 +430,15 @@ impl LlmProvider for BedrockProvider {
                                 }
                             }
                             ConverseStreamOutput::MessageStop(_) => {
+                                #[allow(clippy::unwrap_used)]
+                                let created_ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs();
                                 yield Ok(StreamingChunk {
                                     id: format!("stream-{}", uuid::Uuid::new_v4()),
                                     object: "chat.completion.chunk".to_string(),
-                                    created: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_secs(),
+                                    created: created_ts,
                                     model: model_clone.clone(),
                                     choices: vec![StreamingChoice {
                                         index: 0,
@@ -447,7 +458,7 @@ impl LlmProvider for BedrockProvider {
                     Ok(None) => break,
                     Err(e) => {
                         yield Err(LlmError::ApiError {
-                            message: format!("Bedrock stream error: {}", e),
+                            message: format!("Bedrock stream error: {e}"),
                         });
                         break;
                     }

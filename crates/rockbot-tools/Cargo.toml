@@ -5,6 +5,9 @@ edition = "2021"
 description = "Built-in tools for RockBot"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 rockbot-security = { path = "../rockbot-security" }
 rockbot-credentials-schema = { path = "../rockbot-credentials-schema" }

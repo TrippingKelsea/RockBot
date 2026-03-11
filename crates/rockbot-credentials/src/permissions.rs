@@ -79,26 +79,19 @@ impl PermissionEvaluator {
     /// Returns the permission level and the matching rule (if any).
     /// If no rule matches, returns `Deny` as the default.
     pub fn evaluate(&self, endpoint_id: Uuid, method: HttpMethod, path: &str) -> PermissionResult {
-        let perms = match self.permissions.get(&endpoint_id) {
-            Some(p) => p,
-            None => {
-                return PermissionResult {
-                    level: PermissionLevel::Deny,
-                    matched_rule: None,
-                    reason: "no permissions configured for endpoint".to_string(),
-                }
-            }
+        let Some(perms) = self.permissions.get(&endpoint_id) else {
+            return PermissionResult {
+                level: PermissionLevel::Deny,
+                matched_rule: None,
+                reason: "no permissions configured for endpoint".to_string(),
+            };
         };
 
         // Find all matching rules
         let mut matches: Vec<(&Permission, MatchScore)> = perms
             .iter()
             .filter_map(|perm| {
-                if let Some(score) = self.matches(perm, method, path) {
-                    Some((perm, score))
-                } else {
-                    None
-                }
+                self.matches(perm, method, path).map(|score| (perm, score))
             })
             .collect();
 
@@ -121,6 +114,7 @@ impl PermissionEvaluator {
             .collect();
 
         // Among tied matches, pick the most restrictive
+        #[allow(clippy::unwrap_used)] // tied_matches is non-empty (matches.is_empty() checked above)
         let (best_perm, _) = tied_matches
             .into_iter()
             .max_by_key(|(perm, _)| restriction_level(perm.permission_level))
@@ -132,12 +126,13 @@ impl PermissionEvaluator {
             reason: format!(
                 "matched rule: {} ({})",
                 best_perm.path_pattern,
-                best_perm.method.map(|m| m.as_str()).unwrap_or("*")
+                best_perm.method.map_or("*", |m| m.as_str())
             ),
         }
     }
 
     /// Checks if a permission matches a request, returning a match score if it does.
+    #[allow(clippy::unused_self)]
     fn matches(&self, perm: &Permission, method: HttpMethod, path: &str) -> Option<MatchScore> {
         // Check method constraint
         if let Some(perm_method) = perm.method {
@@ -230,6 +225,7 @@ fn pattern_matches(pattern: &str, path: &str) -> bool {
 }
 
 /// Recursive glob matching with memoization via simple recursion.
+#[allow(clippy::unwrap_used)] // all unwrap()s on chars().next() are guarded by !path.is_empty() or equivalent checks
 fn pattern_match_recursive(pattern: &str, path: &str) -> bool {
     let mut pattern = pattern;
     let mut path = path;
@@ -321,6 +317,7 @@ fn pattern_match_recursive(pattern: &str, path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use chrono::Utc;
 

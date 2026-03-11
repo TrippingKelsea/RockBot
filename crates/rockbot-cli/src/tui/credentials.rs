@@ -365,7 +365,7 @@ impl CredentialsTui {
             Some(UnlockMethod::Keyfile { path_hint }) => {
                 // Try auto-unlock with keyfile
                 let kf_path = path_hint.as_ref()
-                    .map(|p| PathBuf::from(p))
+                    .map(PathBuf::from)
                     .or_else(|| {
                         dirs::config_dir()
                             .map(|d| d.join("rockbot").join("vault.key"))
@@ -391,7 +391,7 @@ impl CredentialsTui {
                 self.input_buffer.clear();
             }
             Some(UnlockMethod::SshKey { public_key_path, .. }) => {
-                self.status = Some((format!("SSH unlock: {}", public_key_path), false));
+                self.status = Some((format!("SSH unlock: {public_key_path}"), false));
                 // TODO: SSH unlock flow
             }
             None => {
@@ -493,7 +493,7 @@ impl CredentialsTui {
                                     self.status = Some(("✅ Vault initialized!".to_string(), false));
                                 }
                                 Err(e) => {
-                                    self.status = Some((format!("Init failed: {}", e), true));
+                                    self.status = Some((format!("Init failed: {e}"), true));
                                 }
                             }
                         }
@@ -708,6 +708,7 @@ impl CredentialsTui {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn render_permissions(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -723,6 +724,7 @@ impl CredentialsTui {
         frame.render_widget(paragraph, area);
     }
 
+    #[allow(clippy::unused_self)]
     fn render_audit(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -770,7 +772,7 @@ impl CredentialsTui {
         let unlock_str = match &self.unlock_method {
             Some(UnlockMethod::Password { .. }) => "Password (Argon2id)",
             Some(UnlockMethod::Keyfile { path_hint }) => {
-                path_hint.as_ref().map(|p| p.as_str()).unwrap_or("Keyfile")
+                path_hint.as_ref().map_or("Keyfile", std::string::String::as_str)
             }
             Some(UnlockMethod::Age { .. }) => "Age encryption",
             Some(UnlockMethod::SshKey { .. }) => "SSH key",
@@ -805,30 +807,27 @@ impl CredentialsTui {
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let (status_text, style) = match &self.status {
-            Some((msg, is_error)) => {
-                let style = if *is_error {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default().fg(Color::Green)
-                };
-                (msg.clone(), style)
-            }
-            None => {
-                let help = match &self.input_mode {
-                    InputMode::Normal => {
-                        if self.vault_exists {
-                            "q:Quit | Tab:Switch | j/k:Navigate | a:Add | d:Delete | u:Unlock | l:Lock"
-                        } else {
-                            "q:Quit | Tab:Switch | i:Initialize vault"
-                        }
+        let (status_text, style) = if let Some((msg, is_error)) = &self.status {
+            let style = if *is_error {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            (msg.clone(), style)
+        } else {
+            let help = match &self.input_mode {
+                InputMode::Normal => {
+                    if self.vault_exists {
+                        "q:Quit | Tab:Switch | j/k:Navigate | a:Add | d:Delete | u:Unlock | l:Lock"
+                    } else {
+                        "q:Quit | Tab:Switch | i:Initialize vault"
                     }
-                    InputMode::AddCredential(_) => "Tab/↑↓:Fields | ←→:Select | Enter:Next/Submit | Esc:Cancel",
-                    InputMode::PasswordInput { .. } => "Enter:Submit | Esc:Cancel",
-                    InputMode::Confirm(_) => "y:Yes | n:No | Esc:Cancel",
-                };
-                (help.to_string(), Style::default().fg(Color::DarkGray))
-            }
+                }
+                InputMode::AddCredential(_) => "Tab/↑↓:Fields | ←→:Select | Enter:Next/Submit | Esc:Cancel",
+                InputMode::PasswordInput { .. } => "Enter:Submit | Esc:Cancel",
+                InputMode::Confirm(_) => "y:Yes | n:No | Esc:Cancel",
+            };
+            (help.to_string(), Style::default().fg(Color::DarkGray))
         };
 
         let status = Paragraph::new(status_text)
@@ -838,6 +837,7 @@ impl CredentialsTui {
         frame.render_widget(status, area);
     }
 
+    #[allow(clippy::unused_self)]
     fn render_add_credential_modal(&self, frame: &mut Frame, area: Rect, state: &AddCredentialState) {
         let modal_area = centered_rect(60, 70, area);
         frame.render_widget(Clear, modal_area);
@@ -879,7 +879,7 @@ impl CredentialsTui {
             
             let cursor = if active { "█" } else { "" };
             
-            let text = format!("{}: {}{}", label, display_value, cursor);
+            let text = format!("{label}: {display_value}{cursor}");
             let paragraph = Paragraph::new(text)
                 .style(style)
                 .block(Block::default().borders(Borders::ALL));
@@ -894,8 +894,8 @@ impl CredentialsTui {
         } else {
             Style::default().fg(Color::White)
         };
-        let type_name = ENDPOINT_TYPES.get(state.endpoint_type).map(|(_, n)| *n).unwrap_or("Unknown");
-        let type_text = format!("Service Type: ◀ {} ▶", type_name);
+        let type_name = ENDPOINT_TYPES.get(state.endpoint_type).map_or("Unknown", |(_, n)| *n);
+        let type_text = format!("Service Type: ◀ {type_name} ▶");
         let type_para = Paragraph::new(type_text)
             .style(type_style)
             .block(Block::default().borders(Borders::ALL));
@@ -937,12 +937,13 @@ impl CredentialsTui {
             self.input_buffer.clone()
         };
         
-        let input_para = Paragraph::new(format!("{}█", display_value))
+        let input_para = Paragraph::new(format!("{display_value}█"))
             .style(Style::default().fg(Color::Yellow))
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(input_para, chunks[1]);
     }
 
+    #[allow(clippy::unused_self)]
     fn render_confirm_modal(&self, frame: &mut Frame, area: Rect, message: &str) {
         let modal_area = centered_rect(40, 15, area);
         frame.render_widget(Clear, modal_area);

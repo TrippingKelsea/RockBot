@@ -176,6 +176,7 @@ impl Default for CredentialsConfig {
 
 /// LLM provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ProvidersConfig {
     /// Anthropic provider settings
     #[serde(default)]
@@ -191,16 +192,6 @@ pub struct ProvidersConfig {
     pub ollama: OllamaProviderConfig,
 }
 
-impl Default for ProvidersConfig {
-    fn default() -> Self {
-        Self {
-            anthropic: AnthropicProviderConfig::default(),
-            openai: OpenAiProviderConfig::default(),
-            bedrock: BedrockProviderConfig::default(),
-            ollama: OllamaProviderConfig::default(),
-        }
-    }
-}
 
 /// Anthropic provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,7 +453,7 @@ impl Config {
                             Ok(content) => match Config::from_toml(&content) {
                                 Ok(config) => {
                                     info!("Configuration reloaded successfully");
-                                    if let Err(_) = tx.try_send(config) {
+                                    if tx.try_send(config).is_err() {
                                         warn!("Failed to send config update (channel full)");
                                     }
                                 }
@@ -607,6 +598,7 @@ fn default_default_permission() -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     
     #[test]

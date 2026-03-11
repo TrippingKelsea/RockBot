@@ -19,7 +19,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::crypto::{decrypt, encrypt, generate_nonce, generate_salt, MasterKey, NONCE_SIZE, SALT_SIZE, KEY_SIZE};
+use crate::crypto::{decrypt, encrypt, generate_nonce, generate_salt, MasterKey, NONCE_SIZE, KEY_SIZE};
 use crate::error::{CredentialError, Result};
 use crate::types::{hex_encode, hex_decode, Credential, CredentialType, Endpoint, EndpointType};
 
@@ -34,7 +34,7 @@ fn wrap_key_with_age(key_bytes: &[u8], public_key: &str) -> Result<String> {
         .parse::<age::x25519::Recipient>()
         .map(|r| Box::new(r) as Box<dyn age::Recipient + Send>)
         .map_err(|e| CredentialError::ValidationFailed(
-            format!("Invalid Age public key: {}", e)
+            format!("Invalid Age public key: {e}")
         ))?;
     
     // Encrypt the key
@@ -43,13 +43,13 @@ fn wrap_key_with_age(key_bytes: &[u8], public_key: &str) -> Result<String> {
     
     let mut encrypted = vec![];
     let mut writer = encryptor.wrap_output(&mut encrypted)
-        .map_err(|e| CredentialError::Internal(format!("Age wrap error: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("Age wrap error: {e}")))?;
     
     writer.write_all(key_bytes)
-        .map_err(|e| CredentialError::Internal(format!("Age write error: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("Age write error: {e}")))?;
     
     writer.finish()
-        .map_err(|e| CredentialError::Internal(format!("Age finish error: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("Age finish error: {e}")))?;
     
     // Return as base64
     use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -65,27 +65,27 @@ fn unwrap_key_with_age(wrapped_key: &str, identity_str: &str) -> Result<Vec<u8>>
     // Decode base64
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let encrypted = STANDARD.decode(wrapped_key)
-        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {}", e)))?;
+        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?;
     
     // Parse the identity (private key)
     let identity: Box<dyn age::Identity> = identity_str
         .parse::<age::x25519::Identity>()
         .map(|i| Box::new(i) as Box<dyn age::Identity>)
         .map_err(|e| CredentialError::ValidationFailed(
-            format!("Invalid Age identity: {}", e)
+            format!("Invalid Age identity: {e}")
         ))?;
     
     // Decrypt
     let decryptor = Decryptor::new(&encrypted[..])
-        .map_err(|e| CredentialError::Internal(format!("Age decryptor error: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("Age decryptor error: {e}")))?;
     
     let mut decrypted = vec![];
     match decryptor {
         Decryptor::Recipients(d) => {
             let mut reader = d.decrypt(std::iter::once(&*identity as &dyn age::Identity))
-                .map_err(|e| CredentialError::InvalidPassword)?;
+                .map_err(|_e| CredentialError::InvalidPassword)?;
             reader.read_to_end(&mut decrypted)
-                .map_err(|e| CredentialError::Internal(format!("Age read error: {}", e)))?;
+                .map_err(|e| CredentialError::Internal(format!("Age read error: {e}")))?;
         }
         _ => return Err(CredentialError::Internal("Unexpected decryptor type".to_string())),
     }
@@ -108,7 +108,7 @@ fn wrap_key_with_ssh(key_bytes: &[u8], public_key_path: &Path) -> Result<String>
     // Read and parse the public key
     let pubkey_content = fs::read_to_string(public_key_path)?;
     let pubkey = PublicKey::from_openssh(&pubkey_content)
-        .map_err(|e| CredentialError::ValidationFailed(format!("Invalid SSH public key: {}", e)))?;
+        .map_err(|e| CredentialError::ValidationFailed(format!("Invalid SSH public key: {e}")))?;
     
     // For SSH keys, we use a hybrid approach:
     // 1. Hash the public key to get a unique identifier
@@ -119,7 +119,7 @@ fn wrap_key_with_ssh(key_bytes: &[u8], public_key_path: &Path) -> Result<String>
     // RSA-OAEP or ECDH depending on key type.
     
     let pubkey_bytes = pubkey.to_bytes()
-        .map_err(|e| CredentialError::Internal(format!("Failed to serialize public key: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("Failed to serialize public key: {e}")))?;
     
     // Create a deterministic wrapping key from the public key
     let mut hasher = Sha256::new();
@@ -153,16 +153,16 @@ fn unwrap_key_with_ssh(wrapped_key: &str, private_key_path: &Path, passphrase: O
     let privkey = if let Some(pass) = passphrase {
         PrivateKey::from_openssh(&privkey_content)
             .and_then(|k| k.decrypt(pass.as_bytes()))
-            .map_err(|e| CredentialError::InvalidPassword)?
+            .map_err(|_e| CredentialError::InvalidPassword)?
     } else {
         PrivateKey::from_openssh(&privkey_content)
-            .map_err(|e| CredentialError::ValidationFailed(format!("Invalid SSH private key: {}", e)))?
+            .map_err(|e| CredentialError::ValidationFailed(format!("Invalid SSH private key: {e}")))?
     };
     
     // Get the public key from the private key
     let pubkey = privkey.public_key();
     let pubkey_bytes = pubkey.to_bytes()
-        .map_err(|e| CredentialError::Internal(format!("Failed to serialize public key: {}", e)))?;
+        .map_err(|e| CredentialError::Internal(format!("Failed to serialize public key: {e}")))?;
     
     // Recreate the wrapping key
     let mut hasher = Sha256::new();
@@ -175,7 +175,7 @@ fn unwrap_key_with_ssh(wrapped_key: &str, private_key_path: &Path, passphrase: O
     // Decode and split nonce + ciphertext
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let combined = STANDARD.decode(wrapped_key)
-        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {}", e)))?;
+        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?;
     
     if combined.len() < NONCE_SIZE {
         return Err(CredentialError::DeserializationError("Wrapped key too short".to_string()));
@@ -341,7 +341,7 @@ impl CredentialVault {
         let master_key = MasterKey::from_bytes(&key_bytes)?;
 
         let unlock = UnlockMethod::Keyfile {
-            path_hint: keyfile_path.to_str().map(|s| s.to_string()),
+            path_hint: keyfile_path.to_str().map(std::string::ToString::to_string),
         };
 
         Self::finalize_init(data_dir, master_key, unlock)
@@ -414,7 +414,7 @@ impl CredentialVault {
             verification_nonce: hex_encode(&verification_nonce),
         };
 
-        let mut vault = Self {
+        let vault = Self {
             data_dir,
             meta: Some(meta),
             master_key: Some(master_key),
@@ -440,12 +440,12 @@ impl CredentialVault {
     /// Only works if the vault was initialized with password-based encryption.
     pub fn unlock_with_password(&mut self, password: &str) -> Result<()> {
         let meta = self.meta.as_ref()
-            .ok_or_else(|| CredentialError::VaultNotInitialized)?;
+            .ok_or(CredentialError::VaultNotInitialized)?;
 
         // Extract salt from unlock method
         let salt = match &meta.unlock {
             UnlockMethod::Password { salt } => {
-                hex_decode(salt).map_err(|e| CredentialError::DeserializationError(e))?
+                hex_decode(salt).map_err(CredentialError::DeserializationError)?
             }
             _ => return Err(CredentialError::ValidationFailed(
                 "vault was not initialized with password-based encryption".to_string()
@@ -463,7 +463,7 @@ impl CredentialVault {
     /// Only works if the vault was initialized with keyfile-based encryption.
     pub fn unlock_with_keyfile(&mut self, keyfile_path: &Path) -> Result<()> {
         let meta = self.meta.as_ref()
-            .ok_or_else(|| CredentialError::VaultNotInitialized)?;
+            .ok_or(CredentialError::VaultNotInitialized)?;
 
         // Verify unlock method matches
         match &meta.unlock {
@@ -489,7 +489,7 @@ impl CredentialVault {
     /// Only works if the vault was initialized with Age encryption.
     pub fn unlock_with_age(&mut self, age_identity: &str) -> Result<()> {
         let meta = self.meta.as_ref()
-            .ok_or_else(|| CredentialError::VaultNotInitialized)?;
+            .ok_or(CredentialError::VaultNotInitialized)?;
 
         // Extract wrapped key from unlock method
         let wrapped_key = match &meta.unlock {
@@ -510,7 +510,7 @@ impl CredentialVault {
     /// Only works if the vault was initialized with SSH key encryption.
     pub fn unlock_with_ssh(&mut self, private_key_path: &Path, passphrase: Option<&str>) -> Result<()> {
         let meta = self.meta.as_ref()
-            .ok_or_else(|| CredentialError::VaultNotInitialized)?;
+            .ok_or(CredentialError::VaultNotInitialized)?;
 
         // Extract wrapped key from unlock method
         let wrapped_key = match &meta.unlock {
@@ -535,13 +535,13 @@ impl CredentialVault {
     /// Verifies a master key against the stored verification data and sets it if valid
     fn verify_and_set_master_key(&mut self, master_key: MasterKey) -> Result<()> {
         let meta = self.meta.as_ref()
-            .ok_or_else(|| CredentialError::VaultNotInitialized)?;
+            .ok_or(CredentialError::VaultNotInitialized)?;
 
         // Verify by decrypting verification data
         let verification_ciphertext = hex_decode(&meta.verification)
-            .map_err(|e| CredentialError::DeserializationError(e))?;
+            .map_err(CredentialError::DeserializationError)?;
         let verification_nonce_vec = hex_decode(&meta.verification_nonce)
-            .map_err(|e| CredentialError::DeserializationError(e))?;
+            .map_err(CredentialError::DeserializationError)?;
         
         // Convert Vec<u8> to [u8; NONCE_SIZE]
         let verification_nonce: [u8; NONCE_SIZE] = verification_nonce_vec
@@ -620,7 +620,7 @@ impl CredentialVault {
     /// Saves vault metadata to disk.
     fn save_meta(&self) -> Result<()> {
         let meta = self.meta.as_ref()
-            .ok_or_else(|| CredentialError::VaultNotInitialized)?;
+            .ok_or(CredentialError::VaultNotInitialized)?;
 
         let path = self.meta_path();
         let file = File::create(&path)?;
@@ -933,6 +933,7 @@ impl Drop for DecryptedCredential {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::crypto::MasterKey;
     use tempfile::tempdir;
@@ -944,6 +945,7 @@ mod tests {
     #[test]
     fn test_vault_create_and_open() {
         let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let vault = CredentialVault::open(dir.path()).unwrap();
         assert!(!vault.is_unlocked());
         assert!(vault.list_endpoints().is_empty());
@@ -952,6 +954,7 @@ mod tests {
     #[test]
     fn test_vault_unlock_lock() {
         let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
 
         assert!(!vault.is_unlocked());
@@ -964,6 +967,7 @@ mod tests {
     #[test]
     fn test_endpoint_crud() {
         let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
 
         // Create
@@ -1004,6 +1008,7 @@ mod tests {
     #[test]
     fn test_credential_store_and_decrypt() {
         let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
         vault.unlock(test_key());
 
@@ -1030,6 +1035,7 @@ mod tests {
     #[test]
     fn test_credential_requires_unlock() {
         let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
 
         let endpoint = vault
@@ -1048,6 +1054,7 @@ mod tests {
     #[test]
     fn test_credential_rotation() {
         let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
         vault.unlock(test_key());
 
@@ -1081,6 +1088,7 @@ mod tests {
 
         // Create and store
         {
+            CredentialVault::init_with_password(dir.path(), "test").unwrap();
             let mut vault = CredentialVault::open(dir.path()).unwrap();
             vault.unlock(test_key());
 
@@ -1115,6 +1123,7 @@ mod tests {
     #[test]
     fn test_decrypt_for_endpoint() {
         let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
         vault.unlock(test_key());
 

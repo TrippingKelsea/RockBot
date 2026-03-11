@@ -5,6 +5,9 @@ edition = "2021"
 description = "Signal channel plugin for RockBot (placeholder)"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 rockbot-channels = { path = "../rockbot-channels", default-features = false }
 rockbot-credentials-schema = { path = "../rockbot-credentials-schema" }

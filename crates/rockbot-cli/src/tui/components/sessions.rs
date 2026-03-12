@@ -1,10 +1,10 @@
-//! Sessions component - view and interact with sessions
+//! Sessions component - horizontal card strip + full-width chat
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
@@ -12,188 +12,298 @@ use crate::tui::effects::{self, palette, EffectState};
 use crate::tui::state::{AppState, ChatRole, InputMode};
 use super::render_spinner;
 
-/// Render the sessions page
-pub fn render_sessions(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(area);
+/// Card width: 2 border + 13 content = 15 columns
+const CARD_WIDTH: u16 = 15;
+/// Card height: 2 border + 3 content lines = 5 rows
+const CARD_HEIGHT: u16 = 5;
 
-    render_session_list(frame, chunks[0], state, effect_state);
-    render_session_details(frame, chunks[1], state);
+/// Derive a 3-character provider code from provider ID
+fn provider_short_code(provider_id: &str) -> &'static str {
+    match provider_id {
+        "bedrock" => "BDR",
+        "anthropic" => "ANT",
+        "openai" => "OAI",
+        "mock" => "MOK",
+        _ => "UNK",
+    }
 }
 
-fn render_session_list(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
-    let border_style = if !state.sidebar_focus {
-        effects::active_border_style(effect_state.elapsed_secs())
+/// Extract provider ID and model short name from a full model string like "bedrock/anthropic.claude-sonnet-4-20250514-v1:0"
+fn format_model_short(model: &str) -> String {
+    let (provider_part, model_part) = model.split_once('/').unwrap_or(("", model));
+    let code = provider_short_code(provider_part);
+    // Shorten model name: take last segment after '.', then truncate
+    let short_model = model_part
+        .rsplit('.')
+        .next()
+        .unwrap_or(model_part);
+    // Further shorten: strip common prefixes/suffixes, truncate to 8 chars
+    let short = shorten_model_name(short_model);
+    format!("{code}:{short}")
+}
+
+/// Shorten a model name for card display
+fn shorten_model_name(name: &str) -> String {
+    // Remove version suffixes like "-v1:0", "-20250514"
+    let s = name.split("-v1").next().unwrap_or(name);
+    // Remove date stamps (8+ digit sequences)
+    let parts: Vec<&str> = s.split('-').filter(|p| {
+        !(p.len() >= 8 && p.chars().all(|c| c.is_ascii_digit()))
+    }).collect();
+    let joined = parts.join("-");
+    if joined.len() > 9 {
+        joined[..9].to_string()
     } else {
-        effects::inactive_border_style()
-    };
+        joined
+    }
+}
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title("Sessions");
+/// Render the sessions page — card strip on top, chat below
+pub fn render_sessions(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(CARD_HEIGHT), Constraint::Min(0)])
+        .split(area);
 
+    render_session_cards(frame, chunks[0], state, effect_state);
+    render_chat_area(frame, chunks[1], state, effect_state);
+}
+
+/// Render the horizontal session card strip
+fn render_session_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
     if state.sessions_loading {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(effects::inactive_border_style())
+            .title("Sessions");
         let inner = block.inner(area);
         frame.render_widget(block, area);
         render_spinner(frame, inner, "Loading...", state.tick_count);
         return;
     }
 
-    let items: Vec<ListItem> = if state.sessions.is_empty() {
-        vec![
-            ListItem::new(Span::styled(
-                "No active sessions",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]
-    } else {
-        state.sessions.iter().map(|session| {
-            let model_hint = session.model.as_ref()
-                .and_then(|m| m.split('/').last())
-                .map(|m| {
-                    // Shorten model IDs for display
-                    let short = if m.len() > 25 { &m[..25] } else { m };
-                    format!(" [{short}]")
-                })
-                .unwrap_or_default();
-
-            let msg_count = state.session_chats
-                .get(&session.key)
-                .map_or(session.message_count, |c| c.messages.len());
-
-            ListItem::new(Line::from(vec![
-                Span::styled(&session.agent_id, Style::default().fg(Color::White)),
-                Span::styled(model_hint, Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!(" ({msg_count})"),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]))
-        }).collect()
-    };
-
-    let highlight_style = if !state.sidebar_focus {
-        Style::default()
-            .bg(palette::ACTIVE_PRIMARY)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
-    };
-
-    let list = List::new(items)
+    if state.sessions.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(effects::inactive_border_style())
+            .title("Sessions");
+        let hint = Paragraph::new(Line::from(Span::styled(
+            " Press 'n' to create a new session ",
+            Style::default().fg(Color::DarkGray),
+        )))
         .block(block)
-        .highlight_style(highlight_style)
-        .highlight_symbol("▶ ");
-
-    let mut list_state = ListState::default();
-    if !state.sessions.is_empty() {
-        list_state.select(Some(state.selected_session));
+        .alignment(Alignment::Center);
+        frame.render_widget(hint, area);
+        return;
     }
 
-    frame.render_stateful_widget(list, area, &mut list_state);
+    // Calculate visible card range based on selected session
+    let total = state.sessions.len();
+    let max_visible = (area.width / CARD_WIDTH) as usize;
+    let max_visible = max_visible.max(1);
+
+    // Center the selected session in the visible range
+    let half = max_visible / 2;
+    let start = if state.selected_session <= half {
+        0
+    } else if state.selected_session + half >= total {
+        total.saturating_sub(max_visible)
+    } else {
+        state.selected_session - half
+    };
+    let end = (start + max_visible).min(total);
+    let visible_count = end - start;
+
+    // Build constraints for visible cards + optional spacer
+    let mut constraints: Vec<Constraint> = (0..visible_count)
+        .map(|_| Constraint::Length(CARD_WIDTH))
+        .collect();
+    constraints.push(Constraint::Min(0)); // fill remaining space
+
+    let card_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    let elapsed = effect_state.elapsed_secs();
+
+    for (vi, idx) in (start..end).enumerate() {
+        let session = &state.sessions[idx];
+        let is_selected = idx == state.selected_session;
+
+        render_session_card(frame, card_chunks[vi], session, state, is_selected, elapsed);
+    }
+
+    // Fill remaining space with empty block
+    if visible_count < card_chunks.len() {
+        let filler = Block::default()
+            .borders(Borders::NONE);
+        frame.render_widget(filler, card_chunks[visible_count]);
+    }
 }
 
-fn render_session_details(frame: &mut Frame, area: Rect, state: &AppState) {
-    let is_chat_mode = matches!(state.input_mode, InputMode::ChatInput);
-
-    // Build title from selected session
-    let chat_title = if let Some(session) = state.sessions.get(state.selected_session) {
-        let model_part = session.model.as_ref()
-            .and_then(|m| m.split('/').last())
-            .unwrap_or("default");
-        format!("{} — {model_part}", session.agent_id)
+/// Render a single session card
+fn render_session_card(
+    frame: &mut Frame,
+    area: Rect,
+    session: &crate::tui::state::SessionInfo,
+    state: &AppState,
+    is_selected: bool,
+    elapsed: f64,
+) {
+    let border_style = if is_selected {
+        effects::active_border_style(elapsed)
     } else {
-        "Chat".to_string()
+        Style::default().fg(palette::INACTIVE_BORDER)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(chat_title);
+        .border_style(border_style);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 3 || inner.width < 3 {
+        return;
+    }
+
+    // Line 1: last 6 chars of session key
+    let id_short = if session.key.len() > 6 {
+        &session.key[session.key.len() - 6..]
+    } else {
+        &session.key
+    };
+
+    // Line 2: agent name truncated to inner width
+    let max_name = inner.width as usize;
+    let agent_display = if session.agent_id.starts_with("ad-hoc") {
+        "ad-hoc"
+    } else {
+        &session.agent_id
+    };
+    let agent_short: String = if agent_display.len() > max_name {
+        agent_display[..max_name].to_string()
+    } else {
+        agent_display.to_string()
+    };
+
+    // Line 3: provider:model short code
+    let model_line = session.model.as_ref()
+        .map(|m| format_model_short(m))
+        .unwrap_or_else(|| "no model".to_string());
+    let model_display: String = if model_line.len() > max_name {
+        model_line[..max_name].to_string()
+    } else {
+        model_line
+    };
+
+    // Message count badge
+    let msg_count = state.session_chats
+        .get(&session.key)
+        .map_or(session.message_count, |c| c.messages.len());
+
+    let id_style = if is_selected {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let agent_style = if is_selected {
+        Style::default().fg(palette::ACTIVE_SECONDARY).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let model_style = if is_selected {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    // Render each line, adding msg count to ID line if space allows
+    let id_text = if msg_count > 0 {
+        let badge = format!("{id_short} {msg_count}");
+        if badge.len() <= max_name { badge } else { id_short.to_string() }
+    } else {
+        id_short.to_string()
+    };
+
+    let lines = vec![
+        Line::from(Span::styled(id_text, id_style)),
+        Line::from(Span::styled(agent_short, agent_style)),
+        Line::from(Span::styled(model_display, model_style)),
+    ];
+
+    let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
+
+    // Only render 3 lines
+    let render_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.min(3),
+    };
+    frame.render_widget(paragraph, render_area);
+}
+
+/// Render the chat area (messages + input) — takes full width
+fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_state: &EffectState) {
+    let is_chat_mode = matches!(state.input_mode, InputMode::ChatInput);
 
     let messages = state.chat_messages();
     let chat_loading = state.chat_loading();
     let chat_scroll = state.chat_scroll();
 
-    if !messages.is_empty() || is_chat_mode || chat_loading {
-        // Chat view — messages + input
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+    // Split into messages area + input bar
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
-            .split(inner);
-
+    if !messages.is_empty() || chat_loading {
         render_chat_messages(frame, chunks[0], messages, chat_loading, chat_scroll);
-        render_chat_input(frame, chunks[1], state, is_chat_mode);
     } else if state.sessions.is_empty() {
-        // No sessions at all
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
-            .split(inner);
-
-        let content = vec![
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(effects::inactive_border_style());
+        let content = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
                 "Press 'n' to create a new session",
                 Style::default().fg(Color::DarkGray),
             )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Sessions let you pick a model (ad-hoc) or agent",
-                Style::default().fg(Color::DarkGray),
-            )),
-            Line::from(Span::styled(
-                "and keep conversation history",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
-        let paragraph = Paragraph::new(content).alignment(Alignment::Center);
-        frame.render_widget(paragraph, chunks[0]);
-        render_chat_input(frame, chunks[1], state, false);
+        ])
+        .block(block)
+        .alignment(Alignment::Center);
+        frame.render_widget(content, chunks[0]);
     } else if let Some(err) = &state.sessions_error {
-        let content = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("Error: {err}"),
-                Style::default().fg(Color::Red),
-            )),
-        ];
-        let paragraph = Paragraph::new(content)
-            .block(block)
-            .alignment(Alignment::Center);
-        frame.render_widget(paragraph, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette::ERROR));
+        let content = Paragraph::new(Line::from(Span::styled(
+            format!("Error: {err}"),
+            Style::default().fg(Color::Red),
+        )))
+        .block(block)
+        .alignment(Alignment::Center);
+        frame.render_widget(content, chunks[0]);
     } else {
-        // Session selected but no messages yet — show empty chat with hint
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
-            .split(inner);
-
-        let content = vec![
+        // Session selected but no messages
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(effects::inactive_border_style());
+        let content = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
                 "No messages yet. Press 'c' to start chatting.",
                 Style::default().fg(Color::DarkGray),
             )),
-        ];
-        let paragraph = Paragraph::new(content).alignment(Alignment::Center);
-        frame.render_widget(paragraph, chunks[0]);
-        render_chat_input(frame, chunks[1], state, false);
+        ])
+        .block(block)
+        .alignment(Alignment::Center);
+        frame.render_widget(content, chunks[0]);
     }
+
+    render_chat_input(frame, chunks[1], state, is_chat_mode);
 }
 
 fn render_chat_messages(
@@ -205,7 +315,7 @@ fn render_chat_messages(
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!("Messages ({})", messages.len()));
+        .border_style(Style::default().fg(palette::INACTIVE_BORDER));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -270,7 +380,7 @@ fn render_chat_input(frame: &mut Frame, area: Rect, state: &AppState, is_active:
     };
 
     let title = if is_active {
-        "Type message (Enter to send, Esc to cancel)"
+        "Enter to send, Esc to cancel"
     } else {
         "Press 'c' to chat"
     };

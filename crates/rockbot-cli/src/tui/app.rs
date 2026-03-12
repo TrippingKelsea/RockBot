@@ -998,6 +998,12 @@ impl App {
                         .and_then(|a| a.model.clone())
                 }
             });
+            // Set agent_id for agent-bound sessions
+            self.state.chat_agent_id = if !session.agent_id.is_empty() && !session.agent_id.starts_with("ad-hoc") {
+                Some(session.agent_id.clone())
+            } else {
+                None
+            };
             // Load messages if not already loaded
             let already_loaded = self.state.session_chats
                 .get(&key)
@@ -1941,11 +1947,18 @@ impl App {
         }
     }
 
-    /// Spawn an async task to send a chat message via Claude Code SDK
+    /// Spawn an async task to send a chat message via the gateway
     fn spawn_chat_request(&self, user_message: String) {
         let tx = self.state.tx.clone();
         let model = self.state.chat_model.clone();
         let session_key = self.state.active_session_key().unwrap_or("").to_string();
+        // Resolve agent_id from chat_agent_id or the selected session's agent_id
+        let agent_id = self.state.chat_agent_id.clone().or_else(|| {
+            self.state.sessions.get(self.state.selected_session)
+                .map(|s| &s.agent_id)
+                .filter(|id| !id.is_empty() && !id.starts_with("ad-hoc"))
+                .cloned()
+        });
         let chat_history: Vec<(bool, String)> = self.state.chat_messages()
             .iter()
             .filter_map(|m| match m.role {
@@ -1956,7 +1969,7 @@ impl App {
             .collect();
 
         tokio::spawn(async move {
-            match send_chat_message(&chat_history, &user_message, model.as_deref()).await {
+            match send_chat_message(&chat_history, &user_message, model.as_deref(), agent_id.as_deref()).await {
                 Ok(response) => {
                     let _ = tx.send(Message::ChatResponse(session_key, response));
                 }
@@ -2548,11 +2561,12 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     })
 }
 
-/// Send a chat message via the default LLM provider
+/// Send a chat message via the gateway
 async fn send_chat_message(
     chat_history: &[(bool, String)], // (is_user, content)
     user_message: &str,
     model: Option<&str>,
+    agent_id: Option<&str>,
 ) -> Result<String> {
     // Build messages array
     let mut messages = Vec::new();
@@ -2570,13 +2584,16 @@ async fn send_chat_message(
     // Determine model: use explicit model, or let gateway pick
     let model_id = model.unwrap_or("default");
 
-    let request_body = serde_json::json!({
+    let mut request_body = serde_json::json!({
         "model": model_id,
         "messages": messages,
         "temperature": 0.7,
         "max_tokens": 4096,
         "stream": false,
     });
+    if let Some(agent_id) = agent_id {
+        request_body["agent_id"] = serde_json::json!(agent_id);
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))

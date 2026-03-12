@@ -1412,6 +1412,16 @@ impl Gateway {
         req: Request<IncomingBody>,
     ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
         let body = req.collect().await.unwrap().to_bytes();
+
+        // Parse as raw JSON first to extract agent_id (not part of ChatCompletionRequest)
+        let raw_json: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST));
+            }
+        };
+        let agent_id = raw_json.get("agent_id").and_then(|v| v.as_str()).map(String::from);
+
         let mut chat_req: rockbot_llm::ChatCompletionRequest = match serde_json::from_slice(&body) {
             Ok(r) => r,
             Err(e) => {
@@ -1426,6 +1436,48 @@ impl Gateway {
                     .unwrap());
             }
         };
+
+        // If agent_id is provided, look up the agent's system prompt and prepend it
+        if let Some(ref agent_id) = agent_id {
+            let configs = self.agents_config.read().await;
+            if let Some(agent_cfg) = configs.iter().find(|a| a.id == *agent_id) {
+                if let Some(ref system_prompt) = agent_cfg.system_prompt {
+                    if !system_prompt.is_empty() {
+                        // Check if there's already a system message at the start
+                        let has_system = chat_req.messages.first()
+                            .map_or(false, |m| matches!(m.role, rockbot_llm::MessageRole::System));
+                        if !has_system {
+                            chat_req.messages.insert(0, rockbot_llm::Message {
+                                role: rockbot_llm::MessageRole::System,
+                                content: system_prompt.clone(),
+                                tool_calls: None,
+                            });
+                        }
+                    }
+                } else {
+                    // Try loading from the agent's SYSTEM-PROMPT.md file
+                    let agent_dir = dirs::config_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("rockbot/agents")
+                        .join(agent_id)
+                        .join("SYSTEM-PROMPT.md");
+                    if let Ok(content) = tokio::fs::read_to_string(&agent_dir).await {
+                        if !content.trim().is_empty() {
+                            let has_system = chat_req.messages.first()
+                                .map_or(false, |m| matches!(m.role, rockbot_llm::MessageRole::System));
+                            if !has_system {
+                                chat_req.messages.insert(0, rockbot_llm::Message {
+                                    role: rockbot_llm::MessageRole::System,
+                                    content: content.trim().to_string(),
+                                    tool_calls: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            drop(configs);
+        }
 
         let registry = self.llm_registry.read().await;
         let Some(reg) = registry.as_ref() else {
@@ -1470,7 +1522,7 @@ impl Gateway {
             }
         };
 
-        info!("Chat request: model={}, messages={}", chat_req.model, chat_req.messages.len());
+        info!("Chat request: model={}, messages={}, agent={}", chat_req.model, chat_req.messages.len(), agent_id.as_deref().unwrap_or("none"));
 
         match provider.chat_completion(chat_req).await {
             Ok(response) => Ok(Response::builder()

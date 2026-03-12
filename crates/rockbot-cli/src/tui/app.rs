@@ -397,30 +397,39 @@ impl App {
                     self.effect_state.set_active(false);
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') if !self.state.sidebar_focus => {
-                self.state.select_prev();
-                if self.state.menu_item == MenuItem::Sessions {
-                    self.on_session_selection_changed();
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') if !self.state.sidebar_focus => {
-                self.state.select_next();
-                if self.state.menu_item == MenuItem::Sessions {
-                    self.on_session_selection_changed();
-                }
-            }
-            // Left/Right to switch between panels in Credentials Providers tab
+            // Left/Right for horizontal card navigation in content panes
             KeyCode::Left | KeyCode::Char('h') if !self.state.sidebar_focus => {
-                if self.state.menu_item == MenuItem::Credentials && self.state.credentials_tab == 1 {
+                // Credentials Providers tab: Up/Down for category, Left/Right for sub-focus
+                if self.state.menu_item == MenuItem::Credentials && self.state.credentials_tab == 1 && self.state.provider_list_focus {
                     self.state.provider_list_focus = false;
+                } else {
+                    self.state.select_prev();
+                    if self.state.menu_item == MenuItem::Sessions {
+                        self.on_session_selection_changed();
+                    }
                 }
             }
             KeyCode::Right | KeyCode::Char('l') if !self.state.sidebar_focus => {
-                if self.state.menu_item == MenuItem::Credentials && self.state.credentials_tab == 1 {
-                    // Only allow if category has providers
+                if self.state.menu_item == MenuItem::Credentials && self.state.credentials_tab == 1 && !self.state.provider_list_focus {
                     if self.state.provider_count_for_category() > 0 {
                         self.state.provider_list_focus = true;
                     }
+                } else {
+                    self.state.select_next();
+                    if self.state.menu_item == MenuItem::Sessions {
+                        self.on_session_selection_changed();
+                    }
+                }
+            }
+            // Up/Down for vertical sub-navigation (credential categories, provider sub-list)
+            KeyCode::Up | KeyCode::Char('k') if !self.state.sidebar_focus => {
+                if self.state.menu_item == MenuItem::Credentials {
+                    self.state.select_prev();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if !self.state.sidebar_focus => {
+                if self.state.menu_item == MenuItem::Credentials {
+                    self.state.select_next();
                 }
             }
             // Enter to select/enter provider list
@@ -2066,13 +2075,13 @@ impl App {
                             )
                         }
                         MenuItem::Agents => {
-                            "a:Add │ e:Edit │ d:Disable │ r:Reload │ Esc/Tab:←Sidebar".to_string()
+                            "←→:Select │ a:Add │ e:Edit │ d:Disable │ r:Reload │ Esc:←".to_string()
                         }
                         MenuItem::Sessions => {
-                            "n:New │ c:Chat │ k:Kill │ Esc/Tab:←Sidebar".to_string()
+                            "←→:Select │ n:New │ c:Chat │ k:Kill │ Esc:←".to_string()
                         }
                         MenuItem::Models => {
-                            "e:Edit │ t:Test │ Esc/Tab:←Sidebar".to_string()
+                            "←→:Select │ e:Edit │ t:Test │ Esc:←".to_string()
                         }
                         MenuItem::Settings => {
                             "s:Start │ S:Stop │ r:Restart │ Esc/Tab:←Sidebar".to_string()

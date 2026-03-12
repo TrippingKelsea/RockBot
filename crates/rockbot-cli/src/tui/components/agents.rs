@@ -1,10 +1,10 @@
-//! Agents management component
+//! Agents management component - horizontal card strip + detail panel
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
@@ -12,100 +12,163 @@ use crate::tui::effects::{self, palette, EffectState};
 use crate::tui::state::{AgentStatus, AppState};
 use super::render_spinner;
 
-/// Render the agents page
+/// Card width and height for agent cards
+const CARD_WIDTH: u16 = 16;
+const CARD_HEIGHT: u16 = 5;
+
+/// Render the agents page — card strip on top, details below
 pub fn render_agents(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
     let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(CARD_HEIGHT), Constraint::Min(0)])
         .split(area);
 
-    render_agent_list(frame, chunks[0], state, effect_state);
+    render_agent_cards(frame, chunks[0], state, effect_state);
     render_agent_details(frame, chunks[1], state);
 }
 
-fn render_agent_list(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
-    // Use animated border when content pane is focused
-    let border_style = if !state.sidebar_focus {
-        effects::active_border_style(effect_state.elapsed_secs())
-    } else {
-        effects::inactive_border_style()
-    };
-    
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title("Configured Agents");
-    
+fn render_agent_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
     if state.agents_loading {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(effects::inactive_border_style())
+            .title("Agents");
         let inner = block.inner(area);
         frame.render_widget(block, area);
         render_spinner(frame, inner, "Loading...", state.tick_count);
         return;
     }
-    
-    let items: Vec<ListItem> = if state.agents.is_empty() {
-        vec![
-            ListItem::new(Span::styled(
-                "No agents configured",
-                Style::default().fg(Color::DarkGray),
-            )),
-            ListItem::new(Span::raw("")),
-            ListItem::new(Span::styled(
-                "Press [a] to create an agent",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]
-    } else {
-        state.agents.iter().map(|agent| {
-            let status_indicator = match agent.status {
-                AgentStatus::Active => Span::styled("● ", Style::default().fg(Color::Green)),
-                AgentStatus::Pending => Span::styled("◐ ", Style::default().fg(Color::Yellow)),
-                AgentStatus::Error => Span::styled("✗ ", Style::default().fg(Color::Red)),
-                AgentStatus::Disabled => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
-            };
 
-            let prefix = if agent.parent_id.is_some() {
-                Span::styled("  └ ", Style::default().fg(Color::DarkGray))
-            } else {
-                Span::raw("")
-            };
-
-            ListItem::new(Line::from(vec![
-                status_indicator,
-                prefix,
-                Span::raw(&agent.id),
-            ]))
-        }).collect()
-    };
-
-    // Use active highlight only when content is focused
-    let highlight_style = if !state.sidebar_focus {
-        Style::default()
-            .bg(palette::ACTIVE_PRIMARY)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
-    };
-
-    let list = List::new(items)
+    if state.agents.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(effects::inactive_border_style())
+            .title("Agents");
+        let hint = Paragraph::new(Line::from(Span::styled(
+            " Press 'a' to create an agent ",
+            Style::default().fg(Color::DarkGray),
+        )))
         .block(block)
-        .highlight_style(highlight_style)
-        .highlight_symbol("▶ ");
-
-    let mut list_state = ListState::default();
-    if !state.agents.is_empty() {
-        list_state.select(Some(state.selected_agent));
+        .alignment(Alignment::Center);
+        frame.render_widget(hint, area);
+        return;
     }
-    
-    frame.render_stateful_widget(list, area, &mut list_state);
+
+    let total = state.agents.len();
+    let max_visible = (area.width / CARD_WIDTH) as usize;
+    let max_visible = max_visible.max(1);
+
+    let half = max_visible / 2;
+    let start = if state.selected_agent <= half {
+        0
+    } else if state.selected_agent + half >= total {
+        total.saturating_sub(max_visible)
+    } else {
+        state.selected_agent - half
+    };
+    let end = (start + max_visible).min(total);
+    let visible_count = end - start;
+
+    let mut constraints: Vec<Constraint> = (0..visible_count)
+        .map(|_| Constraint::Length(CARD_WIDTH))
+        .collect();
+    constraints.push(Constraint::Min(0));
+
+    let card_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    let elapsed = effect_state.elapsed_secs();
+
+    for (vi, idx) in (start..end).enumerate() {
+        let agent = &state.agents[idx];
+        let is_selected = idx == state.selected_agent;
+
+        let border_style = if is_selected {
+            effects::active_border_style(elapsed)
+        } else {
+            Style::default().fg(palette::INACTIVE_BORDER)
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style);
+
+        let inner = block.inner(card_chunks[vi]);
+        frame.render_widget(block, card_chunks[vi]);
+
+        if inner.height < 3 || inner.width < 3 {
+            continue;
+        }
+
+        let max_w = inner.width as usize;
+
+        // Line 1: status indicator + agent id
+        let status_char = match agent.status {
+            AgentStatus::Active => ("●", Color::Green),
+            AgentStatus::Pending => ("◐", Color::Yellow),
+            AgentStatus::Error => ("✗", Color::Red),
+            AgentStatus::Disabled => ("○", Color::DarkGray),
+        };
+        let id_trunc: String = if agent.id.len() > max_w.saturating_sub(2) {
+            agent.id[..max_w.saturating_sub(2)].to_string()
+        } else {
+            agent.id.clone()
+        };
+
+        // Line 2: model short
+        let model_short: String = agent.model.as_ref()
+            .map(|m| {
+                let s = m.split('/').last().unwrap_or(m);
+                if s.len() > max_w { s[..max_w].to_string() } else { s.to_string() }
+            })
+            .unwrap_or_else(|| "no model".to_string());
+
+        // Line 3: session count
+        let sessions_text = format!("{} sess", agent.session_count);
+
+        let id_style = if is_selected {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let model_style = if is_selected {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(status_char.0, Style::default().fg(status_char.1)),
+                Span::styled(format!(" {id_trunc}"), id_style),
+            ]),
+            Line::from(Span::styled(model_short, model_style)),
+            Line::from(Span::styled(sessions_text, Style::default().fg(Color::DarkGray))),
+        ];
+
+        let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
+        let render_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: inner.height.min(3),
+        };
+        frame.render_widget(paragraph, render_area);
+    }
+
+    // Fill remaining space
+    if visible_count < card_chunks.len() {
+        let filler = Block::default().borders(Borders::NONE);
+        frame.render_widget(filler, card_chunks[visible_count]);
+    }
 }
 
 fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Agent Details");
 
     if let Some(agent) = state.agents.get(state.selected_agent) {
@@ -116,7 +179,7 @@ fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
             AgentStatus::Error => Color::Red,
             AgentStatus::Disabled => Color::DarkGray,
         };
-        
+
         let mut content = vec![
             Line::from(vec![
                 Span::styled("ID: ", Style::default().fg(Color::Cyan)),
@@ -140,7 +203,6 @@ fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
             ]));
         }
 
-        // Show subagents of this agent
         let subagents: Vec<&str> = state.agents.iter()
             .filter(|a| a.parent_id.as_deref() == Some(&agent.id))
             .map(|a| a.id.as_str())
@@ -169,37 +231,54 @@ fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
             Span::raw(format!("{}", agent.session_count)),
         ]));
 
+        if let Some(ref prompt) = agent.system_prompt {
+            content.push(Line::from(""));
+            content.push(Line::from(Span::styled("System Prompt:", Style::default().fg(Color::Cyan))));
+            for line in prompt.lines().take(6) {
+                content.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+            if prompt.lines().count() > 6 {
+                content.push(Line::from(Span::styled(
+                    "  ...",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(
             "[a]dd  [e]dit  [d]isable  [r]eload",
             Style::default().fg(Color::DarkGray),
         )));
-        
-        let paragraph = Paragraph::new(content).block(block);
+
+        let paragraph = Paragraph::new(content)
+            .block(block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(paragraph, area);
     } else if let Some(err) = &state.agents_error {
-        let content = vec![
+        let content = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
                 format!("Error: {err}"),
                 Style::default().fg(Color::Red),
             )),
-        ];
-        let paragraph = Paragraph::new(content)
-            .block(block)
-            .alignment(Alignment::Center);
-        frame.render_widget(paragraph, area);
+        ])
+        .block(block)
+        .alignment(Alignment::Center);
+        frame.render_widget(content, area);
     } else {
-        let content = vec![
+        let content = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
-                "Select an agent",
+                "Select an agent or press 'a' to create one",
                 Style::default().fg(Color::DarkGray),
             )),
-        ];
-        let paragraph = Paragraph::new(content)
-            .block(block)
-            .alignment(Alignment::Center);
-        frame.render_widget(paragraph, area);
+        ])
+        .block(block)
+        .alignment(Alignment::Center);
+        frame.render_widget(content, area);
     }
 }

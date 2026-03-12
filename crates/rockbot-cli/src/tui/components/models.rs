@@ -1,21 +1,34 @@
-//! Models/Providers component
+//! Models/Providers component - horizontal card strip + detail panel
 //!
 //! Shows LLM provider configuration status dynamically loaded from the gateway.
-//! The gateway is the single source of truth for which providers are registered
-//! and available.
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
 use crate::tui::effects::{self, palette, EffectState};
 use crate::tui::state::AppState;
 
-/// Render the models page
+/// Card dimensions for provider cards
+const CARD_WIDTH: u16 = 16;
+const CARD_HEIGHT: u16 = 5;
+
+/// Derive a 3-character provider code
+fn provider_short_code(id: &str) -> &'static str {
+    match id {
+        "bedrock" => "BDR",
+        "anthropic" => "ANT",
+        "openai" => "OAI",
+        "mock" => "MOK",
+        _ => "UNK",
+    }
+}
+
+/// Render the models page — card strip on top, details below
 pub fn render_models(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
     if state.providers.is_empty() {
         render_no_providers(frame, area);
@@ -23,12 +36,12 @@ pub fn render_models(frame: &mut Frame, area: Rect, state: &AppState, effect_sta
     }
 
     let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(CARD_HEIGHT), Constraint::Min(0)])
         .split(area);
 
-    render_provider_list(frame, chunks[0], state, effect_state);
-    render_provider_details(frame, chunks[1], state, effect_state);
+    render_provider_cards(frame, chunks[0], state, effect_state);
+    render_provider_details(frame, chunks[1], state);
 }
 
 fn render_no_providers(frame: &mut Frame, area: Rect) {
@@ -50,103 +63,116 @@ fn render_no_providers(frame: &mut Frame, area: Rect) {
             "  rockbot gateway run",
             Style::default().fg(Color::Cyan),
         )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Providers will appear here once the gateway is started.",
-            Style::default().fg(Color::DarkGray),
-        )),
     ];
 
     let paragraph = Paragraph::new(content).block(block);
     frame.render_widget(paragraph, area);
 }
 
-fn render_provider_list(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
-    let border_style = if !state.sidebar_focus {
-        effects::active_border_style(effect_state.elapsed_secs())
+fn render_provider_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
+    let total = state.providers.len();
+    let max_visible = (area.width / CARD_WIDTH) as usize;
+    let max_visible = max_visible.max(1);
+
+    let half = max_visible / 2;
+    let start = if state.selected_provider <= half {
+        0
+    } else if state.selected_provider + half >= total {
+        total.saturating_sub(max_visible)
     } else {
-        effects::inactive_border_style()
+        state.selected_provider - half
     };
+    let end = (start + max_visible).min(total);
+    let visible_count = end - start;
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title("Models");
+    let mut constraints: Vec<Constraint> = (0..visible_count)
+        .map(|_| Constraint::Length(CARD_WIDTH))
+        .collect();
+    constraints.push(Constraint::Min(0));
 
-    // Build a tree view: provider header + indented models
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut tree_index_to_provider: Vec<usize> = Vec::new(); // maps list row -> provider index
+    let card_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
 
-    for (pi, provider) in state.providers.iter().enumerate() {
-        let (indicator, indicator_style) = if provider.available {
-            ("● ", Style::default().fg(palette::CONFIGURED))
+    let elapsed = effect_state.elapsed_secs();
+
+    for (vi, idx) in (start..end).enumerate() {
+        let provider = &state.providers[idx];
+        let is_selected = idx == state.selected_provider;
+
+        let border_style = if is_selected {
+            effects::active_border_style(elapsed)
         } else {
-            ("○ ", Style::default().fg(palette::UNCONFIGURED))
+            Style::default().fg(palette::INACTIVE_BORDER)
         };
 
-        // Provider header row
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(indicator, indicator_style),
-            Span::styled(
-                &provider.name,
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" ({})", provider.models.len()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])));
-        tree_index_to_provider.push(pi);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style);
 
-        // Model rows (indented)
-        for model in &provider.models {
-            let ctx = format!(" {}k", model.context_window / 1000);
-            items.push(ListItem::new(Line::from(vec![
-                Span::raw("    "),
-                Span::styled("• ", Style::default().fg(Color::DarkGray)),
-                Span::raw(&model.name),
-                Span::styled(ctx, Style::default().fg(Color::DarkGray)),
-            ])));
-            tree_index_to_provider.push(pi);
+        let inner = block.inner(card_chunks[vi]);
+        frame.render_widget(block, card_chunks[vi]);
+
+        if inner.height < 3 || inner.width < 3 {
+            continue;
         }
+
+        let max_w = inner.width as usize;
+        let code = provider_short_code(&provider.id);
+
+        // Line 1: provider code + availability indicator
+        let (indicator, ind_color) = if provider.available {
+            ("●", palette::CONFIGURED)
+        } else {
+            ("○", palette::UNCONFIGURED)
+        };
+
+        // Line 2: provider name (truncated)
+        let name: String = if provider.name.len() > max_w {
+            provider.name[..max_w].to_string()
+        } else {
+            provider.name.clone()
+        };
+
+        // Line 3: model count
+        let model_count = format!("{} models", provider.models.len());
+
+        let name_style = if is_selected {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(indicator, Style::default().fg(ind_color)),
+                Span::styled(format!(" {code}"), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(Span::styled(name, name_style)),
+            Line::from(Span::styled(model_count, Style::default().fg(Color::DarkGray))),
+        ];
+
+        let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
+        let render_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: inner.height.min(3),
+        };
+        frame.render_widget(paragraph, render_area);
     }
 
-    let highlight_style = if !state.sidebar_focus {
-        Style::default()
-            .bg(palette::ACTIVE_PRIMARY)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
-    };
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(highlight_style)
-        .highlight_symbol("▶ ");
-
-    // Find the row index for the selected provider
-    let selected_row = tree_index_to_provider
-        .iter()
-        .position(|&pi| pi == state.selected_provider)
-        .unwrap_or(0);
-
-    let mut list_state = ListState::default();
-    list_state.select(Some(selected_row));
-
-    frame.render_stateful_widget(list, area, &mut list_state);
+    if visible_count < card_chunks.len() {
+        let filler = Block::default().borders(Borders::NONE);
+        frame.render_widget(filler, card_chunks[visible_count]);
+    }
 }
 
-fn render_provider_details(
-    frame: &mut Frame,
-    area: Rect,
-    state: &AppState,
-    _effect_state: &EffectState,
-) {
+fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Provider Details");
 
     let idx = state.selected_provider.min(state.providers.len().saturating_sub(1));
@@ -162,9 +188,9 @@ fn render_provider_details(
         palette::UNCONFIGURED
     };
     let status_text = if provider.available {
-        "✓ Available"
+        "Available"
     } else {
-        "○ Not Available"
+        "Not Available"
     };
 
     let mut content = vec![
@@ -225,9 +251,11 @@ fn render_provider_details(
             Style::default().fg(Color::Cyan),
         )));
 
-        for model in provider.models.iter().take(8) {
-            let tokens_info = model
-                .max_output_tokens.map_or_else(|| format!(" ({}k ctx)", model.context_window / 1000), |t| format!(" ({}k ctx, {}k out)", model.context_window / 1000, t / 1000));
+        for model in provider.models.iter().take(12) {
+            let tokens_info = model.max_output_tokens.map_or_else(
+                || format!(" ({}k ctx)", model.context_window / 1000),
+                |t| format!(" ({}k ctx, {}k out)", model.context_window / 1000, t / 1000),
+            );
 
             content.push(Line::from(vec![
                 Span::styled("  • ", Style::default().fg(Color::DarkGray)),
@@ -236,9 +264,9 @@ fn render_provider_details(
             ]));
         }
 
-        if provider.models.len() > 8 {
+        if provider.models.len() > 12 {
             content.push(Line::from(Span::styled(
-                format!("  ... and {} more", provider.models.len() - 8),
+                format!("  ... and {} more", provider.models.len() - 12),
                 Style::default().fg(Color::DarkGray),
             )));
         }
@@ -251,9 +279,8 @@ fn render_provider_details(
         Style::default().fg(Color::DarkGray),
     )));
     content.push(Line::from(""));
-    // Find matching credential schema for this provider
     let schema = state.credential_schemas.iter().find(|s| s.provider_id == provider.id);
-    render_auth_hints(&provider.id, &provider.auth_type, &mut content, schema);
+    render_auth_hints(&provider.auth_type, &mut content, schema);
 
     content.push(Line::from(""));
     content.push(Line::from(Span::styled(
@@ -261,7 +288,9 @@ fn render_provider_details(
         Style::default().fg(Color::DarkGray),
     )));
 
-    let paragraph = Paragraph::new(content).block(block);
+    let paragraph = Paragraph::new(content)
+        .block(block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
@@ -276,15 +305,12 @@ fn auth_type_label(auth_type: &str) -> &str {
 }
 
 fn render_auth_hints(
-    _provider_id: &str,
     auth_type: &str,
     content: &mut Vec<Line>,
     schema: Option<&crate::tui::state::CredentialSchemaInfo>,
 ) {
-    // If we have a schema, show env var hints from the default auth method's fields
     if let Some(schema) = schema {
         if let Some(method) = schema.auth_methods.first() {
-            // Show env var export hints for fields that have env_var set
             let env_fields: Vec<_> = method.fields.iter()
                 .filter(|f| f.env_var.is_some())
                 .collect();
@@ -306,7 +332,6 @@ fn render_auth_hints(
                 }
             }
 
-            // Show the method hint
             if let Some(hint) = &method.hint {
                 content.push(Line::from(""));
                 content.push(Line::from(Span::styled(
@@ -315,7 +340,6 @@ fn render_auth_hints(
                 )));
             }
 
-            // Show auth method count
             let method_count = schema.auth_methods.len();
             if method_count > 1 {
                 content.push(Line::from(""));
@@ -329,7 +353,7 @@ fn render_auth_hints(
         }
     }
 
-    // Fallback: static hints for when schema is not available
+    // Fallback hints
     match auth_type {
         "aws_credentials" => {
             content.push(Line::from("Configure via AWS credential chain:"));

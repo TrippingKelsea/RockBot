@@ -372,6 +372,11 @@ fn render_chat_messages(
             } else {
                 String::new()
             };
+            let expand_hint = if !tc.result.is_empty() {
+                if tc.expanded { " [-]" } else { " [+]" }
+            } else {
+                ""
+            };
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(
@@ -383,16 +388,18 @@ fn render_chat_messages(
                     Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(duration, Style::default().fg(Color::DarkGray)),
+                Span::styled(expand_hint, Style::default().fg(Color::DarkGray)),
             ]));
             if !tc.result.is_empty() {
-                for result_line in tc.result.lines().take(4) {
+                let max_preview = if tc.expanded { usize::MAX } else { 4 };
+                for result_line in tc.result.lines().take(max_preview) {
                     lines.push(Line::from(Span::styled(
                         format!("    {result_line}"),
                         Style::default().fg(Color::DarkGray),
                     )));
                 }
                 let line_count = tc.result.lines().count();
-                if line_count > 4 {
+                if !tc.expanded && line_count > 4 {
                     lines.push(Line::from(Span::styled(
                         format!("    ... ({} more lines)", line_count - 4),
                         Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
@@ -472,9 +479,9 @@ fn render_chat_input(frame: &mut Frame, area: Rect, state: &AppState, is_active:
     };
 
     let title = if is_active {
-        "Enter:Send │ Shift+Enter:Newline │ Esc:Cancel"
+        "Enter:Send │ Shift+Enter:Newline │ PgUp/Dn:Scroll │ Ctrl+R:Retry │ Esc:Cancel"
     } else {
-        "Press 'c' to chat"
+        "Press 'c' to chat │ 'd' to archive"
     };
 
     let block = Block::default()

@@ -1,6 +1,6 @@
 # RockBot Status
 
-**Last Updated:** 2026-03-10
+**Last Updated:** 2026-03-13
 
 ## Build Status
 
@@ -9,7 +9,7 @@
   - `--no-default-features`
   - `--features all-providers,all-channels,all-tools`
 
-✅ `cargo test` — 124 tests total, all passing
+✅ `cargo test` — 140+ tests total, all passing
 
 ✅ `cargo clippy` — workspace lint configuration enforced:
   - Zero code quality warnings (redundant closures, derivable impls, unused imports, etc.)
@@ -17,8 +17,8 @@
 
 ## Codebase Overview
 
-- **17 crates** in workspace
-- **67 Rust source files**, ~31,200 LOC
+- **18 crates** in workspace
+- **67 Rust source files**, ~35,000+ LOC
 - **18 TODOs** remaining in source
 
 | Crate | LOC | Purpose |
@@ -107,9 +107,13 @@ The gateway is the **single source of truth** for all runtime state. TUI, WebUI,
 ### Agent Engine (`rockbot-core/agent.rs`)
 
 - System prompt assembly from `SOUL.md`, `AGENTS.md`, skills section
-- Multi-turn tool execution loop with configurable iteration limits
+- Tool execution loop with dynamic iteration limits (32–160 based on available tools)
+- Tool loop detection with warn/critical/circuit-breaker thresholds
+- Semantic context compaction via LLM (not naive truncation)
+- Continuation nudges with 3-level escalation for stalled agents
+- `<think>` reasoning block support (parsed and stripped from output)
+- Configurable temperature and max_tokens per agent
 - LLM retry with exponential backoff, jitter, and error classification
-- Context compaction for long conversations
 - Token usage tracking and statistics
 
 ### LLM Providers (`rockbot-llm`)
@@ -256,11 +260,11 @@ Tool provider crates with self-registering credential schemas:
 
 ### High Priority
 
-1. **Channel Manager** — unified multi-channel coordination, message routing, binding system
-2. **Signal Channel** — real implementation (currently placeholder)
-3. **Streaming Responses** — SSE/WebSocket streaming for chat UI
-4. **Tool Sandboxing** — container or process-based sandbox for `exec` tool
-5. **Credential Injection** — automatic credential injection into tool execution context
+1. **Streaming Responses** — wire existing LLM-layer streaming through agent, gateway, and UI (SSE/WebSocket)
+2. **Credential Injection** — automatic credential injection into tool execution context
+3. **Channel Routing** — binding system for channel→agent message flow
+4. **Subagent Delegation** — parent agent spawning and coordinating child agents
+5. **WebSocket Protocol** — full bidirectional real-time UI updates
 
 ### Medium Priority
 
@@ -283,6 +287,7 @@ Tool provider crates with self-registering credential schemas:
 ## Known Issues
 
 - `aws_smithy_types::Document` doesn't impl `Serialize` — manual converters in `bedrock.rs`
+- `run_gateway_control()` still references `openclaw` binary name instead of `rockbot`
 - Gateway uptime tracking returns 0 (TODO)
 - Memory usage reporting returns 0 (TODO)
 - SSH agent vault unlock not yet implemented

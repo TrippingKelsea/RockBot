@@ -340,6 +340,7 @@ impl LlmProvider for OpenAiProvider {
                     role: MessageRole::Assistant,
                     content: choice.message.content.unwrap_or_default(),
                     tool_calls,
+                    tool_call_id: None,
                 },
                 finish_reason: choice.finish_reason.unwrap_or_else(|| "stop".to_string()),
             }],

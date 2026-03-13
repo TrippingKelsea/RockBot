@@ -20,10 +20,11 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Health check endpoint | ✅ | `GET /health` |
 | Agent listing | ✅ | `GET /api/agents` |
 | Agent messaging | ✅ | `POST /api/agents/{id}/message` |
-| WebSocket support | 📋 | Protocol defined, handler needed |
+| Agent CRUD (create/update/delete) | ✅ | `POST/PUT/DELETE /api/agents` |
+| WebSocket support | 📋 | Placeholder only, handler not implemented |
 | TLS/HTTPS | 📋 | Via reverse proxy for now |
 | Rate limiting | 📋 | |
-| Authentication | 📋 | Bearer token planned |
+| Authentication | 📋 | `require_api_key` field exists, not enforced |
 
 ### Configuration
 
@@ -33,7 +34,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Environment variable expansion | ✅ | `${VAR}` syntax |
 | Hot-reload via file watcher | ✅ | notify crate |
 | Config validation | ✅ | |
-| Config migration | 📋 | From OpenClaw format |
+| Config migration | 📋 | |
 
 ### Session Management
 
@@ -43,7 +44,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Message history | ✅ | |
 | Token usage tracking | ✅ | |
 | Session CRUD | ✅ | |
-| Session archival | 🚧 | CLI command exists |
+| Session archival | 🚧 | CLI command exists, partial implementation |
 | Session export | 📋 | JSON/Markdown export |
 
 ### Agent Engine
@@ -51,11 +52,15 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Message processing pipeline | ✅ | |
-| Tool execution | 🚧 | Registry works, tools are stubs |
+| Tool execution loop | ✅ | 32-160 dynamic iterations |
+| Tool loop detection | ✅ | warn/critical/circuit breaker levels |
 | Context management | ✅ | |
-| Context compaction | 🚧 | Basic implementation |
-| Streaming responses | 📋 | |
+| Semantic context compaction | ✅ | LLM-based |
+| Continuation nudges | ✅ | 3-level escalation |
+| `<think>` reasoning block support | ✅ | |
+| Streaming responses | 📋 | Infrastructure exists in LLM layer, not wired through agent/gateway |
 | Multi-turn conversation | ✅ | |
+| Temperature/max_tokens per agent | ✅ | Configurable per agent |
 
 ---
 
@@ -79,7 +84,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 |------|--------|-------|
 | Home Assistant | ✅ | Long-lived access token |
 | Generic REST API | ✅ | Bearer token |
-| OAuth2 Service | 🚧 | Token storage works, flow not automated |
+| OAuth2 Service | 🚧 | Token storage works, automated flow not implemented |
 | API Key Service | ✅ | Custom header support |
 | Basic Auth | ✅ | Username/password |
 | Bearer Token | ✅ | Generic bearer |
@@ -93,7 +98,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | AllowHIL2FA | 📋 | YubiKey integration |
 | Deny | ✅ | |
 | Glob pattern matching | ✅ | `saggyclaw://api/**` |
-| Persistent rules | 📋 | Currently in-memory |
+| Persistent rules | 📋 | Currently in-memory only |
 
 ### Audit Logging
 
@@ -131,12 +136,12 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Provider | Status | Notes |
 |----------|--------|-------|
 | Mock provider | ✅ | For testing |
-| Anthropic Claude | 📋 | High priority |
-| OpenAI | 📋 | |
+| Anthropic Claude | ✅ | Via Claude Code SDK OAuth |
+| OpenAI | ✅ | |
+| AWS Bedrock | ✅ | Converse API |
+| Streaming support | ✅ | All 3 providers implement `stream_completion` |
+| Retry/backoff | ✅ | Exponential with jitter |
 | Ollama (local) | 📋 | |
-| AWS Bedrock | 📋 | |
-| Streaming support | 📋 | |
-| Retry/backoff | 📋 | |
 
 ---
 
@@ -146,10 +151,15 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 | Tool | Status | Notes |
 |------|--------|-------|
-| `read` | 🚧 | Skeleton only |
-| `write` | 🚧 | Skeleton only |
-| `edit` | 🚧 | Skeleton only |
-| `exec` | 🚧 | Skeleton only |
+| `read` | ✅ | File reading with offset/limit |
+| `write` | ✅ | File writing |
+| `edit` | ✅ | Text editing |
+| `exec` | ✅ | Shell execution |
+| `glob` | ✅ | File pattern matching |
+| `grep` | ✅ | Content searching |
+| `patch` | ✅ | Diff application |
+| `memory_get` | ✅ | Full profile |
+| `memory_search` | ✅ | Full profile |
 | `web_search` | 📋 | |
 | `web_fetch` | 📋 | |
 | `browser` | 📋 | |
@@ -161,8 +171,16 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Tool registry | ✅ | |
 | Profile-based loading | ✅ | minimal/standard/full |
 | Capability-based filtering | ✅ | |
-| JSON Schema generation | 📋 | For LLM function calling |
+| JSON Schema generation | ✅ | Tools provide schemas for LLM function calling |
 | Tool result types | ✅ | |
+
+### Tool Provider Crates
+
+| Crate | Status | Notes |
+|-------|--------|-------|
+| rockbot-tools-credentials | ✅ | Vault access tool |
+| rockbot-tools-mcp | ✅ | MCP server connection |
+| rockbot-tools-markdown | ✅ | Markdown processing |
 
 ---
 
@@ -187,8 +205,8 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Document loading | ✅ | |
 | Keyword search | ✅ | |
 | Core memory (JSON) | ✅ | |
-| Vector index | 📋 | Placeholder |
-| Semantic search | 📋 | |
+| Vector index | 🚧 | TF-IDF based, being implemented |
+| Semantic search | 🚧 | TF-IDF cosine similarity, being implemented |
 | Memory compaction | 📋 | |
 
 ---
@@ -218,7 +236,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | `credentials status` | ✅ | |
 | `credentials list` | ✅ | |
 | `credentials add` | ✅ | |
-| `credentials remove` | 🚧 | |
+| `credentials remove` | ✅ | |
 | `credentials unlock` | ✅ | |
 | `credentials lock` | ✅ | |
 | `credentials permissions` | ✅ | |
@@ -231,16 +249,15 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Async event loop | ✅ | tokio::select! |
-| Dashboard view | ✅ | |
-| Credentials view | ✅ | |
-| Add credential modal | ✅ | Dynamic fields per type |
-| Agents view | ✅ | |
-| Sessions view | ✅ | |
-| Models view | ✅ | |
+| Dashboard view | ✅ | Card strip layout |
+| Credentials view (4 sub-tabs) | ✅ | All, Model, Communication, Tool |
+| Agents view | ✅ | CRUD, modal editing |
+| Sessions view | ✅ | Card strip + chat |
+| Models view | ✅ | Dynamic provider list, test |
 | Settings view | 🚧 | |
 | Vault unlock modal | ✅ | Auto-unlock for keyfile |
-| Real data binding | 📋 | Currently mock data |
-| Gateway API calls | 📋 | |
+| Real data binding | ✅ | Gateway API calls wired |
+| Gateway API calls | ✅ | |
 
 ---
 
@@ -248,13 +265,12 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Embedded HTML | ✅ | |
+| Embedded HTML SPA | ✅ | Vanilla JS, no framework (~1645 lines) |
 | Dashboard | ✅ | |
-| Credentials page | ✅ | |
-| Add credential form | ✅ | Dynamic fields |
-| Agents page | ✅ | |
-| Sessions page | ✅ | |
-| Models page | ✅ | |
+| Credentials page | ✅ | 4 sub-tabs, schema-driven |
+| Agents page | ✅ | CRUD, subagents |
+| Sessions page | ✅ | Chat |
+| Models page | ✅ | Test, configure |
 | Settings page | 🚧 | |
 | Real-time updates | 📋 | WebSocket needed |
 
@@ -264,10 +280,10 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 | Channel | Status | Notes |
 |---------|--------|-------|
-| HTTP/REST | 📋 | |
-| WebSocket | 📋 | |
-| Discord | 📋 | |
-| Telegram | 📋 | |
+| Channel trait + registry | ✅ | |
+| Discord | ✅ | Serenity: connect, send, events, embeds |
+| Telegram | ✅ | Teloxide |
+| Signal | 📋 | Placeholder only |
 | Slack | 📋 | |
 | IRC | 📋 | |
 
@@ -278,7 +294,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Plugin trait | ✅ | |
-| Plugin registry | 🚧 | |
+| Plugin registry | 🚧 | Scaffold only |
 | WASM runtime | 📋 | |
 | Plugin discovery | 📋 | |
 | Plugin isolation | 📋 | |
@@ -287,24 +303,26 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 ## Gap Analysis Summary
 
-### Critical Path to MVP
+### Critical Path Items
 
-1. **LLM Provider** - Need at least Anthropic working
-2. **Tool Implementations** - read/write/edit/exec need real implementations
-3. **Credential Injection** - Tools need to use credentials from vault
-4. **Real Data Binding** - TUI/Web UI need to call actual gateway APIs
+1. **Streaming responses** - LLM streaming is implemented in all three providers but not wired through the agent engine, gateway API, or UI layers.
+2. **Credential injection** - Tools execute but have no mechanism to retrieve vault credentials from the execution context at call time.
+3. **Routing/binding system** - No channel-to-agent message routing exists; channels and agents run independently with no dispatch layer connecting them.
+4. **Subagent delegation** - Agent-to-agent task delegation is not implemented; parent/child relationship fields exist in the data model only.
+5. **WebSocket protocol** - Required for real-time UI updates in both TUI and Web UI; placeholder exists in gateway but handler is not implemented.
 
 ### Nice to Have (Post-MVP)
 
-1. WebSocket for real-time updates
-2. Additional LLM providers (OpenAI, Ollama)
-3. Channel integrations (Discord, Telegram)
-4. WASM plugin system
-5. Sandbox implementation
+1. Additional LLM providers (Ollama)
+2. Signal channel integration
+3. WASM plugin system
+4. Sandbox implementation (container and process)
+5. Persistent permission rules
+6. Session export (JSON/Markdown)
 
 ### Technical Debt
 
-1. Type duplication between crates (needs consolidation)
-2. Mock implementations need replacement
-3. Error handling inconsistencies
+1. OAuth2 automated flow not implemented (token storage works, but acquisition is manual)
+2. Age encryption and SSH key unlock are stubbed in the vault
+3. Permission rules are in-memory and do not survive gateway restarts
 4. Test coverage gaps in some modules

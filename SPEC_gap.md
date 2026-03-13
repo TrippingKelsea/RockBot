@@ -1,52 +1,52 @@
 # rockbot Implementation Gap Analysis
 
-**Generated:** 2026-03-08
+**Generated:** 2026-03-13
 **Based on:** SPEC.md v1.0
-**Codebase:** 72 Rust files, ~14,000 LOC across 11 crates
+**Codebase:** 18 crates, ~35,000 LOC
 
 ---
 
 ## Executive Summary
 
-rockbot is approximately **25-30% complete** relative to the full SPEC.md specification. The credential vault system is the most mature component (~85% complete), followed by the TUI (~70%) and Web UI (~55%). Core gateway infrastructure exists but many subsystems are stubbed or partial. The biggest gaps are in channel support (only Discord implemented), the cron/scheduling system (not implemented), and the full agent execution pipeline.
+rockbot is approximately **40-45% complete** relative to the full SPEC.md specification. The credential vault and agent execution system are the most mature components (~85% complete each), followed by the TUI (~80%) and Web UI (~70%). All three LLM providers (Anthropic, OpenAI, Bedrock) are working with streaming support at the LLM layer. The biggest remaining gaps are streaming wired through the full agent/gateway/UI pipeline, the channel routing/binding system, the cron/scheduling system, and the subagent delegation mechanism.
 
 ---
 
 ## Implementation Status by Section
 
-### ✅ Substantially Complete (>70%)
+### Substantially Complete (>70%)
 
 | Section | Status | Notes |
 |---------|--------|-------|
 | **14. Security Model** | ~85% | Credential vault, permissions, audit logging, HIL approval all implemented |
-| **6. Session Management** | ~75% | SQLite persistence, session CRUD, message history working |
-| **20. TUI** | ~70% | All 6 sections, credentials complete, chat partial |
-| **3. Gateway Protocol** | ~60% | WebSocket server running, basic RPC methods, auth flow |
+| **6. Session Management** | ~80% | SQLite persistence, session CRUD, message history, per-session chat state |
+| **7. Agent System** | ~85% | Multi-tool execution (32-160 dynamic iterations), tool loop detection, semantic compaction, continuation nudges, `<think>` blocks, system prompt assembly, configurable temperature/max_tokens |
+| **20. TUI** | ~80% | All 6 sections with real gateway data binding, agent CRUD modals, per-session chat with tool call display |
+| **20. Web UI** | ~70% | All 6 sections at parity with TUI, cyberpunk theme, schema-driven provider config |
+| **3. Gateway Protocol** | ~60% | HTTP API with 30+ endpoints; WebSocket upgrade placeholder only |
 
-### 🟡 Partially Implemented (30-70%)
-
-| Section | Status | Notes |
-|---------|--------|-------|
-| **20. Web UI** | ~55% | All sections present, credentials complete, real-time missing |
-| **7. Agent System** | ~85% | Multi-tool execution, system prompt assembly, retry logic, streaming support implemented |
-| **2. System Architecture** | ~45% | Gateway + Session Store exist; Channel Manager, Routing Engine partial |
-| **10. Configuration** | ~40% | Config loading works, missing hot reload, many fields unparsed |
-| **8. Tool System** | ~35% | read tool implemented, exec partial; missing edit, patch, glob, grep, browser_*, memory_* |
-| **11. CLI Interface** | ~35% | gateway, credentials, doctor commands; missing agents, models, cron, plugins, message |
-| **15. Data Storage** | ~40% | Session SQLite works; transcript JSONL partial |
-
-### 🔴 Minimal/Stubbed (<30%)
+### Partially Implemented (30-70%)
 
 | Section | Status | Notes |
 |---------|--------|-------|
-| **4. Channel System** | ~15% | Only Discord; missing Telegram, Slack, Signal, iMessage, WhatsApp, etc. |
+| **2. System Architecture** | ~50% | Gateway + Session Store + Agent engine working; Channel Manager, Routing Engine partial |
+| **8. Tool System** | ~70% | 9 built-in tools (read, write, edit, exec, glob, grep, patch, memory_get, memory_search) + 3 plugin tools; missing web_search, web_fetch, browser |
+| **10. Configuration** | ~55% | Config loading works, hot-reload watcher exists, temperature/max_tokens per agent; missing hot apply |
+| **11. CLI Interface** | ~50% | gateway, credentials (full suite), session, agent, tool, config, doctor commands; missing models, cron, plugins, message |
+| **15. Data Storage** | ~50% | Session SQLite works; transcript JSONL partial |
+| **18-19. Error/Observability** | ~65% | Structured error handling with retry logic, error categorization, exponential backoff with jitter |
+| **4. Channel System** | ~30% | Discord implemented (Serenity), Telegram implemented (Teloxide), Signal placeholder |
+
+### Minimal/Stubbed (<30%)
+
+| Section | Status | Notes |
+|---------|--------|-------|
 | **5. Routing System** | ~10% | No binding resolution, no route matching, no session key formatting |
 | **9. Plugin System** | ~10% | Manifest loading only; no WASM, no hook execution |
 | **13. Cron System** | ~5% | Heartbeat config field exists; no scheduler, no job execution |
 | **16. Skills System** | ~0% | Not implemented |
 | **17. Media Pipeline** | ~0% | Not implemented |
-| **12. Message Context** | ~20% | Basic message struct; MsgContext not fully populated |
-| **18-19. Error/Observability** | ~60% | Structured error handling with retry logic, error categorization; missing health monitoring |
+| **12. Message Context** | ~25% | Basic message struct with tool_call_id, metadata.extra for tool calls; MsgContext not fully populated |
 
 ---
 
@@ -55,15 +55,18 @@ rockbot is approximately **25-30% complete** relative to the full SPEC.md specif
 ### 1. Gateway Protocol (Section 3)
 
 #### Implemented
-- [x] WebSocket server on configurable port
-- [x] JSON frame serialization
-- [x] Basic request/response correlation
+- [x] HTTP API server on configurable port (30+ endpoints)
+- [x] JSON request/response
 - [x] Auth token validation
-- [x] Connection handshake (partial)
+- [x] Agent CRUD endpoints (`GET/POST/PUT/DELETE /api/agents`)
+- [x] Session CRUD endpoints
+- [x] Credential endpoints
+- [x] Provider schema endpoints
+- [x] WebSocket upgrade path (placeholder, not functional)
 
 #### Missing
 - [ ] Protocol version negotiation
-- [ ] Event broadcasting with sequence numbers
+- [ ] WebSocket event broadcasting with sequence numbers
 - [ ] State version synchronization
 - [ ] Full RPC method coverage:
   - [ ] `agent.invoke`, `agent.wait`, `agent.wake`, `agent.identity`
@@ -88,11 +91,14 @@ rockbot is approximately **25-30% complete** relative to the full SPEC.md specif
   - [x] Embeds support
   - [ ] Components/buttons
   - [ ] Threads
+- [x] Telegram channel (Teloxide-based)
+  - [x] Connect/disconnect
+  - [x] Send/receive messages
+- [ ] Signal — placeholder only
 
-#### Missing Channels (all 0%)
+#### Missing Channels
 | Channel | Library | Priority |
 |---------|---------|----------|
-| **Telegram** | grammY/teloxide | High |
 | **Signal** | signal-cli | High |
 | **Slack** | Bolt | Medium |
 | **WhatsApp** | Baileys | Medium |
@@ -133,22 +139,28 @@ rockbot is approximately **25-30% complete** relative to the full SPEC.md specif
 ### 4. Agent System (Section 7)
 
 #### Implemented
-- [x] Agent struct with config
-- [x] Basic LLM invocation (Anthropic, OpenAI)
-- [x] Tool calling (single tool per turn)
+- [x] Agent struct with config (model, workspace, parent_id, temperature, max_tokens)
+- [x] LLM invocation — all three providers working (Anthropic, OpenAI, Bedrock)
+- [x] Multi-tool execution loop (32-160 dynamic iterations)
+- [x] Tool loop detection and circuit breaking
+- [x] Semantic compaction of long conversations
+- [x] Continuation nudges
+- [x] `<think>` block handling
+- [x] System prompt assembly (SOUL.md, SYSTEM-PROMPT.md injection)
 - [x] Session transcript persistence
+- [x] Agent directory creation (`~/.config/rockbot/agents/{id}/`)
+- [x] Agent CRUD via gateway API with file persistence
+- [x] Configurable temperature and max_tokens per agent
 
 #### Missing
-- [ ] **Streaming responses** (marked TODO in both providers)
+- [ ] **Streaming wired through agent/gateway/UI** — LLM layer has streaming, not connected end-to-end
 - [ ] Thinking levels (off/minimal/low/medium/high)
 - [ ] Model failover chain
 - [ ] Rate limit detection and backoff
 - [ ] Auth profile fallback
-- [ ] Tool execution loop (multi-tool per turn)
-- [ ] System prompt assembly pipeline
-- [ ] Context injection (AGENTS.md, SOUL.md, skills)
-- [ ] Response delivery and chunking
+- [ ] Subagent delegation mechanism
 - [ ] Abort handling mid-execution
+- [ ] Response chunking for channel delivery limits
 
 ---
 
@@ -157,26 +169,28 @@ rockbot is approximately **25-30% complete** relative to the full SPEC.md specif
 #### Implemented
 | Tool | Status | Notes |
 |------|--------|-------|
-| `read` | ✅ Complete | File reading with offset/limit |
-| `write` | 🟡 Partial | Exists but needs verification |
-| `exec` | 🟡 Partial | Shell execution stubbed |
+| `read` | Complete | File reading with offset/limit |
+| `write` | Complete | File writing |
+| `edit` | Complete | File editing with diff |
+| `exec` | Complete | Shell execution |
+| `glob` | Complete | File pattern matching |
+| `grep` | Complete | Content searching |
+| `patch` | Complete | Unified diff application |
+| `memory_get` | Complete | Memory retrieval |
+| `memory_search` | Complete | Memory search |
+| 3 plugin tools | Complete | Via rockbot-tools-mcp, rockbot-tools-credentials, rockbot-tools-markdown |
 
 #### Missing Tools
-- [ ] `edit` - File editing with diff
-- [ ] `patch` - Unified diff application
-- [ ] `glob` - File pattern matching
-- [ ] `grep` - Content searching
+- [ ] `web_search` - Web searching
+- [ ] `web_fetch` - URL fetching
 - [ ] `browser_navigate` - Browser automation
 - [ ] `browser_screenshot` - Page capture
-- [ ] `memory_get` - Memory retrieval
-- [ ] `memory_search` - Memory search
 
 #### Missing Infrastructure
-- [ ] Tool registry with capability filtering
 - [ ] Sandboxed execution
 - [ ] Before/after tool hooks
 - [ ] Tool timeout handling
-- [ ] Credential injection into tool context
+- [ ] **Credential injection into tool execution context**
 - [ ] Tool result sanitization
 
 ---
@@ -260,11 +274,12 @@ rockbot is approximately **25-30% complete** relative to the full SPEC.md specif
 - [x] JSON5 config parsing
 - [x] Gateway config section
 - [x] Credentials config section
-- [x] Agent definitions (partial)
+- [x] Agent definitions with temperature/max_tokens
 - [x] Logging config (partial)
+- [x] Hot-reload file watcher (watcher exists; apply not wired)
 
 #### Missing
-- [ ] Hot reload on config change
+- [ ] **Config hot apply** — watcher fires but changes are not applied to running gateway
 - [ ] Full `auth.profiles` handling
 - [ ] Model definitions and aliases
 - [ ] Session config (scope, idleMinutes, typingMode, reset)
@@ -281,19 +296,20 @@ rockbot is approximately **25-30% complete** relative to the full SPEC.md specif
 #### Implemented
 | Command | Status |
 |---------|--------|
-| `gateway run` | ✅ Working |
-| `gateway dev` | 🟡 Partial |
-| `credentials *` | ✅ Most subcommands |
-| `doctor` | 🟡 Basic checks |
-| `session` | 🟡 Basic ops |
+| `gateway run` | Working |
+| `gateway dev` | Partial |
+| `credentials *` | Full suite |
+| `doctor` | Basic checks |
+| `session *` | Basic ops |
+| `agent *` | Working |
+| `tool *` | Working |
+| `config *` | Partial |
 
 #### Missing Commands
 - [ ] `setup` - Workspace initialization
 - [ ] `onboard` - Interactive wizard
 - [ ] `configure` - Guided config
 - [ ] `status` - Channel health overview
-- [ ] `agent` - Agent invocation
-- [ ] `agents` - Agent management
 - [ ] `message send` - Direct message sending
 - [ ] `channels` - Channel management
 - [ ] `models` - Model configuration
@@ -304,7 +320,7 @@ rockbot is approximately **25-30% complete** relative to the full SPEC.md specif
 
 ### 12. Security Model (Section 14)
 
-This is the **most complete** section.
+This is the **most complete** section alongside the agent system.
 
 #### Implemented
 - [x] Master key derivation (Argon2id)
@@ -318,7 +334,7 @@ This is the **most complete** section.
 - [x] Hash-chained audit log
 - [x] Audit log verification
 - [x] Multiple unlock methods (password, keyfile, Age)
-- [x] TUI for credential management
+- [x] TUI and Web UI for credential management
 
 #### Missing
 - [ ] Keyring integration (macOS Keychain, etc.)
@@ -327,54 +343,52 @@ This is the **most complete** section.
 - [ ] Response sanitization (credential stripping)
 - [ ] Memory protection (mlock)
 - [ ] Credential rotation
-- [ ] API endpoints (REST interface in gateway)
 - [ ] Mobile push notifications for HIL
+- [ ] **Credential injection into tool execution context**
 
 ---
 
 ### 13. User Interface (Section 20) — TUI + Web UI
 
-The UI system is **~65% complete** overall, with the TUI more mature than the Web UI.
+The UI system is **~75% complete** overall, with the TUI slightly more mature than the Web UI.
 
 #### TUI Implementation Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **App Loop** | ✅ Complete | Crossterm + async message channel |
-| **State Management** | ✅ Complete | Elm-like AppState + Message pattern |
-| **Sidebar Navigation** | ✅ Complete | 6 sections, keyboard nav |
-| **Dashboard** | ✅ Complete | Gateway status, agent list, vault status |
-| **Credentials** | ✅ Complete | 4 sub-tabs, full CRUD, unlock flows |
-| **Agents** | 🟡 ~70% | List view works, config editing partial |
-| **Sessions** | 🟡 ~60% | List works, chat partial |
-| **Models** | 🟡 ~50% | Provider cards, config editing partial |
-| **Settings** | 🟡 ~40% | Basic display, no editing |
-| **Modals** | ✅ Complete | Password, confirm, add/edit forms |
+| **App Loop** | Complete | Crossterm + async message channel |
+| **State Management** | Complete | Elm-like AppState + Message pattern |
+| **Sidebar Navigation** | Complete | 6 sections, keyboard nav |
+| **Dashboard** | Complete | Gateway status, agent list, vault status |
+| **Credentials** | Complete | 4 sub-tabs, full CRUD, unlock flows |
+| **Agents** | ~85% | List view, CRUD modals, config editing |
+| **Sessions** | ~80% | List works, per-session chat with tool call display |
+| **Models** | ~70% | Provider cards, config editing, live Bedrock polling |
+| **Settings** | ~60% | Display with real gateway data binding |
+| **Modals** | Complete | Password, confirm, add/edit agent forms |
 
 #### TUI Missing Features
 - [ ] Chat streaming display (chunks arrive, not rendered incrementally)
-- [ ] Session detail drilldown
 - [ ] Real-time WebSocket updates
 - [ ] Channels status view
 - [ ] Cron jobs view
 - [ ] Plugins view
-- [ ] Agent config editing
 - [ ] Model testing/validation
 
 #### Web UI Implementation Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Gateway Server** | ✅ Complete | Embedded HTML served from `web_ui.rs` |
-| **Layout** | ✅ Complete | Sidebar + main content, 6 sections |
-| **Color Palette** | ✅ Complete | Cyberpunk dark theme |
-| **Dashboard** | ✅ Complete | Stats cards, agent table |
-| **Credentials** | ✅ Complete | Init, unlock, endpoints CRUD |
-| **Sessions** | 🟡 ~50% | List + chat UI, API partial |
-| **Agents** | 🟡 ~40% | List view, no editing |
-| **Models** | 🟡 ~60% | Provider cards with config |
-| **Settings** | 🟡 ~30% | Display only |
-| **Keyboard Shortcuts** | ✅ Complete | 1-6 for navigation |
+| **Gateway Server** | Complete | Embedded HTML SPA in `web_ui.rs` (~1645 lines) |
+| **Layout** | Complete | Sidebar + main content, 6 sections |
+| **Color Palette** | Complete | Cyberpunk dark theme |
+| **Dashboard** | Complete | Stats cards, agent table |
+| **Credentials** | Complete | Init, unlock, endpoints CRUD |
+| **Sessions** | ~60% | List + chat UI, per-session state |
+| **Agents** | ~65% | List view, schema-driven provider config |
+| **Models** | ~70% | Provider cards with config |
+| **Settings** | ~50% | Display with real data |
+| **Keyboard Shortcuts** | Complete | 1-6 for navigation |
 
 #### Web UI Missing Features
 - [ ] WebSocket integration (currently REST polling)
@@ -388,7 +402,7 @@ The UI system is **~65% complete** overall, with the TUI more mature than the We
 
 #### Shared Infrastructure Gaps
 - [ ] **State Sync**: No WebSocket subscription for real-time updates
-- [ ] **API Parity**: Some TUI features lack REST endpoints
+- [ ] **Streaming**: LLM streaming not wired through to UI layer
 - [ ] **Theme System**: No light mode or user customization
 - [ ] **i18n**: No internationalization support
 
@@ -408,13 +422,13 @@ When adding new features, follow these patterns to maintain consistency:
        // ... existing
        Channels,  // Add variant
    }
-   
+
    impl MenuItem {
        pub fn all() -> Vec<Self> {
            vec![..., Self::Channels]  // Add to list
        }
        pub fn icon(&self) -> &'static str {
-           Self::Channels => "📡",
+           Self::Channels => "~",
        }
    }
    ```
@@ -429,9 +443,9 @@ When adding new features, follow these patterns to maintain consistency:
 3. **Web UI** (`web_ui.rs`):
    ```html
    <li class="nav-item" data-page="channels">
-       <span class="icon">📡</span> Channels
+       <span class="icon">~</span> Channels
    </li>
-   
+
    <div id="page-channels" class="content page hidden">
        <!-- Channel list, status cards -->
    </div>
@@ -488,7 +502,7 @@ ws.onmessage = (e) => {
 ### Adding a Modal Form
 
 1. **State**: Add `InputMode` variant
-2. **TUI**: Create `render_*_modal()` + `handle_*()` 
+2. **TUI**: Create `render_*_modal()` + `handle_*()`
 3. **Web UI**: Add modal HTML + show/close functions
 4. **Validation**: Implement in both UIs consistently
 
@@ -505,63 +519,100 @@ ws.onmessage = (e) => {
 
 ---
 
+## What Needs Implementation
+
+### High Priority
+1. **Streaming through agent/gateway/UI** — LLM layer has streaming in all 3 providers; it is not wired through the agent execution loop, gateway API, or UI display
+2. **Credential injection into tool execution context** — credentials stored and managed, not yet passed into tool calls
+3. **Channel routing/binding system** — channels work in isolation, no binding resolution or route matching
+4. **Subagent delegation mechanism** — agent config supports parent_id but delegation is not executed
+5. **WebSocket protocol for real-time updates** — upgrade path exists, functional WebSocket not implemented
+
+### Medium Priority
+1. **Web tools** (`web_search`, `web_fetch`) — 9 built-in tools work, web tools missing
+2. **Model failover chains** — single model per agent, no fallback
+3. **Cron scheduler** — config field exists, no execution engine
+4. **Skills system** — entirely absent
+5. **Config hot apply** — file watcher fires, changes not applied to running gateway
+
+---
+
 ## Priority Recommendations
 
-### ✅ Phase 1: Core Agent Loop (COMPLETED)
-1. ✅ **Streaming responses** - Implemented SSE streaming infrastructure for Anthropic and OpenAI
-2. ✅ **Tool execution loop** - Multi-tool per turn with iteration tracking and proper conversation flow
-3. ✅ **System prompt assembly** - Context injection with SOUL.md, AGENTS.md, skills, and environment
-4. ✅ **Error handling** - Structured retry with exponential backoff, error classification, and jitter
+### Phase 1: Core Agent Loop (COMPLETED)
+- Streaming responses — implemented at LLM layer for all 3 providers
+- Tool execution loop — multi-tool per turn with iteration tracking
+- System prompt assembly — SOUL.md and SYSTEM-PROMPT.md injection
+- Error handling — structured retry with exponential backoff, error classification, and jitter
 
-### Phase 2: Multi-Channel (High Priority)
-1. **Telegram channel** - Most requested
-2. **Signal channel** - Privacy-focused users
-3. **Channel manager** - Unified coordination
-4. **Message routing** - Binding system
+### Phase 2: End-to-End Streaming + Routing (High Priority)
+1. Wire streaming from LLM layer through agent loop to gateway response and UI
+2. Channel binding system and route resolution
+3. Credential injection into tool context
+4. Subagent delegation
 
 ### Phase 3: Automation (Medium Priority)
-1. **Cron scheduler** - Background jobs
-2. **Skills system** - Tool packaging
-3. **Config hot reload** - Live updates
+1. Cron scheduler
+2. Web tools (web_search, web_fetch)
+3. Config hot apply
+4. Skills system
 
 ### Phase 4: Polish (Lower Priority)
-1. **Plugin execution** - WASM or native
-2. **Media pipeline** - Full media handling
-3. **Web UI** - Full application
-4. **CLI completeness** - All commands
+1. Plugin execution (WASM or native)
+2. Media pipeline
+3. Remaining CLI commands (models, cron, plugins, message)
+4. WebSocket real-time updates in Web UI
+
+---
+
+## LLM Providers
+
+All three providers are working with streaming support at the LLM layer:
+
+| Provider | Status | Streaming | Notes |
+|----------|--------|-----------|-------|
+| Anthropic | Working | Implemented | SSE streaming at LLM layer |
+| OpenAI | Working | Implemented | SSE streaming at LLM layer |
+| Bedrock | Working | Implemented | Live model polling; `aws_smithy_types::Document` manual converters |
+
+Streaming is **not yet wired** through the agent execution loop or gateway API to the UI.
 
 ---
 
 ## Lines of Code by Crate
 
-| Crate | LOC | Primary Purpose |
-|-------|-----|-----------------|
-| `rockbot-core` | ~3,500 | Gateway, session, agent, config |
-| `rockbot-credentials` | ~3,300 | Vault, permissions, audit |
-| `rockbot-cli` | ~2,800 | Commands, TUI |
-| `rockbot-llm` | ~1,500 | Anthropic, OpenAI providers |
-| `rockbot-channels` | ~1,000 | Discord, channel traits |
-| `rockbot-tools` | ~700 | Tool registry, builtins |
-| `rockbot-memory` | ~400 | Memory system (stubbed) |
-| `rockbot-plugins` | ~200 | Plugin manager (scaffold) |
-| `rockbot-security` | ~300 | Capabilities, context |
+| Crate | Primary Purpose |
+|-------|-----------------|
+| `rockbot-core` | Gateway, session, agent, config |
+| `rockbot-credentials` | Vault, permissions, audit |
+| `rockbot-cli` | Commands, TUI |
+| `rockbot-llm` | Anthropic, OpenAI, Bedrock providers |
+| `rockbot-channels` | Channel trait, ChannelRegistry |
+| `rockbot-channels-discord` | Discord via Serenity |
+| `rockbot-channels-telegram` | Telegram via Teloxide |
+| `rockbot-channels-signal` | Signal placeholder |
+| `rockbot-tools` | Tool trait, ToolProviderRegistry |
+| `rockbot-tools-credentials` | Credential tool plugin |
+| `rockbot-tools-mcp` | MCP tool plugin |
+| `rockbot-tools-markdown` | Markdown tool plugin |
+| `rockbot-memory` | Memory system |
+| `rockbot-plugins` | Plugin manager scaffold |
+| `rockbot-security` | Capabilities, context |
+| `rockbot-credentials-schema` | Shared CredentialSchema types (leaf crate) |
+| `rockbot` | Binary, feature flag passthrough |
+| `rockbot-credentials-schema` | Leaf crate, only serde dep |
+
+Total: 18 crates, ~35,000 LOC
 
 ---
 
 ## Technical Debt
 
-### TODOs in Codebase (20 items)
-```
-crates/rockbot-cli/src/tui/app.rs:        // TODO: Actually unlock via SSH agent
-crates/rockbot-cli/src/tui/app.rs:        // TODO: Load session details from gateway API
-crates/rockbot-cli/src/tui/credentials.rs: // TODO: Reload endpoints (4 items)
-crates/rockbot-cli/src/commands/credentials.rs: // TODO: delete_endpoint, list_permissions, remove_permission
-crates/rockbot-core/src/gateway.rs:        // TODO: Implement keyring support
-crates/rockbot-core/src/gateway.rs:        uptime_seconds: 0, // TODO: Track actual uptime
-crates/rockbot-core/src/agent.rs:          tool_calls: None, // TODO: Handle tool calls
-crates/rockbot-llm/src/anthropic.rs:       // TODO: Implement streaming with SSE
-crates/rockbot-llm/src/openai.rs:          // TODO: Implement streaming with SSE
-```
+### Known TODOs
+- Gateway uptime/memory tracking returns 0 (`uptime_seconds: 0` — TODO: track actual uptime)
+- `openclaw` command reference in gateway control (should be `rockbot`)
+- SSH agent unlock path is a stub (`// TODO: Actually unlock via SSH agent`)
+- Keyring support stub in gateway (`// TODO: Implement keyring support`)
 
 ### Missing Tests
 - [ ] Integration tests for gateway protocol
@@ -569,6 +620,7 @@ crates/rockbot-llm/src/openai.rs:          // TODO: Implement streaming with SSE
 - [ ] Channel adapter tests
 - [ ] Credential injection tests
 - [ ] Cron scheduler tests
+- [ ] Streaming pipeline tests
 
 ### Documentation Gaps
 - [ ] API documentation (rustdoc incomplete)
@@ -580,11 +632,14 @@ crates/rockbot-llm/src/openai.rs:          // TODO: Implement streaming with SSE
 
 ## Conclusion
 
-The foundation is solid: the gateway runs, sessions persist, credentials are secure, and Discord works. The path forward is:
+The foundation is solid and significantly more complete than the initial implementation: the gateway runs with 30+ HTTP endpoints, sessions persist with per-session chat state, credentials are fully encrypted, Discord and Telegram channels work, all three LLM providers (Anthropic, OpenAI, Bedrock) are operational with streaming at the LLM layer, 9 built-in tools are complete, and both TUI and Web UI have full 6-section layouts backed by real gateway data.
 
-1. **Complete the agent execution loop** (streaming, multi-tool, prompts)
-2. **Add Telegram/Signal** (cover the most-requested channels)
-3. **Build the cron scheduler** (enable automation)
-4. **Fill in CLI/TUI gaps** (usability)
+The path forward is:
 
-Estimated effort to reach SPEC.md parity: **3-4 months** at current pace, or **6-8 weeks** with focused full-time development.
+1. **Wire streaming end-to-end** (LLM layer through agent loop through gateway through UI)
+2. **Build the channel binding/routing system** (channels work but routing does not)
+3. **Inject credentials into tool execution context**
+4. **Add cron scheduler** (enable automation use cases)
+5. **Implement subagent delegation**
+
+Estimated effort to reach SPEC.md parity: **2-3 months** at current pace, or **4-6 weeks** with focused full-time development.

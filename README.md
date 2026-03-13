@@ -7,16 +7,17 @@ A Rust-native AI agent framework with secure credential management.
 
 ## Overview
 
-RockBot is a local-first AI agent framework that prioritizes security and credential safety. Credentials never cross the agent boundary—they're stored in an encrypted vault and injected into tool execution at runtime.
+RockBot is a self-hosted multi-channel AI gateway and agent framework. It routes messages from Discord, Telegram, and other channels through a central gateway to AI agents backed by Anthropic, OpenAI, or AWS Bedrock. Credentials are stored in an encrypted vault and injected into tool execution at runtime, never exposed to the agent directly.
 
 ### Key Features
 
 - **🔐 Secure Credential Vault** - AES-256-GCM encryption with Argon2id key derivation
-- **👤 Human-in-the-Loop (HIL)** - Approval workflow for sensitive operations  
+- **👤 Human-in-the-Loop (HIL)** - Approval workflow for sensitive operations
 - **📊 Terminal UI** - Full-featured TUI built with ratatui
 - **🌐 Web Dashboard** - Browser-based management interface
-- **🤖 Multi-Provider LLM** - Anthropic, OpenAI, AWS Bedrock
-- **🔧 Extensible Tools** - Plugin architecture for custom capabilities
+- **🤖 Multi-Provider LLM** - Anthropic, OpenAI, AWS Bedrock (all working)
+- **🔧 Agentic Tool Execution** - Dynamic iteration scaling, loop detection, semantic context compaction
+- **🛠️ 9 Built-in Tools** - read, write, edit, exec, glob, grep, patch, memory_get, memory_search
 - **📝 Audit Logging** - Hash-chained tamper-evident logs
 
 ## Quick Start
@@ -85,6 +86,7 @@ rockbot credentials add homeassistant \
 | `rockbot-channels-telegram` | Telegram channel (Teloxide) |
 | `rockbot-channels-signal` | Signal channel (placeholder) |
 | `rockbot-plugins` | Plugin system |
+| `rockbot` | Binary entry point |
 
 See [Crate Structure](docs/architecture/crates.md) for details.
 
@@ -95,7 +97,7 @@ Configuration lives at `~/.config/rockbot/rockbot.toml`:
 ```toml
 [gateway]
 bind_host = "127.0.0.1"
-port = 8765
+port = 18080
 
 [agents.defaults]
 model = "anthropic/claude-sonnet-4-20250514"
@@ -147,18 +149,32 @@ cargo doc --open --no-deps
 
 ### HTTP API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/api/agents` | GET | List agents |
-| `/api/agents/{id}/message` | POST | Send message to agent |
-| `/api/credentials` | GET | List credential endpoints |
-| `/api/credentials` | POST | Create endpoint |
-| `/api/credentials/status` | GET | Vault status |
-| `/api/credentials/unlock` | POST | Unlock vault |
-| `/api/credentials/approvals` | GET | Pending HIL approvals |
+The gateway exposes 30+ endpoints. Key ones are listed below; see [STATUS.md](STATUS.md) for the full reference.
 
-See [STATUS.md](STATUS.md) for complete API reference.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health`, `/api/status` | Health check / gateway status |
+| GET | `/api/agents` | List agents (model, status, session count) |
+| POST | `/api/agents` | Create agent |
+| PUT | `/api/agents/:id` | Update agent |
+| DELETE | `/api/agents/:id` | Delete agent |
+| POST | `/api/agents/:id/message` | Send message to agent |
+| GET | `/api/providers` | List registered LLM providers |
+| POST | `/api/providers/:id/test` | Test provider connectivity |
+| POST | `/api/chat` | Route chat completion through gateway |
+| GET | `/api/credentials/schemas` | Dynamic credential schemas from all plugins |
+| GET | `/api/credentials/status` | Vault status |
+| GET | `/api/credentials` | List credential endpoints |
+| POST | `/api/credentials` | Create credential endpoint |
+| POST | `/api/credentials/init` | Initialize vault |
+| POST | `/api/credentials/unlock` | Unlock vault |
+| POST | `/api/credentials/lock` | Lock vault |
+| GET | `/api/credentials/permissions` | List permission rules |
+| POST | `/api/credentials/permissions` | Add permission rule |
+| GET | `/api/credentials/audit` | View audit log |
+| GET | `/api/credentials/approvals` | Pending HIL approvals |
+| POST | `/api/credentials/approvals/:id/approve` | Approve HIL request |
+| POST | `/api/credentials/approvals/:id/deny` | Deny HIL request |
 
 ## Development
 
@@ -186,10 +202,11 @@ cargo clippy --workspace --all-features
 See [STATUS.md](STATUS.md) for detailed implementation status and [FEATURES.md](docs/FEATURES.md) for the feature matrix.
 
 **Current focus:**
-- [ ] Channel Manager — unified multi-channel coordination
-- [ ] Streaming responses — SSE/WebSocket for chat UI
-- [ ] Tool sandboxing — container or process-based sandbox
+- [ ] Streaming responses — wire existing LLM streaming through agent/gateway/UI
 - [ ] Credential injection — automatic injection into tool execution
+- [ ] Channel routing — binding system for channel→agent message flow
+- [ ] Subagent delegation — parent agent spawning child agents
+- [ ] WebSocket protocol — real-time UI updates
 
 ### Code Quality
 

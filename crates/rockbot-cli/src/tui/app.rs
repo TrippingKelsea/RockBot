@@ -649,6 +649,14 @@ impl App {
                     };
                 }
             }
+            MenuItem::Sessions => {
+                if let Some(session) = self.state.sessions.get(self.state.selected_session) {
+                    self.state.input_mode = InputMode::Confirm {
+                        message: format!("Archive session '{}'?", session.key),
+                        action: ConfirmAction::KillSession(session.key.clone()),
+                    };
+                }
+            }
             _ => {}
         }
     }
@@ -2214,6 +2222,14 @@ impl App {
             KeyCode::Enter => {
                 self.send_chat_buffer();
             }
+            // Ctrl+R to retry the last user message
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.retry_last_message();
+            }
+            // Ctrl+T to toggle tool call expand/collapse
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.state.toggle_tool_expansion();
+            }
             KeyCode::Char(c) => {
                 self.state.input_buffer.insert(self.state.input_cursor, c);
                 self.state.input_cursor += c.len_utf8();
@@ -2261,6 +2277,45 @@ impl App {
             KeyCode::End => {
                 self.state.input_cursor = self.state.input_buffer.len();
             }
+            // Scroll chat while typing: PageUp/PageDown, Ctrl+Up/Down
+            KeyCode::PageUp => {
+                if let Some(chat) = self.state.active_chat_mut() {
+                    if chat.auto_scroll {
+                        chat.scroll = chat.max_scroll.get();
+                        chat.auto_scroll = false;
+                    }
+                    chat.scroll = chat.scroll.saturating_sub(10);
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(chat) = self.state.active_chat_mut() {
+                    if !chat.auto_scroll {
+                        chat.scroll = chat.scroll.saturating_add(10);
+                        if chat.scroll >= chat.max_scroll.get() {
+                            chat.auto_scroll = true;
+                        }
+                    }
+                }
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(chat) = self.state.active_chat_mut() {
+                    if chat.auto_scroll {
+                        chat.scroll = chat.max_scroll.get();
+                        chat.auto_scroll = false;
+                    }
+                    chat.scroll = chat.scroll.saturating_sub(3);
+                }
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(chat) = self.state.active_chat_mut() {
+                    if !chat.auto_scroll {
+                        chat.scroll = chat.scroll.saturating_add(3);
+                        if chat.scroll >= chat.max_scroll.get() {
+                            chat.auto_scroll = true;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -2277,6 +2332,36 @@ impl App {
             self.spawn_chat_request(message);
         }
         self.state.clear_input();
+    }
+
+    /// Retry the last user message (removes error message and re-sends)
+    fn retry_last_message(&mut self) {
+        let last_user_msg = if let Some(chat) = self.state.active_chat() {
+            if chat.loading {
+                return; // Already processing
+            }
+            chat.messages.iter().rev()
+                .find(|m| m.role == super::state::ChatRole::User)
+                .map(|m| m.content.clone())
+        } else {
+            None
+        };
+
+        if let Some(message) = last_user_msg {
+            if let Some(chat) = self.state.active_chat_mut() {
+                // Remove trailing error/system messages
+                while chat.messages.last().is_some_and(|m| m.role == super::state::ChatRole::System) {
+                    chat.messages.pop();
+                }
+                // Remove the previous assistant response too
+                if chat.messages.last().is_some_and(|m| m.role == super::state::ChatRole::Assistant) {
+                    chat.messages.pop();
+                }
+                chat.loading = true;
+                chat.auto_scroll = true;
+            }
+            self.spawn_chat_request(message);
+        }
     }
 
     /// Save provider auth mode preference to config file
@@ -2523,7 +2608,7 @@ impl App {
             InputMode::PasswordInput { .. } => "Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::AddCredential(_) => "↑↓/Tab:Navigate │ ←→:Type │ Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::Confirm { .. } => "y:Yes │ n:No │ Esc:Cancel".to_string(),
-            InputMode::ChatInput => "Enter:Send │ Shift+Enter:Newline │ Esc:Close".to_string(),
+            InputMode::ChatInput => "Enter:Send │ Shift+Enter:Newline │ PgUp/Dn:Scroll │ Ctrl+R:Retry │ Esc:Close".to_string(),
             InputMode::EditCredential(_) => "↑↓/Tab:Navigate │ Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::EditProvider(_) => "↑↓/Tab:Navigate │ ←→:Auth Type │ Enter:Save │ Esc:Cancel".to_string(),
             InputMode::AddAgent(_) | InputMode::EditAgent(_) => "↑↓/Tab:Navigate │ ←→:Cycle Model │ Ctrl+S:Save │ Esc:Cancel".to_string(),
@@ -3203,7 +3288,7 @@ fn truncate_tool_result(s: &str, max_len: usize) -> String {
 async fn run_gateway_control(action: &str) -> Result<String> {
     use tokio::process::Command;
 
-    let output = Command::new("openclaw")
+    let output = Command::new("rockbot")
         .args(["gateway", action])
         .output()
         .await?;

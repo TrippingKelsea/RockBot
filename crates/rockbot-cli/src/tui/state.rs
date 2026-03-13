@@ -1998,8 +1998,21 @@ impl AppState {
                 chat.messages.push(ChatMessage::system(format!("Error: {err}")));
                 chat.loading = false;
             }
-            Message::ChatStreamChunk(_chunk) => {
-                // TODO: Handle streaming chunks for incremental display
+            Message::ChatStreamChunk(chunk) => {
+                // Handle streaming chunks for incremental display
+                if let Some((session_key, text)) = chunk.split_once(':') {
+                    let chat = self.session_chats.entry(session_key.to_string()).or_default();
+                    // Append to last assistant message, or create a new one
+                    if let Some(last) = chat.messages.last_mut() {
+                        if last.role == ChatRole::Assistant && chat.loading {
+                            last.content.push_str(&text);
+                        } else {
+                            chat.messages.push(ChatMessage::assistant(text.to_string()));
+                        }
+                    } else {
+                        chat.messages.push(ChatMessage::assistant(text.to_string()));
+                    }
+                }
             }
             Message::SessionMessagesLoaded(session_key, messages) => {
                 let chat = self.session_chats.entry(session_key).or_default();
@@ -2069,6 +2082,22 @@ impl AppState {
     /// Convenience: chat auto-scroll for active session
     pub fn chat_auto_scroll(&self) -> bool {
         self.active_chat().map_or(true, |c| c.auto_scroll)
+    }
+
+    /// Toggle expand/collapse on all tool calls in the active chat
+    pub fn toggle_tool_expansion(&mut self) {
+        if let Some(chat) = self.active_chat_mut() {
+            // Find current state: if any are expanded, collapse all; otherwise expand all
+            let any_expanded = chat.messages.iter()
+                .flat_map(|m| &m.tool_calls)
+                .any(|tc| tc.expanded);
+            let new_state = !any_expanded;
+            for msg in &mut chat.messages {
+                for tc in &mut msg.tool_calls {
+                    tc.expanded = new_state;
+                }
+            }
+        }
     }
     
     /// Number of credential categories (All, Model, Communication, Tool)

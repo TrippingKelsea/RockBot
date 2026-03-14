@@ -170,6 +170,12 @@ pub struct CronJob {
     pub wake_mode: WakeMode,
     /// Optional delivery channel for results
     pub delivery: Option<CronDelivery>,
+    /// Target client label — when set, the job is dispatched to a specific
+    /// connected client (e.g. "laptop-1", "server-prod") rather than executed
+    /// locally on the gateway. If the target client is not connected when the
+    /// job fires, the execution is skipped and an error is recorded.
+    #[serde(default)]
+    pub target_client: Option<String>,
     /// Runtime state
     pub state: CronJobState,
     /// When the job was created
@@ -198,6 +204,7 @@ impl CronJob {
             session_target: SessionTarget::default(),
             wake_mode: WakeMode::default(),
             delivery: None,
+            target_client: None,
             state: CronJobState::default(),
             created_at: now,
             updated_at: now,
@@ -284,8 +291,8 @@ pub struct CronScheduler {
     jobs: Arc<RwLock<HashMap<String, CronJob>>>,
     /// SQLite persistence
     db: Arc<Mutex<Connection>>,
-    /// Channel to send commands to the background task
-    cmd_tx: Option<mpsc::Sender<SchedulerCommand>>,
+    /// Channel to send commands to the background task (interior mutability for Arc compatibility)
+    cmd_tx: Arc<tokio::sync::Mutex<Option<mpsc::Sender<SchedulerCommand>>>>,
     /// Tick interval for checking due jobs
     tick_interval: Duration,
 }
@@ -310,6 +317,7 @@ impl CronScheduler {
                 session_target TEXT NOT NULL,  -- JSON
                 wake_mode TEXT NOT NULL,       -- JSON
                 delivery TEXT,                -- JSON
+                target_client TEXT,
                 next_run_at_ms INTEGER,
                 last_run_at_ms INTEGER,
                 last_run_status TEXT,
@@ -321,8 +329,16 @@ impl CronScheduler {
 
             CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled);
             CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run_at_ms);
+
+            -- Migration: add target_client column if missing (for existing DBs)
+            -- SQLite silently ignores duplicate ADD COLUMN, so this is safe.
             "#,
         )?;
+
+        // Best-effort migration for existing databases (ignore errors if column exists)
+        let _ = db.execute_batch(
+            "ALTER TABLE cron_jobs ADD COLUMN target_client TEXT;",
+        );
 
         info!("Cron scheduler initialized with database at {:?}", path);
 
@@ -332,7 +348,7 @@ impl CronScheduler {
         Ok(Self {
             jobs: Arc::new(RwLock::new(jobs)),
             db: Arc::new(Mutex::new(db)),
-            cmd_tx: None,
+            cmd_tx: Arc::new(tokio::sync::Mutex::new(None)),
             tick_interval: Duration::from_secs(1),
         })
     }
@@ -344,9 +360,13 @@ impl CronScheduler {
     }
 
     /// Start the background scheduler loop. Must provide an executor.
-    pub fn start(&mut self, executor: Arc<dyn CronExecutor>) {
+    /// Can be called on `&self` (or `Arc<Self>`) — uses interior mutability.
+    pub async fn start(&self, executor: Arc<dyn CronExecutor>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<SchedulerCommand>(64);
-        self.cmd_tx = Some(cmd_tx);
+        {
+            let mut tx_guard = self.cmd_tx.lock().await;
+            *tx_guard = Some(cmd_tx);
+        }
 
         let jobs = Arc::clone(&self.jobs);
         let db = Arc::clone(&self.db);
@@ -501,10 +521,10 @@ impl CronScheduler {
                 "INSERT INTO cron_jobs (
                     id, name, description, enabled, agent_id, session_key,
                     schedule, payload, session_target, wake_mode, delivery,
-                    next_run_at_ms, last_run_at_ms, last_run_status, last_error,
-                    consecutive_errors, created_at, updated_at
+                    target_client, next_run_at_ms, last_run_at_ms, last_run_status,
+                    last_error, consecutive_errors, created_at, updated_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                          ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                          ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                 params![
                     &job.id,
                     &job.name,
@@ -520,6 +540,7 @@ impl CronScheduler {
                         .as_ref()
                         .map(serde_json::to_string)
                         .transpose()?,
+                    &job.target_client,
                     job.state.next_run_at_ms.map(|v| v as i64),
                     job.state.last_run_at_ms.map(|v| v as i64),
                     job.state
@@ -569,10 +590,10 @@ impl CronScheduler {
                     name = ?1, description = ?2, enabled = ?3, agent_id = ?4,
                     session_key = ?5, schedule = ?6, payload = ?7,
                     session_target = ?8, wake_mode = ?9, delivery = ?10,
-                    next_run_at_ms = ?11, last_run_at_ms = ?12,
-                    last_run_status = ?13, last_error = ?14,
-                    consecutive_errors = ?15, updated_at = ?16
-                 WHERE id = ?17",
+                    target_client = ?11, next_run_at_ms = ?12, last_run_at_ms = ?13,
+                    last_run_status = ?14, last_error = ?15,
+                    consecutive_errors = ?16, updated_at = ?17
+                 WHERE id = ?18",
                 params![
                     &job.name,
                     &job.description,
@@ -587,6 +608,7 @@ impl CronScheduler {
                         .as_ref()
                         .map(serde_json::to_string)
                         .transpose()?,
+                    &job.target_client,
                     job.state.next_run_at_ms.map(|v| v as i64),
                     job.state.last_run_at_ms.map(|v| v as i64),
                     job.state
@@ -669,7 +691,8 @@ impl CronScheduler {
             }
         }
 
-        if let Some(ref tx) = self.cmd_tx {
+        let tx_guard = self.cmd_tx.lock().await;
+        if let Some(ref tx) = *tx_guard {
             tx.send(SchedulerCommand::TriggerNow {
                 job_id: job_id.to_string(),
             })
@@ -684,7 +707,8 @@ impl CronScheduler {
 
     /// Gracefully shut down the scheduler
     pub async fn shutdown(&self) {
-        if let Some(ref tx) = self.cmd_tx {
+        let tx_guard = self.cmd_tx.lock().await;
+        if let Some(ref tx) = *tx_guard {
             let _ = tx.send(SchedulerCommand::Shutdown).await;
         }
     }
@@ -725,8 +749,8 @@ impl CronScheduler {
         let mut stmt = db.prepare(
             "SELECT id, name, description, enabled, agent_id, session_key,
                     schedule, payload, session_target, wake_mode, delivery,
-                    next_run_at_ms, last_run_at_ms, last_run_status, last_error,
-                    consecutive_errors, created_at, updated_at
+                    target_client, next_run_at_ms, last_run_at_ms, last_run_status,
+                    last_error, consecutive_errors, created_at, updated_at
              FROM cron_jobs",
         )?;
 
@@ -736,11 +760,12 @@ impl CronScheduler {
             let session_target_str: String = row.get(8)?;
             let wake_mode_str: String = row.get(9)?;
             let delivery_str: Option<String> = row.get(10)?;
-            let last_run_status_str: Option<String> = row.get(13)?;
+            let target_client: Option<String> = row.get(11)?;
+            let last_run_status_str: Option<String> = row.get(14)?;
 
-            let created_at = DateTime::from_timestamp(row.get::<_, i64>(16)?, 0)
+            let created_at = DateTime::from_timestamp(row.get::<_, i64>(17)?, 0)
                 .unwrap_or_else(Utc::now);
-            let updated_at = DateTime::from_timestamp(row.get::<_, i64>(17)?, 0)
+            let updated_at = DateTime::from_timestamp(row.get::<_, i64>(18)?, 0)
                 .unwrap_or_else(Utc::now);
 
             Ok(CronJob {
@@ -764,17 +789,18 @@ impl CronScheduler {
                 wake_mode: serde_json::from_str(&wake_mode_str).unwrap_or_default(),
                 delivery: delivery_str
                     .and_then(|s| serde_json::from_str(&s).ok()),
+                target_client,
                 state: CronJobState {
                     next_run_at_ms: row
-                        .get::<_, Option<i64>>(11)?
+                        .get::<_, Option<i64>>(12)?
                         .map(|v| v as u64),
                     last_run_at_ms: row
-                        .get::<_, Option<i64>>(12)?
+                        .get::<_, Option<i64>>(13)?
                         .map(|v| v as u64),
                     last_run_status: last_run_status_str
                         .and_then(|s| serde_json::from_str(&s).ok()),
-                    last_error: row.get(14)?,
-                    consecutive_errors: row.get::<_, u32>(15).unwrap_or(0),
+                    last_error: row.get(15)?,
+                    consecutive_errors: row.get::<_, u32>(16).unwrap_or(0),
                 },
                 created_at,
                 updated_at,

@@ -146,6 +146,12 @@ pub struct AgentInstance {
     /// dispatcher rather than a standard LLM-driven agent.
     #[serde(default)]
     pub workflow: Option<crate::orchestration::WorkflowDefinition>,
+    /// Timeout in seconds for each LLM API call (default: 45)
+    #[serde(default = "default_llm_timeout_secs")]
+    pub llm_timeout_secs: u64,
+    /// Timeout in seconds for each individual tool execution (default: 120)
+    #[serde(default = "default_tool_timeout_secs")]
+    pub tool_timeout_secs: u64,
 }
 
 /// Configuration for exposing an agent as a tool
@@ -658,6 +664,14 @@ fn default_max_tokens() -> Option<u32> {
 
 fn default_tool_profile() -> String {
     "standard".to_string()
+}
+
+fn default_llm_timeout_secs() -> u64 {
+    45
+}
+
+fn default_tool_timeout_secs() -> u64 {
+    120
 }
 
 fn default_sandbox_mode() -> String {

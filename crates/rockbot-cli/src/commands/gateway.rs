@@ -208,6 +208,9 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     // Register agent-as-tool entries for agents with expose_as_tool config
     gateway.register_agent_tools().await;
 
+    // Start the cron scheduler background loop
+    gateway.start_cron_scheduler().await;
+
     // Set up signal handling
     let gateway_clone = gateway.clone();
     tokio::spawn(async move {

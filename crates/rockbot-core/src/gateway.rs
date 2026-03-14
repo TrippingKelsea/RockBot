@@ -160,6 +160,8 @@ pub struct Gateway {
     a2a_task_store: Arc<crate::a2a::TaskStore>,
     /// Shared blackboard for swarm coordination
     blackboard: Arc<crate::orchestration::SwarmBlackboard>,
+    /// Cron scheduler for timed job execution
+    cron_scheduler: Arc<crate::cron::CronScheduler>,
     /// Shutdown broadcast channel
     shutdown_tx: broadcast::Sender<()>,
 }
@@ -171,6 +173,9 @@ struct WsConnection {
     sender: tokio::sync::mpsc::UnboundedSender<WsMessage>,
     #[allow(dead_code)]
     user_id: Option<String>,
+    /// Client label for targeted cron dispatch (e.g. "laptop-1", "server-prod").
+    /// Set by the client sending a `client_identify` WS message after connecting.
+    client_label: Option<String>,
     #[allow(dead_code)]
     connected_at: std::time::Instant,
 }
@@ -191,6 +196,21 @@ enum WsMessageType {
     HealthCheck,
     #[serde(rename = "ping")]
     Ping,
+    /// Client sends this after connecting to declare its identity label.
+    /// This label is used for targeted cron job dispatch.
+    #[serde(rename = "client_identify")]
+    ClientIdentify {
+        /// Human-readable label for this client (e.g. "laptop-1", "server-prod")
+        label: String,
+    },
+    /// Client sends this in response to a `cron_dispatch` to report the result.
+    #[serde(rename = "cron_result")]
+    CronResult {
+        job_id: String,
+        success: bool,
+        error: Option<String>,
+        output: Option<String>,
+    },
 }
 
 /// WebSocket response types (server -> client)
@@ -238,6 +258,15 @@ enum WsResponseType {
     Pong,
     #[serde(rename = "error")]
     Error { message: String },
+    /// Dispatched to a specific client to execute a cron job remotely.
+    /// The client should process the job and reply with `cron_result`.
+    #[serde(rename = "cron_dispatch")]
+    CronDispatch {
+        job_id: String,
+        job_name: String,
+        agent_id: Option<String>,
+        payload: crate::cron::CronPayload,
+    },
 }
 
 /// Tool call info sent over WebSocket
@@ -368,6 +397,28 @@ impl Gateway {
             ws_connections: Arc::new(RwLock::new(HashMap::new())),
             a2a_task_store: Arc::new(crate::a2a::TaskStore::new()),
             blackboard: Arc::new(crate::orchestration::SwarmBlackboard::new()),
+            cron_scheduler: {
+                let cron_db_path = dirs::config_dir()
+                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+                    .join("rockbot")
+                    .join("data")
+                    .join("cron.db");
+                if let Some(parent) = cron_db_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match crate::cron::CronScheduler::new(&cron_db_path).await {
+                    Ok(scheduler) => {
+                        info!("Cron scheduler initialized");
+                        Arc::new(scheduler)
+                    }
+                    Err(e) => {
+                        error!("Failed to initialize cron scheduler: {}", e);
+                        // Create an in-memory fallback so the gateway can still start
+                        Arc::new(crate::cron::CronScheduler::new(":memory:").await
+                            .expect("in-memory cron scheduler should never fail"))
+                    }
+                }
+            },
             shutdown_tx,
         })
     }
@@ -437,6 +488,23 @@ impl Gateway {
     /// Get the shared blackboard for swarm coordination.
     pub fn blackboard(&self) -> Arc<crate::orchestration::SwarmBlackboard> {
         Arc::clone(&self.blackboard)
+    }
+
+    /// Get the cron scheduler.
+    pub fn cron_scheduler(&self) -> &Arc<crate::cron::CronScheduler> {
+        &self.cron_scheduler
+    }
+
+    /// Start the cron scheduler background loop. Call this after agent registration
+    /// so the executor can find agents to invoke.
+    pub async fn start_cron_scheduler(&self) {
+        let executor = Arc::new(GatewayCronExecutor {
+            agents: Arc::clone(&self.agents),
+            ws_connections: Arc::clone(&self.ws_connections),
+            session_manager: Arc::clone(&self.session_manager),
+        });
+        self.cron_scheduler.start(executor).await;
+        info!("Cron scheduler started (jobs will execute via GatewayCronExecutor)");
     }
 
     /// Register agent-as-tool entries for agents that have `expose_as_tool` configured.
@@ -815,6 +883,28 @@ impl Gateway {
             }
             (&Method::POST, p) if p.starts_with("/api/agents/") => {
                 self.handle_agent_message(req).await
+            }
+            // Cron API
+            (&Method::GET, "/api/cron/jobs") => {
+                self.handle_list_cron_jobs().await
+            }
+            (&Method::POST, "/api/cron/jobs") => {
+                self.handle_create_cron_job(req).await
+            }
+            (&Method::GET, p) if p.starts_with("/api/cron/jobs/") && !p.ends_with("/trigger") => {
+                self.handle_get_cron_job(&path).await
+            }
+            (&Method::PUT, p) if p.starts_with("/api/cron/jobs/") => {
+                self.handle_update_cron_job(req, &path).await
+            }
+            (&Method::DELETE, p) if p.starts_with("/api/cron/jobs/") => {
+                self.handle_delete_cron_job(&path).await
+            }
+            (&Method::POST, p) if p.starts_with("/api/cron/jobs/") && p.ends_with("/trigger") => {
+                self.handle_trigger_cron_job(&path).await
+            }
+            (&Method::GET, "/api/cron/clients") => {
+                self.handle_list_cron_clients().await
             }
             _ => {
                 Ok(Response::builder()
@@ -2506,6 +2596,7 @@ impl Gateway {
                 id: conn_id.clone(),
                 sender: outbound_tx.clone(),
                 user_id: None,
+                client_label: None,
                 connected_at: std::time::Instant::now(),
             });
         }
@@ -2599,6 +2690,24 @@ impl Gateway {
                 self.handle_ws_agent_message(
                     conn_id, outbound_tx, agent_id, session_key, message, workspace,
                 ).await;
+            }
+            WsMessageType::ClientIdentify { label } => {
+                info!("WebSocket client {} identified as '{}'", conn_id, label);
+                let mut conns = self.ws_connections.write().await;
+                if let Some(conn) = conns.get_mut(conn_id) {
+                    conn.client_label = Some(label);
+                }
+            }
+            WsMessageType::CronResult { job_id, success, error, output } => {
+                info!("Cron result for job {}: success={}, output={:?}", job_id, success, output.as_deref().unwrap_or("(none)"));
+                if !success {
+                    if let Some(ref e) = error {
+                        error!("Remote cron job {} failed: {}", job_id, e);
+                    }
+                }
+                // State is already updated by the CronExecutor before dispatch;
+                // if we want to record the remote result, we'd update the job state here.
+                // For now just log it — the scheduler handles its own state tracking.
             }
         }
     }
@@ -3054,6 +3163,8 @@ impl Gateway {
             expose_as_tool: None,
             episodic_memory: false,
             workflow: None,
+            llm_timeout_secs: 45,
+            tool_timeout_secs: 120,
         };
 
         // Create agent directory with SOUL.md and SYSTEM-PROMPT.md
@@ -3498,14 +3609,18 @@ impl Gateway {
     /// Shutdown the gateway
     pub async fn shutdown(&self) -> Result<()> {
         info!("Shutting down gateway");
+
+        // Stop the cron scheduler
+        self.cron_scheduler.shutdown().await;
+
         let _ = self.shutdown_tx.send(());
-        
+
         // Close all WebSocket connections
         let connections = self.ws_connections.read().await;
         for connection in connections.values() {
             let _ = connection.sender.send(WsMessage::Close(None));
         }
-        
+
         Ok(())
     }
 
@@ -3600,6 +3715,219 @@ impl Gateway {
     }
 
     /// `POST /a2a` — JSON-RPC 2.0 dispatch for A2A protocol.
+    // -----------------------------------------------------------------------
+    // Cron API handlers
+    // -----------------------------------------------------------------------
+
+    async fn handle_list_cron_jobs(&self) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let jobs = self.cron_scheduler.list_jobs(false).await;
+        let json = serde_json::to_string(&jobs).unwrap_or_else(|_| "[]".to_string());
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(GatewayBody::Left(Full::new(json.into())))
+            .unwrap())
+    }
+
+    async fn handle_create_cron_job(
+        &self,
+        req: Request<IncomingBody>,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let body = match req.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => {
+                let json = serde_json::json!({"error": "Failed to read request body"}).to_string();
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap());
+            }
+        };
+        let job: crate::cron::CronJob = match serde_json::from_slice(&body) {
+            Ok(j) => j,
+            Err(e) => {
+                let json = serde_json::json!({"error": format!("Invalid job: {e}")}).to_string();
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap());
+            }
+        };
+
+        match self.cron_scheduler.add_job(job).await {
+            Ok(created) => {
+                let json = serde_json::to_string(&created).unwrap_or_default();
+                Ok(Response::builder()
+                    .status(StatusCode::CREATED)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+            Err(e) => {
+                let json = serde_json::json!({"error": e.to_string()}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+        }
+    }
+
+    async fn handle_get_cron_job(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let job_id = path.strip_prefix("/api/cron/jobs/").unwrap_or("");
+        match self.cron_scheduler.get_job(job_id).await {
+            Ok(Some(job)) => {
+                let json = serde_json::to_string(&job).unwrap_or_default();
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+            Ok(None) => {
+                let json = serde_json::json!({"error": "Job not found"}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+            Err(e) => {
+                let json = serde_json::json!({"error": e.to_string()}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+        }
+    }
+
+    async fn handle_update_cron_job(
+        &self,
+        req: Request<IncomingBody>,
+        path: &str,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let _job_id = path.strip_prefix("/api/cron/jobs/").unwrap_or("");
+        let body = match req.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => {
+                let json = serde_json::json!({"error": "Failed to read request body"}).to_string();
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap());
+            }
+        };
+        let job: crate::cron::CronJob = match serde_json::from_slice(&body) {
+            Ok(j) => j,
+            Err(e) => {
+                let json = serde_json::json!({"error": format!("Invalid job: {e}")}).to_string();
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap());
+            }
+        };
+
+        match self.cron_scheduler.update_job(job).await {
+            Ok(updated) => {
+                let json = serde_json::to_string(&updated).unwrap_or_default();
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+            Err(e) => {
+                let json = serde_json::json!({"error": e.to_string()}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+        }
+    }
+
+    async fn handle_delete_cron_job(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let job_id = path.strip_prefix("/api/cron/jobs/").unwrap_or("");
+        match self.cron_scheduler.remove_job(job_id).await {
+            Ok(()) => {
+                let json = serde_json::json!({"status": "deleted"}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+            Err(e) => {
+                let json = serde_json::json!({"error": e.to_string()}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+        }
+    }
+
+    async fn handle_trigger_cron_job(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let job_id = path.strip_prefix("/api/cron/jobs/")
+            .and_then(|s| s.strip_suffix("/trigger"))
+            .unwrap_or("");
+        match self.cron_scheduler.trigger_now(job_id).await {
+            Ok(()) => {
+                let json = serde_json::json!({"status": "triggered"}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+            Err(e) => {
+                let json = serde_json::json!({"error": e.to_string()}).to_string();
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap())
+            }
+        }
+    }
+
+    /// List connected clients with their labels (for cron target selection)
+    async fn handle_list_cron_clients(&self) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let conns = self.ws_connections.read().await;
+        let clients: Vec<serde_json::Value> = conns.values()
+            .map(|c| serde_json::json!({
+                "id": c.id,
+                "label": c.client_label,
+                "connected": true,
+            }))
+            .collect();
+        let json = serde_json::to_string(&clients).unwrap_or_else(|_| "[]".to_string());
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(GatewayBody::Left(Full::new(json.into())))
+            .unwrap())
+    }
+
     async fn handle_a2a_request(
         &self,
         req: Request<IncomingBody>,
@@ -3666,6 +3994,7 @@ impl Clone for Gateway {
             ws_connections: Arc::clone(&self.ws_connections),
             a2a_task_store: Arc::clone(&self.a2a_task_store),
             blackboard: Arc::clone(&self.blackboard),
+            cron_scheduler: Arc::clone(&self.cron_scheduler),
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }
@@ -3778,6 +4107,103 @@ struct MessageRequest {
 struct ErrorResponse {
     error: String,
     code: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Cron executor — bridges the cron scheduler to agent execution + remote dispatch
+// ---------------------------------------------------------------------------
+
+/// Executes cron jobs by invoking agents locally or dispatching to remote clients.
+struct GatewayCronExecutor {
+    agents: Arc<RwLock<HashMap<String, Arc<Agent>>>>,
+    ws_connections: Arc<RwLock<HashMap<String, WsConnection>>>,
+    #[allow(dead_code)]
+    session_manager: Arc<SessionManager>,
+}
+
+#[async_trait::async_trait]
+impl crate::cron::CronExecutor for GatewayCronExecutor {
+    async fn execute(&self, job: &crate::cron::CronJob) -> std::result::Result<(), String> {
+        // If the job targets a specific client, dispatch over WebSocket
+        if let Some(ref target_label) = job.target_client {
+            return self.dispatch_to_client(job, target_label).await;
+        }
+
+        // Otherwise, execute locally on the gateway
+        self.execute_locally(job).await
+    }
+}
+
+impl GatewayCronExecutor {
+    /// Execute a cron job locally by invoking the target agent.
+    async fn execute_locally(&self, job: &crate::cron::CronJob) -> std::result::Result<(), String> {
+        let agent_id = job.agent_id.as_deref()
+            .ok_or_else(|| "Cron job has no agent_id configured".to_string())?;
+
+        let agents = self.agents.read().await;
+        let agent = agents.get(agent_id)
+            .ok_or_else(|| format!("Agent '{}' not found", agent_id))?
+            .clone();
+        drop(agents);
+
+        let message_text = match &job.payload {
+            crate::cron::CronPayload::AgentTurn { message, .. } => message.clone(),
+            crate::cron::CronPayload::SystemEvent { event, data } => {
+                format!("[system event: {}] {}", event, data.as_ref()
+                    .map(|d| d.to_string())
+                    .unwrap_or_default())
+            }
+        };
+
+        let session_id = job.session_key.clone()
+            .unwrap_or_else(|| format!("cron:{}", job.id));
+
+        let user_message = crate::message::Message::text(&message_text)
+            .with_role(crate::message::MessageRole::User);
+
+        match agent.process_message(session_id, user_message, None).await {
+            Ok(response) => {
+                debug!("Cron job '{}' completed: {} tokens used",
+                    job.name, response.tokens_used.total_tokens);
+                Ok(())
+            }
+            Err(e) => Err(format!("Agent execution failed: {e}")),
+        }
+    }
+
+    /// Dispatch a cron job to a specific remote client over WebSocket.
+    async fn dispatch_to_client(
+        &self,
+        job: &crate::cron::CronJob,
+        target_label: &str,
+    ) -> std::result::Result<(), String> {
+        let conns = self.ws_connections.read().await;
+
+        // Find a connection with the matching client label
+        let target_conn = conns.values().find(|c| {
+            c.client_label.as_deref() == Some(target_label)
+        });
+
+        let conn = target_conn.ok_or_else(|| {
+            format!("Target client '{}' is not connected", target_label)
+        })?;
+
+        let dispatch_msg = WsResponseType::CronDispatch {
+            job_id: job.id.clone(),
+            job_name: job.name.clone(),
+            agent_id: job.agent_id.clone(),
+            payload: job.payload.clone(),
+        };
+
+        let json = serde_json::to_string(&dispatch_msg)
+            .map_err(|e| format!("Failed to serialize cron dispatch: {e}"))?;
+
+        conn.sender.send(WsMessage::Text(json))
+            .map_err(|_| format!("Failed to send cron dispatch to client '{}'", target_label))?;
+
+        info!("Cron job '{}' dispatched to client '{}'", job.name, target_label);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

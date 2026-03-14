@@ -101,6 +101,8 @@ async fn main() -> Result<()> {
         expose_as_tool: None,
         episodic_memory: false,
         workflow: None,
+        llm_timeout_secs: 45,
+        tool_timeout_secs: 120,
     };
 
     // Create agent

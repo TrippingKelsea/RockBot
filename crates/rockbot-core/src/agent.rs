@@ -1010,14 +1010,30 @@ impl Agent {
         stream_tx: &tokio::sync::mpsc::Sender<StreamingChunk>,
     ) -> Result<(ChatCompletionResponse, String)> {
         let model = request.model.clone();
-        let mut stream = self.llm_provider.stream_completion(request).await?;
+        let llm_timeout = Duration::from_secs(self.config.llm_timeout_secs);
+
+        // Timeout on initial stream connection
+        let mut stream = tokio::time::timeout(llm_timeout, self.llm_provider.stream_completion(request))
+            .await
+            .map_err(|_| crate::error::RockBotError::Agent(AgentError::ModelError {
+                message: format!("LLM streaming connection timed out after {}s", self.config.llm_timeout_secs),
+            }))?
+            .map_err(|e| crate::error::RockBotError::Agent(AgentError::ModelError {
+                message: format!("LLM streaming connection failed: {e}"),
+            }))?;
 
         let mut accumulated_text = String::new();
         let mut accumulated_tool_calls: Vec<rockbot_llm::ToolCall> = Vec::new();
         let mut response_id = String::new();
         let mut finish_reason = "stop".to_string();
 
-        while let Some(chunk_result) = stream.next().await {
+        // Per-chunk idle timeout: if no chunk arrives within the timeout, abort.
+        // This is more generous than the initial connection timeout since the model
+        // may legitimately pause while thinking/generating tool calls.
+        let chunk_idle_timeout = Duration::from_secs(self.config.llm_timeout_secs * 2);
+
+        while let Ok(maybe_chunk) = tokio::time::timeout(chunk_idle_timeout, stream.next()).await {
+            let Some(chunk_result) = maybe_chunk else { break };
             match chunk_result {
                 Ok(chunk) => {
                     if response_id.is_empty() {
@@ -1048,6 +1064,14 @@ impl Agent {
                     }));
                 }
             }
+        }
+        // Note: if the while loop exits due to chunk_idle_timeout, we fall through
+        // and use whatever we've accumulated so far. If nothing was accumulated,
+        // return an error.
+        if accumulated_text.is_empty() && accumulated_tool_calls.is_empty() && response_id.is_empty() {
+            return Err(crate::error::RockBotError::Agent(AgentError::ModelError {
+                message: format!("LLM streaming stalled — no data received for {}s", self.config.llm_timeout_secs * 2),
+            }));
         }
 
         // Assemble the response as if it were a non-streaming response
@@ -1797,49 +1821,62 @@ The user wants me to explore the codebase. I should start by listing the directo
     async fn call_llm_with_retry(&self, request: ChatCompletionRequest) -> Result<ChatCompletionResponse> {
         let retry_config = RetryConfig::default();
         let mut last_error_message = String::new();
-        
+        let llm_timeout = Duration::from_secs(self.config.llm_timeout_secs);
+
         for attempt in 0..=retry_config.max_retries {
-            debug!("LLM API call attempt {} of {}", attempt + 1, retry_config.max_retries + 1);
-            
-            match self.llm_provider.chat_completion(request.clone()).await {
-                Ok(response) => {
-                    if attempt > 0 {
-                        info!("LLM API call succeeded after {} retries", attempt);
-                        // Update stats
-                        {
-                            let mut state = self.state.write().await;
-                            state.stats.retry_attempts += attempt as u64;
-                        }
-                    }
-                    return Ok(response);
-                }
-                Err(error) => {
-                    last_error_message = error.to_string();
-                    let error_category = self.classify_llm_error(&error);
-                    
-                    debug!("LLM API call failed (attempt {}): {} - Category: {:?}", 
-                           attempt + 1, error, error_category);
-                    
-                    // Update stats
+            debug!("LLM API call attempt {} of {} (timeout: {}s)", attempt + 1, retry_config.max_retries + 1, self.config.llm_timeout_secs);
+
+            match tokio::time::timeout(llm_timeout, self.llm_provider.chat_completion(request.clone())).await {
+                Err(_elapsed) => {
+                    last_error_message = format!("LLM API call timed out after {}s", self.config.llm_timeout_secs);
+                    warn!("{} (attempt {})", last_error_message, attempt + 1);
                     {
                         let mut state = self.state.write().await;
                         state.stats.error_count += 1;
-                        if matches!(error_category, ErrorCategory::RateLimit { .. }) {
-                            state.stats.rate_limit_hits += 1;
-                        }
                     }
-                    
-                    // Check if we should retry
-                    if attempt >= retry_config.max_retries || !self.should_retry_error(&error_category) {
+                    if attempt >= retry_config.max_retries {
                         break;
                     }
-                    
-                    // Calculate delay with exponential backoff and jitter
-                    let delay = self.calculate_retry_delay(&retry_config, attempt, &error_category);
-                    
-                    warn!("Retrying LLM API call in {}ms due to: {}", delay, error);
+                    let delay = self.calculate_retry_delay(&retry_config, attempt, &ErrorCategory::Network);
+                    warn!("Retrying LLM API call in {}ms after timeout", delay);
                     tokio::time::sleep(Duration::from_millis(delay)).await;
+                    continue;
                 }
+                Ok(inner_result) => match inner_result {
+                    Ok(response) => {
+                        if attempt > 0 {
+                            info!("LLM API call succeeded after {} retries", attempt);
+                            {
+                                let mut state = self.state.write().await;
+                                state.stats.retry_attempts += attempt as u64;
+                            }
+                        }
+                        return Ok(response);
+                    }
+                    Err(error) => {
+                        last_error_message = error.to_string();
+                        let error_category = self.classify_llm_error(&error);
+
+                        debug!("LLM API call failed (attempt {}): {} - Category: {:?}",
+                               attempt + 1, error, error_category);
+
+                        {
+                            let mut state = self.state.write().await;
+                            state.stats.error_count += 1;
+                            if matches!(error_category, ErrorCategory::RateLimit { .. }) {
+                                state.stats.rate_limit_hits += 1;
+                            }
+                        }
+
+                        if attempt >= retry_config.max_retries || !self.should_retry_error(&error_category) {
+                            break;
+                        }
+
+                        let delay = self.calculate_retry_delay(&retry_config, attempt, &error_category);
+                        warn!("Retrying LLM API call in {}ms due to: {}", delay, error);
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                    }
+                },
             }
         }
         
@@ -2815,14 +2852,32 @@ The user wants me to explore the codebase. I should start by listing the directo
                     };
 
                     let tool_start = std::time::Instant::now();
-                    match self.tool_registry
-                        .execute_tool(
-                            &tool_call.function.name,
-                            &tool_call.function.arguments,
-                            execution_context,
-                        )
-                        .await
-                    {
+                    let tool_timeout = Duration::from_secs(self.config.tool_timeout_secs);
+                    let tool_future = self.tool_registry.execute_tool(
+                        &tool_call.function.name,
+                        &tool_call.function.arguments,
+                        execution_context,
+                    );
+                    let tool_result = match tokio::time::timeout(tool_timeout, tool_future).await {
+                        Err(_elapsed) => {
+                            warn!("Tool '{}' timed out after {}s", tool_call.function.name, self.config.tool_timeout_secs);
+                            let error_message = Message::tool_result(
+                                tool_call.id.clone(),
+                                tool_call.function.name.clone(),
+                                format!("Tool execution timed out after {}s. The operation was cancelled.", self.config.tool_timeout_secs),
+                            ).with_session_id(session_id);
+                            tool_messages.push(error_message);
+
+                            crate::metrics::record_tool_call(
+                                &tool_call.function.name,
+                                false,
+                                tool_start.elapsed(),
+                            );
+                            continue;
+                        }
+                        Ok(result) => result,
+                    };
+                    match tool_result {
                         Ok(result) => {
                             crate::metrics::record_tool_call(
                                 &tool_call.function.name,

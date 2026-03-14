@@ -148,7 +148,7 @@ pub struct MessageMetadata {
 }
 
 /// Role of a message in a conversation
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     /// Message from the user/human

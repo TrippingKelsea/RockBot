@@ -4,7 +4,7 @@
 //! tool execution, and LLM interaction.
 
 use crate::error::{AgentError, Result};
-use crate::message::{Message, MessageRole, SystemLevel};
+use crate::message::{Message, MessageContent, MessageRole, SystemLevel};
 use crate::session::{Session, SessionManager};
 use crate::config::AgentInstance;
 use rockbot_llm::{LlmProvider, LlmError, ChatCompletionRequest, ChatCompletionResponse, StreamingChunk};
@@ -1573,9 +1573,13 @@ The user wants me to explore the codebase. I should start by listing the directo
                 // --- Continuation nudge ---
                 // If the model hasn't used any tools yet and its response looks
                 // like an acknowledgment / plan, nudge it to take action.
+                // Skip nudging for conversational questions — the model's text
+                // response IS the correct answer.
+                let user_is_asking_question = Self::is_conversational_question(context);
                 if all_tool_results.is_empty()
                     && continuation_nudge_count < max_continuation_nudges
                     && !clean_text.is_empty()
+                    && !user_is_asking_question
                     && Self::looks_like_acknowledgment(&clean_text)
                 {
                     continuation_nudge_count += 1;
@@ -1990,7 +1994,11 @@ The user wants me to explore the codebase. I should start by listing the directo
             }
         }
 
-        let trimmed = result.trim().to_string();
+        // Strip any orphaned </think> tags (closing tag without a matching opener,
+        // e.g. when the opening <think> was in a previous chunk or omitted)
+        let cleaned = result.replace("</think>", "");
+
+        let trimmed = cleaned.trim().to_string();
         if trimmed.is_empty() && !text.trim().is_empty() {
             // The entire response was inside <think> blocks — return a placeholder
             // so the agent doesn't appear to have produced empty output
@@ -2003,6 +2011,44 @@ The user wants me to explore the codebase. I should start by listing the directo
     /// Heuristic: does this response look like an acknowledgment / plan description
     /// rather than a substantive completion? Used by the continuation nudge to detect
     /// when the model describes what it *would* do instead of actually doing it.
+    /// Check if the last user message in the context is a conversational question
+    /// (e.g. "What is your purpose?") rather than a task request. Conversational
+    /// questions should not trigger continuation nudges — the model's text answer
+    /// is the correct response, not a tool call.
+    fn is_conversational_question(context: &ProcessingContext) -> bool {
+        // Find the last user message
+        let last_user_msg = context.messages.iter().rev()
+            .find(|m| m.metadata.role == MessageRole::User);
+
+        let text = match last_user_msg {
+            Some(msg) => match &msg.content {
+                MessageContent::Text { text } => text.trim(),
+                _ => return false,
+            },
+            None => return false,
+        };
+
+        let lower = text.to_lowercase();
+
+        // Short messages ending with ? are usually conversational
+        if text.ends_with('?') && text.len() < 200 {
+            return true;
+        }
+
+        // Common conversational question patterns
+        let question_starts = [
+            "what is ", "what are ", "what's ", "who are ", "who is ",
+            "how are ", "how do you ", "how does ", "can you tell me",
+            "what do you ", "what can you ", "why ", "explain ",
+            "describe ", "tell me about ", "do you ",
+        ];
+        if question_starts.iter().any(|p| lower.starts_with(p)) && text.len() < 300 {
+            return true;
+        }
+
+        false
+    }
+
     fn looks_like_acknowledgment(text: &str) -> bool {
         let lower = text.to_lowercase();
         let lines: Vec<&str> = text.lines().collect();
@@ -2268,6 +2314,13 @@ mod tests {
         assert_eq!(Agent::strip_think_blocks(input), "Before");
     }
 
+    #[test]
+    fn test_strip_think_blocks_orphaned_close_tag() {
+        // Bare </think> without matching <think> (e.g. opening tag in prior chunk)
+        let input = "</think>\nHere is my answer.";
+        assert_eq!(Agent::strip_think_blocks(input), "Here is my answer.");
+    }
+
     // --- looks_like_acknowledgment tests ---
 
     #[test]
@@ -2288,6 +2341,46 @@ mod tests {
     fn test_step_list_is_acknowledgment() {
         let steps = "Here's what I would do:\n1. Read the files\n- Analyze the structure\n- Report findings\n* Check for errors";
         assert!(Agent::looks_like_acknowledgment(steps));
+    }
+
+    // --- is_conversational_question tests ---
+
+    fn make_context_with_user_msg(text: &str) -> ProcessingContext {
+        let msg = Message::text(text)
+            .with_role(MessageRole::User);
+        ProcessingContext {
+            session_id: "test".to_string(),
+            messages: vec![msg],
+            available_tools: vec![],
+            token_count: 0,
+            workspace_override: None,
+        }
+    }
+
+    #[test]
+    fn test_question_mark_is_conversational() {
+        let ctx = make_context_with_user_msg("What is your purpose?");
+        assert!(Agent::is_conversational_question(&ctx));
+    }
+
+    #[test]
+    fn test_question_words_are_conversational() {
+        let ctx = make_context_with_user_msg("Who are you");
+        assert!(Agent::is_conversational_question(&ctx));
+        let ctx = make_context_with_user_msg("How do you work");
+        assert!(Agent::is_conversational_question(&ctx));
+        let ctx = make_context_with_user_msg("Explain the architecture");
+        assert!(Agent::is_conversational_question(&ctx));
+    }
+
+    #[test]
+    fn test_task_request_not_conversational() {
+        let ctx = make_context_with_user_msg("Fix the bug in main.rs");
+        assert!(!Agent::is_conversational_question(&ctx));
+        let ctx = make_context_with_user_msg("Refactor the gateway module");
+        assert!(!Agent::is_conversational_question(&ctx));
+        let ctx = make_context_with_user_msg("Add error handling to the parser");
+        assert!(!Agent::is_conversational_question(&ctx));
     }
 
     // --- Streaming tests ---

@@ -148,13 +148,17 @@ impl Tool for WriteTool {
     fn required_capabilities(&self) -> Capabilities {
         Capabilities::filesystem_write()
     }
-    
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
     fn execute(&self, params: serde_json::Value, context: ToolExecutionContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>> {
         Box::pin(async move {
             let file_path: String = params.get("file_path")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| crate::ToolError::InvalidParameters { 
-                    message: "file_path is required".to_string() 
+                .ok_or_else(|| crate::ToolError::InvalidParameters {
+                    message: "file_path is required".to_string()
                 })?
                 .to_string();
             
@@ -242,7 +246,11 @@ impl Tool for EditTool {
         caps.extend(Capabilities::filesystem_write());
         caps
     }
-    
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
     fn execute(&self, params: serde_json::Value, context: ToolExecutionContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>> {
         Box::pin(async move {
             let file_path: String = params.get("file_path")
@@ -319,11 +327,11 @@ impl Tool for ExecTool {
     fn name(&self) -> &str {
         "exec"
     }
-    
+
     fn description(&self) -> &str {
         "Execute shell commands"
     }
-    
+
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -344,9 +352,13 @@ impl Tool for ExecTool {
             "required": ["command"]
         })
     }
-    
+
     fn required_capabilities(&self) -> Capabilities {
         Capabilities::process_execute()
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
     }
     
     fn execute(&self, params: serde_json::Value, context: ToolExecutionContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>> {
@@ -673,6 +685,10 @@ impl Tool for PatchTool {
         let mut caps = Capabilities::filesystem_read();
         caps.extend(Capabilities::filesystem_write());
         caps
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
     }
 
     fn execute(&self, params: serde_json::Value, context: ToolExecutionContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>> {

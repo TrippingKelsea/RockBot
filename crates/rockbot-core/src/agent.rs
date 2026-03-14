@@ -1723,6 +1723,8 @@ The user wants me to explore the codebase. I should start by listing the directo
                             .get_session_context(session_id)
                             .await?,
                         credential_accessor: self.credential_accessor.clone(),
+                        command_allowlist: vec![],
+                        approval_callback: None,
                     };
                     
                     match self.tool_registry

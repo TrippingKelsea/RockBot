@@ -78,6 +78,24 @@ pub struct ToolConfig {
     pub configs: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
+/// Result of a human-in-the-loop approval request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ApprovalResult {
+    /// Tool execution is approved
+    Approved,
+    /// Tool execution is denied
+    Denied { reason: String },
+    /// Approval is pending (async flow — client must re-submit with approval)
+    Pending { request_id: String },
+}
+
+/// Callback for requesting human approval before tool execution
+pub type ApprovalCallback = Arc<
+    dyn Fn(String, String, serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = ApprovalResult> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Tool execution context
 #[derive(Clone)]
 pub struct ToolExecutionContext {
@@ -87,6 +105,10 @@ pub struct ToolExecutionContext {
     pub security_context: SecurityContext,
     /// Optional credential accessor for tools that need API credentials
     pub credential_accessor: Option<Arc<dyn CredentialAccessor>>,
+    /// Pre-approved commands that skip HIL (e.g. ["ls", "cat", "git"])
+    pub command_allowlist: Vec<String>,
+    /// Optional callback for requesting human approval
+    pub approval_callback: Option<ApprovalCallback>,
 }
 
 impl std::fmt::Debug for ToolExecutionContext {
@@ -97,6 +119,8 @@ impl std::fmt::Debug for ToolExecutionContext {
             .field("workspace_path", &self.workspace_path)
             .field("security_context", &self.security_context)
             .field("has_credential_accessor", &self.credential_accessor.is_some())
+            .field("command_allowlist", &self.command_allowlist)
+            .field("has_approval_callback", &self.approval_callback.is_some())
             .finish()
     }
 }
@@ -166,6 +190,9 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// Whether this tool requires human approval before execution
+    #[serde(default)]
+    pub requires_approval: bool,
 }
 
 /// Core tool trait
@@ -192,6 +219,12 @@ pub trait Tool: Send + Sync {
     /// Credential schema describing what this tool needs to authenticate.
     fn credential_schema(&self) -> Option<CredentialSchema> {
         None
+    }
+
+    /// Whether this tool requires human-in-the-loop approval before execution.
+    /// Tools like process_execute and file_write should return true.
+    fn requires_approval(&self) -> bool {
+        false
     }
 }
 
@@ -320,6 +353,7 @@ impl ToolRegistry {
                     name: tool.name().to_string(),
                     description: tool.description().to_string(),
                     parameters: tool.parameters(),
+                    requires_approval: tool.requires_approval(),
                 });
             }
         }
@@ -349,6 +383,45 @@ impl ToolRegistry {
             return Err(ToolError::SecurityError {
                 message: "Insufficient capabilities for tool execution".to_string(),
             });
+        }
+
+        // Check if tool requires human approval
+        if tool.requires_approval() {
+            // Check command allowlist for exec-like tools
+            let is_allowlisted = params.get("command")
+                .and_then(|v| v.as_str())
+                .and_then(|cmd| cmd.split_whitespace().next())
+                .is_some_and(|exe| context.command_allowlist.iter().any(|a| a == exe));
+
+            if !is_allowlisted {
+                if let Some(ref callback) = context.approval_callback {
+                    let result = callback(
+                        tool_name.to_string(),
+                        context.agent_id.clone(),
+                        params.clone(),
+                    ).await;
+                    match result {
+                        ApprovalResult::Approved => { /* proceed */ }
+                        ApprovalResult::Denied { reason } => {
+                            return Ok(ToolExecutionResult {
+                                tool_name: tool_name.to_string(),
+                                result: ToolResult::error(format!("Tool execution denied: {reason}")),
+                                execution_time_ms: start_time.elapsed().as_millis() as u64,
+                                success: false,
+                            });
+                        }
+                        ApprovalResult::Pending { request_id } => {
+                            return Ok(ToolExecutionResult {
+                                tool_name: tool_name.to_string(),
+                                result: ToolResult::error(format!("Approval pending: {request_id}")),
+                                execution_time_ms: start_time.elapsed().as_millis() as u64,
+                                success: false,
+                            });
+                        }
+                    }
+                }
+                // If no approval callback, proceed (autonomous mode)
+            }
         }
 
         // Enforce sandbox restrictions
@@ -460,13 +533,125 @@ mod tests {
             deny: vec![],
             configs: HashMap::new(),
         };
-        
+
         let registry = ToolRegistry::new(config).await.unwrap();
-        
+
         // Should have registered standard tools
         let tools = registry.tools.read().await;
         assert!(tools.contains_key("read"));
         assert!(tools.contains_key("write"));
         assert!(tools.contains_key("exec"));
+    }
+
+    #[tokio::test]
+    async fn test_approval_required_tools_denied_by_callback() {
+        let config = ToolConfig {
+            profile: "standard".to_string(),
+            deny: vec![],
+            configs: HashMap::new(),
+        };
+        let registry = ToolRegistry::new(config).await.unwrap();
+
+        let context = ToolExecutionContext {
+            session_id: "test".to_string(),
+            agent_id: "agent1".to_string(),
+            workspace_path: std::path::PathBuf::from("/tmp"),
+            security_context: rockbot_security::SecurityContext {
+                session_id: "test".to_string(),
+                capabilities: {
+                    let mut caps = rockbot_security::Capabilities::new();
+                    caps.add(rockbot_security::Capability::ProcessExecute);
+                    caps
+                },
+                sandbox_enabled: false,
+                restrictions: rockbot_security::SecurityRestrictions::default(),
+            },
+            credential_accessor: None,
+            command_allowlist: vec![],
+            approval_callback: Some(Arc::new(|_tool, _agent, _params| {
+                Box::pin(async { ApprovalResult::Denied { reason: "not allowed".to_string() } })
+            })),
+        };
+
+        let result = registry.execute_tool(
+            "exec",
+            r#"{"command": "echo hello"}"#,
+            context,
+        ).await.unwrap();
+
+        assert!(!result.success);
+        match &result.result {
+            crate::message::ToolResult::Error { message, .. } => {
+                assert!(message.contains("denied"));
+            }
+            other => panic!("Expected Error result, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_allowlisted_command_skips_approval() {
+        let config = ToolConfig {
+            profile: "standard".to_string(),
+            deny: vec![],
+            configs: HashMap::new(),
+        };
+        let registry = ToolRegistry::new(config).await.unwrap();
+
+        let context = ToolExecutionContext {
+            session_id: "test".to_string(),
+            agent_id: "agent1".to_string(),
+            workspace_path: std::path::PathBuf::from("/tmp"),
+            security_context: rockbot_security::SecurityContext {
+                session_id: "test".to_string(),
+                capabilities: {
+                    let mut caps = rockbot_security::Capabilities::new();
+                    caps.add(rockbot_security::Capability::ProcessExecute);
+                    caps
+                },
+                sandbox_enabled: false,
+                restrictions: rockbot_security::SecurityRestrictions::default(),
+            },
+            credential_accessor: None,
+            command_allowlist: vec!["echo".to_string()],
+            approval_callback: Some(Arc::new(|_tool, _agent, _params| {
+                // Should never be called for allowlisted commands
+                Box::pin(async { ApprovalResult::Denied { reason: "should not reach".to_string() } })
+            })),
+        };
+
+        let result = registry.execute_tool(
+            "exec",
+            r#"{"command": "echo hello"}"#,
+            context,
+        ).await.unwrap();
+
+        // echo should succeed since it's allowlisted, skipping the deny callback
+        assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn test_write_tool_requires_approval() {
+        let config = ToolConfig {
+            profile: "standard".to_string(),
+            deny: vec![],
+            configs: HashMap::new(),
+        };
+        let registry = ToolRegistry::new(config).await.unwrap();
+        let tools = registry.tools.read().await;
+        let write_tool = tools.get("write").unwrap();
+        assert!(write_tool.requires_approval());
+    }
+
+    #[tokio::test]
+    async fn test_read_tool_no_approval() {
+        let config = ToolConfig {
+            profile: "standard".to_string(),
+            deny: vec![],
+            configs: HashMap::new(),
+        };
+        let registry = ToolRegistry::new(config).await.unwrap();
+        let tools = registry.tools.read().await;
+        let read_tool = tools.get("read").unwrap();
+        assert!(!read_tool.requires_approval());
     }
 }

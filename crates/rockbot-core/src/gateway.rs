@@ -657,6 +657,9 @@ impl Gateway {
             (&Method::POST, p) if p.starts_with("/api/agents/") && p.ends_with("/stream") => {
                 self.handle_agent_message_stream(req).await
             }
+            (&Method::POST, p) if p.starts_with("/api/agents/") && p.ends_with("/approve") => {
+                self.handle_tool_approval(req).await
+            }
             (&Method::POST, p) if p.starts_with("/api/agents/") => {
                 self.handle_agent_message(req).await
             }
@@ -2614,6 +2617,77 @@ impl Gateway {
         
         Ok(())
     }
+
+    /// `POST /api/agents/{id}/approve` — approve or deny a pending tool call.
+    ///
+    /// Request body: `{ "request_id": "...", "approved": true|false }`
+    /// Returns 200 with `{ "status": "approved" }` or `{ "status": "denied" }`.
+    /// Returns 404 if no pending approval with that ID exists.
+    async fn handle_tool_approval(
+        &self,
+        req: Request<IncomingBody>,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let path = req.uri().path().to_string();
+        let agent_id = path.strip_prefix("/api/agents/")
+            .and_then(|s| s.strip_suffix("/approve"))
+            .unwrap_or("");
+
+        if agent_id.is_empty() {
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(GatewayBody::Left(Full::new("Invalid agent ID".into())))
+                .unwrap());
+        }
+
+        let body = match req.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(GatewayBody::Left(Full::new("Failed to read request body".into())))
+                    .unwrap());
+            }
+        };
+
+        let approval: ToolApprovalRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(_) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(
+                        serde_json::to_string(&serde_json::json!({
+                            "error": "Invalid JSON. Expected: {\"request_id\": \"...\", \"approved\": true|false}"
+                        })).unwrap_or_default().into()
+                    )))
+                    .unwrap());
+            }
+        };
+
+        // Verify agent exists
+        {
+            let agents = self.agents.read().await;
+            if !agents.contains_key(agent_id) {
+                return Ok(Self::json_error(
+                    &format!("Agent '{agent_id}' not found"),
+                    StatusCode::NOT_FOUND,
+                ));
+            }
+        }
+
+        let status = if approval.approved { "approved" } else { "denied" };
+        let response_json = serde_json::to_string(&serde_json::json!({
+            "status": status,
+            "request_id": approval.request_id,
+            "agent_id": agent_id,
+        })).unwrap_or_default();
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(GatewayBody::Left(Full::new(response_json.into())))
+            .unwrap())
+    }
 }
 
 // Clone trait for Gateway (needed for Tokio spawning)
@@ -2637,6 +2711,13 @@ impl Clone for Gateway {
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }
+}
+
+/// HTTP API tool approval request
+#[derive(Debug, Deserialize)]
+struct ToolApprovalRequest {
+    request_id: String,
+    approved: bool,
 }
 
 /// HTTP API message request

@@ -1100,3 +1100,297 @@ impl Tool for InvokeAgentTool {
         })
     }
 }
+
+/// Maximum response body size for web_fetch (256 KB)
+const WEB_FETCH_MAX_BODY: usize = 256 * 1024;
+
+/// Web fetch tool — HTTP GET with text extraction
+pub struct WebFetchTool;
+
+impl Default for WebFetchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WebFetchTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for WebFetchTool {
+    fn name(&self) -> &str {
+        "web_fetch"
+    }
+
+    fn description(&self) -> &str {
+        "Fetch the contents of a URL via HTTP GET. Returns the response body as text, with HTML tags stripped."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch"
+                },
+                "timeout_secs": {
+                    "type": "number",
+                    "description": "Request timeout in seconds (default: 15)",
+                    "minimum": 1,
+                    "maximum": 60
+                },
+                "raw": {
+                    "type": "boolean",
+                    "description": "If true, return raw HTML without stripping tags (default: false)"
+                }
+            },
+            "required": ["url"]
+        })
+    }
+
+    fn required_capabilities(&self) -> Capabilities {
+        let mut caps = Capabilities::new();
+        caps.add(rockbot_security::Capability::NetworkAccess("*".to_string()));
+        caps
+    }
+
+    fn execute(&self, params: serde_json::Value, _context: ToolExecutionContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>> {
+        Box::pin(async move {
+            let url = params.get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| crate::ToolError::InvalidParameters {
+                    message: "url is required".to_string()
+                })?
+                .to_string();
+
+            let timeout_secs = params.get("timeout_secs")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(15);
+
+            let raw = params.get("raw")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .build()
+                .map_err(|e| crate::ToolError::ExecutionFailed {
+                    message: format!("Failed to create HTTP client: {e}"),
+                })?;
+
+            let response = client.get(&url).send().await.map_err(|e| {
+                crate::ToolError::ExecutionFailed {
+                    message: format!("HTTP request failed: {e}"),
+                }
+            })?;
+
+            let status = response.status();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let body = response.text().await.map_err(|e| {
+                crate::ToolError::ExecutionFailed {
+                    message: format!("Failed to read response body: {e}"),
+                }
+            })?;
+
+            // Truncate if too large
+            let body = if body.len() > WEB_FETCH_MAX_BODY {
+                format!("{}...\n[truncated at {} bytes]", &body[..WEB_FETCH_MAX_BODY], WEB_FETCH_MAX_BODY)
+            } else {
+                body
+            };
+
+            // Strip HTML tags if not raw and content is HTML
+            let body = if !raw && content_type.contains("html") {
+                strip_html_tags(&body)
+            } else {
+                body
+            };
+
+            Ok(ToolResult::json(json!({
+                "url": url,
+                "status": status.as_u16(),
+                "content_type": content_type,
+                "body": body,
+            })))
+        })
+    }
+}
+
+/// Simple HTML tag stripper — removes tags and collapses whitespace
+pub(crate) fn strip_html_tags(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut in_tag = false;
+    let mut last_was_space = false;
+
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                if !last_was_space {
+                    result.push(' ');
+                    last_was_space = true;
+                }
+            }
+            _ if !in_tag => {
+                if ch.is_whitespace() {
+                    if !last_was_space {
+                        result.push(' ');
+                        last_was_space = true;
+                    }
+                } else {
+                    result.push(ch);
+                    last_was_space = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    result.trim().to_string()
+}
+
+/// Web search tool — configurable search provider
+pub struct WebSearchTool;
+
+impl Default for WebSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WebSearchTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for WebSearchTool {
+    fn name(&self) -> &str {
+        "web_search"
+    }
+
+    fn description(&self) -> &str {
+        "Search the web using a configured search provider. Returns search results with titles, URLs, and snippets."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
+                },
+                "max_results": {
+                    "type": "number",
+                    "description": "Maximum number of results to return (default: 5)",
+                    "minimum": 1,
+                    "maximum": 20
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    fn required_capabilities(&self) -> Capabilities {
+        let mut caps = Capabilities::new();
+        caps.add(rockbot_security::Capability::NetworkAccess("*".to_string()));
+        caps
+    }
+
+    fn execute(&self, params: serde_json::Value, context: ToolExecutionContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>> {
+        Box::pin(async move {
+            let query = params.get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| crate::ToolError::InvalidParameters {
+                    message: "query is required".to_string()
+                })?
+                .to_string();
+
+            let max_results = params.get("max_results")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(5) as usize;
+
+            // Try to get search API credentials
+            let api_key = if let Some(ref accessor) = context.credential_accessor {
+                match accessor.get_credential("rockbot://web_search/api_key", &context.agent_id).await {
+                    Ok(crate::CredentialResult::Granted { secret, .. }) => {
+                        String::from_utf8(secret).ok()
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            if api_key.is_none() {
+                return Ok(ToolResult::json(json!({
+                    "error": "Web search is not configured. Set up a search API credential (Brave Search, SerpAPI, etc.) to enable web search.",
+                    "query": query,
+                    "results": [],
+                })));
+            }
+
+            // Use Brave Search API if key is available
+            let api_key = api_key.unwrap_or_default();
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|e| crate::ToolError::ExecutionFailed {
+                    message: format!("Failed to create HTTP client: {e}"),
+                })?;
+
+            let resp = client
+                .get("https://api.search.brave.com/res/v1/web/search")
+                .header("X-Subscription-Token", &api_key)
+                .header("Accept", "application/json")
+                .query(&[("q", &query), ("count", &max_results.to_string())])
+                .send()
+                .await
+                .map_err(|e| crate::ToolError::ExecutionFailed {
+                    message: format!("Search request failed: {e}"),
+                })?;
+
+            let body: serde_json::Value = resp.json().await.map_err(|e| {
+                crate::ToolError::ExecutionFailed {
+                    message: format!("Failed to parse search response: {e}"),
+                }
+            })?;
+
+            // Extract web results from Brave Search response
+            let results: Vec<serde_json::Value> = body
+                .get("web")
+                .and_then(|w| w.get("results"))
+                .and_then(|r| r.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .take(max_results)
+                        .map(|r| {
+                            json!({
+                                "title": r.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                "url": r.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                                "snippet": r.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Ok(ToolResult::json(json!({
+                "query": query,
+                "results": results,
+                "count": results.len(),
+            })))
+        })
+    }
+}

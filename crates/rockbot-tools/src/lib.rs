@@ -310,8 +310,8 @@ impl ToolRegistry {
     async fn register_builtin_tools(&self) -> Result<()> {
         let tools_to_register = match self.config.profile.as_str() {
             "minimal" => vec!["read", "write"],
-            "standard" => vec!["read", "write", "edit", "exec", "glob", "grep", "patch", "invoke_agent"],
-            "full" => vec!["read", "write", "edit", "exec", "glob", "grep", "patch", "memory_get", "memory_search", "invoke_agent"],
+            "standard" => vec!["read", "write", "edit", "exec", "glob", "grep", "patch", "invoke_agent", "web_fetch", "web_search"],
+            "full" => vec!["read", "write", "edit", "exec", "glob", "grep", "patch", "memory_get", "memory_search", "invoke_agent", "web_fetch", "web_search"],
             _ => vec!["read", "write", "edit", "exec", "glob", "grep", "patch"],
         };
         
@@ -341,6 +341,8 @@ impl ToolRegistry {
             "memory_get" => Ok(Some(Arc::new(builtin::MemoryGetTool::new()))),
             "memory_search" => Ok(Some(Arc::new(builtin::MemorySearchTool::new()))),
             "invoke_agent" => Ok(Some(Arc::new(builtin::InvokeAgentTool::new()))),
+            "web_fetch" => Ok(Some(Arc::new(builtin::WebFetchTool::new()))),
+            "web_search" => Ok(Some(Arc::new(builtin::WebSearchTool::new()))),
             _ => Ok(None),
         }
     }
@@ -820,5 +822,27 @@ mod tests {
             }
             other => panic!("Expected Error result, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_strip_html_tags() {
+        let html = "<html><body><h1>Hello</h1><p>World</p></body></html>";
+        let result = crate::builtin::strip_html_tags(html);
+        assert!(result.contains("Hello"));
+        assert!(result.contains("World"));
+        assert!(!result.contains("<"));
+    }
+
+    #[tokio::test]
+    async fn test_web_tools_registered() {
+        let config = ToolConfig {
+            profile: "standard".to_string(),
+            deny: vec![],
+            configs: HashMap::new(),
+        };
+        let registry = ToolRegistry::new(config).await.unwrap();
+        let tools = registry.tools.read().await;
+        assert!(tools.contains_key("web_fetch"));
+        assert!(tools.contains_key("web_search"));
     }
 }

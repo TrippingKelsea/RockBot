@@ -132,6 +132,8 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                 sm,
                 sess,
                 cred_accessor,
+                None,
+                None,
             ).await.map_err(|e| rockbot_core::error::GatewayError::InvalidRequest {
                 message: e.to_string(),
             })?;
@@ -175,6 +177,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         let memory_manager = Arc::new(MemoryManager::new(workspace.clone()).await?);
         
         // Create agent
+        let invoker = gateway.agent_invoker();
         let agent = Arc::new(Agent::new(
             agent_config.clone(),
             llm_provider,
@@ -183,8 +186,10 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
             security_manager.clone(),
             session_manager.clone(),
             credential_accessor.clone(),
+            None,
+            Some(invoker),
         ).await?);
-        
+
         // Register with gateway
         gateway.register_agent(agent).await;
         agents_created += 1;

@@ -362,6 +362,14 @@ impl Gateway {
         info!("Registered agent: {}", agent_id);
     }
     
+    /// Create an `AgentInvoker` backed by this gateway's agent map.
+    ///
+    /// Agents created with this invoker can delegate work to sibling agents
+    /// via the `invoke_agent` tool.
+    pub fn agent_invoker(&self) -> Arc<dyn rockbot_tools::AgentInvoker> {
+        Arc::new(GatewayInvoker::new(Arc::clone(&self.agents)))
+    }
+
     /// Set the agent factory for creating new agents
     pub fn set_agent_factory(&mut self, factory: AgentFactory) {
         self.agent_factory = Some(factory);
@@ -2808,6 +2816,57 @@ impl Clone for Gateway {
             ws_connections: Arc::clone(&self.ws_connections),
             a2a_task_store: Arc::clone(&self.a2a_task_store),
             shutdown_tx: self.shutdown_tx.clone(),
+        }
+    }
+}
+
+/// Gateway implements AgentInvoker so agents can delegate to sibling agents.
+///
+/// The gateway wraps itself in an `Arc` via `GatewayInvoker` (which holds the
+/// shared `agents` map) to avoid requiring `Gateway: 'static`.
+#[derive(Clone)]
+pub struct GatewayInvoker {
+    agents: Arc<tokio::sync::RwLock<HashMap<String, Arc<Agent>>>>,
+}
+
+impl GatewayInvoker {
+    /// Create a new invoker from the gateway's agent map.
+    pub fn new(agents: Arc<tokio::sync::RwLock<HashMap<String, Arc<Agent>>>>) -> Self {
+        Self { agents }
+    }
+}
+
+#[async_trait::async_trait]
+impl rockbot_tools::AgentInvoker for GatewayInvoker {
+    async fn invoke_agent(
+        &self,
+        agent_id: &str,
+        message: &str,
+        session_id: &str,
+        _depth: u32,
+    ) -> std::result::Result<String, rockbot_tools::ToolError> {
+        let agents = self.agents.read().await;
+        let agent = agents.get(agent_id).ok_or_else(|| {
+            rockbot_tools::ToolError::ExecutionFailed {
+                message: format!("invoke_agent: agent '{agent_id}' not found"),
+            }
+        })?;
+
+        let msg = crate::message::Message::text(message)
+            .with_session_id(session_id)
+            .with_role(crate::message::MessageRole::User);
+
+        match agent.process_message(session_id.to_string(), msg, None).await {
+            Ok(response) => {
+                let text = match &response.message.content {
+                    crate::message::MessageContent::Text { text } => text.clone(),
+                    other => format!("{other:?}"),
+                };
+                Ok(text)
+            }
+            Err(e) => Err(rockbot_tools::ToolError::ExecutionFailed {
+                message: format!("invoke_agent: agent '{agent_id}' error: {e}"),
+            }),
         }
     }
 }

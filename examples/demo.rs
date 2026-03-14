@@ -103,6 +103,8 @@ async fn main() -> Result<()> {
         security_manager,
         session_manager,
         None, // No credential accessor for demo
+        None, // No hook registry
+        None, // No agent invoker
     )
     .await?;
     println!("  ✓ Agent created\n");

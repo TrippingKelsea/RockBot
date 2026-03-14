@@ -9,9 +9,10 @@ use crate::session::{Session, SessionManager};
 use crate::config::AgentInstance;
 use rockbot_llm::{LlmProvider, LlmError, ChatCompletionRequest, ChatCompletionResponse, StreamingChunk};
 use rockbot_memory::MemoryManager;
-use rockbot_tools::{ToolRegistry, ToolExecutionContext, ToolExecutionResult};
+use rockbot_tools::{ToolRegistry, ToolExecutionContext, ToolExecutionResult, AgentInvoker};
 use rockbot_tools::message::ToolResult;
 use rockbot_security::SecurityManager;
+use crate::hooks::{HookRegistry, HookEvent, HookResult};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -228,6 +229,10 @@ pub struct Agent {
     session_manager: Arc<SessionManager>,
     /// Credential accessor for tool credential injection
     credential_accessor: Option<Arc<dyn rockbot_tools::CredentialAccessor>>,
+    /// Hook registry for lifecycle events
+    hook_registry: Arc<HookRegistry>,
+    /// Agent invoker for subagent delegation
+    agent_invoker: Option<Arc<dyn AgentInvoker>>,
     /// Agent state
     state: Arc<RwLock<AgentState>>,
 }
@@ -350,6 +355,8 @@ impl Agent {
         security_manager: Arc<SecurityManager>,
         session_manager: Arc<SessionManager>,
         credential_accessor: Option<Arc<dyn rockbot_tools::CredentialAccessor>>,
+        hook_registry: Option<Arc<HookRegistry>>,
+        agent_invoker: Option<Arc<dyn AgentInvoker>>,
     ) -> Result<Self> {
         info!("Initializing agent '{}'", config.id);
         
@@ -371,13 +378,25 @@ impl Agent {
             security_manager,
             session_manager,
             credential_accessor,
+            hook_registry: hook_registry.unwrap_or_else(|| Arc::new(HookRegistry::new())),
+            agent_invoker,
             state: Arc::new(RwLock::new(AgentState {
                 active_contexts: HashMap::new(),
                 stats: AgentStats::default(),
             })),
         })
     }
-    
+
+    /// Set the agent invoker for subagent delegation.
+    pub fn set_agent_invoker(&mut self, invoker: Arc<dyn AgentInvoker>) {
+        self.agent_invoker = Some(invoker);
+    }
+
+    /// Set the hook registry for lifecycle events.
+    pub fn set_hook_registry(&mut self, registry: Arc<HookRegistry>) {
+        self.hook_registry = registry;
+    }
+
     /// Process an incoming message and generate a response
     ///
     /// `workspace_override` allows the caller to set the working directory for tool execution
@@ -391,6 +410,18 @@ impl Agent {
         let start_time = std::time::Instant::now();
 
         debug!("Processing message {} in session {}", message.id, session_id);
+
+        // Fire PreMessage hook
+        let pre_event = HookEvent::PreMessage {
+            agent_id: self.config.id.clone(),
+            session_id: session_id.clone(),
+            message: message.clone(),
+        };
+        if let HookResult::Abort { reason } = self.hook_registry.fire(&pre_event).await {
+            return Err(AgentError::ExecutionFailed {
+                message: format!("PreMessage hook aborted: {reason}"),
+            }.into());
+        }
 
         // Get or create session — use the session's actual DB ID for all operations
         // (the passed-in session_id may be a compound key like "agent:session_key",
@@ -443,6 +474,14 @@ impl Agent {
             token_usage.prompt_tokens as u64,
             token_usage.completion_tokens as u64,
         );
+
+        // Fire PostMessage hook
+        let post_event = HookEvent::PostMessage {
+            agent_id: self.config.id.clone(),
+            session_id: db_session_id.clone(),
+            response: response_message.clone(),
+        };
+        self.hook_registry.fire(&post_event).await;
 
         // Clean up processing context
         {
@@ -1726,6 +1765,25 @@ The user wants me to explore the codebase. I should start by listing the directo
                 for tool_call in tool_calls {
                     debug!("Executing tool: {}", tool_call.function.name);
 
+                    // Fire PreToolCall hook
+                    let pre_tool_event = HookEvent::PreToolCall {
+                        agent_id: self.config.id.clone(),
+                        session_id: session_id.to_string(),
+                        tool_name: tool_call.function.name.clone(),
+                        arguments: serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(serde_json::Value::Null),
+                    };
+                    if let HookResult::Abort { reason } = self.hook_registry.fire(&pre_tool_event).await {
+                        warn!("Tool call '{}' aborted by hook: {reason}", tool_call.function.name);
+                        let error_message = Message::tool_result(
+                            tool_call.id.clone(),
+                            tool_call.function.name.clone(),
+                            format!("Tool call aborted by hook: {reason}"),
+                        ).with_session_id(session_id);
+                        tool_messages.push(error_message);
+                        continue;
+                    }
+
                     let execution_context = ToolExecutionContext {
                         session_id: session_id.to_string(),
                         agent_id: self.config.id.clone(),
@@ -1736,10 +1794,10 @@ The user wants me to explore the codebase. I should start by listing the directo
                         credential_accessor: self.credential_accessor.clone(),
                         command_allowlist: vec![],
                         approval_callback: None,
-                        agent_invoker: None,
+                        agent_invoker: self.agent_invoker.clone(),
                         delegation_depth: 0,
                     };
-                    
+
                     let tool_start = std::time::Instant::now();
                     match self.tool_registry
                         .execute_tool(
@@ -1755,6 +1813,17 @@ The user wants me to explore the codebase. I should start by listing the directo
                                 result.success,
                                 tool_start.elapsed(),
                             );
+
+                            // Fire PostToolCall hook
+                            let post_tool_event = HookEvent::PostToolCall {
+                                agent_id: self.config.id.clone(),
+                                session_id: session_id.to_string(),
+                                tool_name: tool_call.function.name.clone(),
+                                result: serde_json::to_value(&result.result).unwrap_or(serde_json::Value::Null),
+                                success: result.success,
+                            };
+                            self.hook_registry.fire(&post_tool_event).await;
+
                             tool_results.push(result.clone());
 
                             // Create tool result message for conversation
@@ -1775,25 +1844,43 @@ The user wants me to explore the codebase. I should start by listing the directo
                                     format!("[File: {path}]")
                                 }
                             };
-                            
+
                             let tool_message = Message::tool_result(
                                 tool_call.id.clone(),
                                 tool_call.function.name.clone(),
                                 tool_content,
                             ).with_session_id(session_id);
-                            
+
                             tool_messages.push(tool_message);
                         }
                         Err(e) => {
                             error!("Tool execution failed: {}", e);
-                            
+
+                            // Fire PostToolCall hook for error
+                            let post_tool_event = HookEvent::PostToolCall {
+                                agent_id: self.config.id.clone(),
+                                session_id: session_id.to_string(),
+                                tool_name: tool_call.function.name.clone(),
+                                result: serde_json::json!({"error": e.to_string()}),
+                                success: false,
+                            };
+                            self.hook_registry.fire(&post_tool_event).await;
+
+                            // Fire OnError hook
+                            let error_event = HookEvent::OnError {
+                                agent_id: self.config.id.clone(),
+                                session_id: session_id.to_string(),
+                                error: format!("Tool '{}' failed: {e}", tool_call.function.name),
+                            };
+                            self.hook_registry.fire(&error_event).await;
+
                             // Create error message for conversation
                             let error_message = Message::tool_result(
                                 tool_call.id.clone(),
                                 tool_call.function.name.clone(),
                                 format!("Tool execution failed: {e}"),
                             ).with_session_id(session_id);
-                            
+
                             tool_messages.push(error_message);
                         }
                     }

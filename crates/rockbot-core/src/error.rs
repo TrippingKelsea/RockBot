@@ -50,9 +50,12 @@ pub enum RockBotError {
     
     #[error("Credential error: {0}")]
     Credential(#[from] rockbot_credentials::CredentialError),
-    
+
     #[error("Notify error: {0}")]
     Notify(#[from] notify::Error),
+
+    #[error("LLM error: {0}")]
+    Llm(#[from] rockbot_llm::LlmError),
 }
 
 #[derive(Debug, Error)]

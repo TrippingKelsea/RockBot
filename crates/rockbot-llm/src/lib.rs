@@ -278,6 +278,9 @@ pub struct StreamingDelta {
 /// Streaming completion response
 pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamingChunk>> + Send>>;
 
+/// Callback for receiving streaming chunks during agent processing
+pub type StreamingCallback = Arc<dyn Fn(StreamingChunk) + Send + Sync>;
+
 /// Model information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {

@@ -7,11 +7,12 @@ use crate::error::{AgentError, Result};
 use crate::message::{Message, MessageRole, SystemLevel};
 use crate::session::{Session, SessionManager};
 use crate::config::AgentInstance;
-use rockbot_llm::{LlmProvider, LlmError, ChatCompletionRequest, ChatCompletionResponse};
+use rockbot_llm::{LlmProvider, LlmError, ChatCompletionRequest, ChatCompletionResponse, StreamingChunk};
 use rockbot_memory::MemoryManager;
 use rockbot_tools::{ToolRegistry, ToolExecutionContext, ToolExecutionResult};
 use rockbot_tools::message::ToolResult;
 use rockbot_security::SecurityManager;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -445,7 +446,334 @@ impl Agent {
             processing_time_ms,
         })
     }
-    
+
+    /// Process an incoming message with SSE streaming support.
+    ///
+    /// Sends `StreamingChunk`s to the provided `stream_tx` as they arrive from
+    /// the LLM. Tool calls are accumulated from streaming deltas, executed, and
+    /// the multi-turn loop continues with streaming on each LLM call.
+    ///
+    /// Returns the final `AgentResponse` once the agent loop completes.
+    pub async fn process_message_streaming(
+        &self,
+        session_id: String,
+        message: Message,
+        workspace_override: Option<std::path::PathBuf>,
+        stream_tx: tokio::sync::mpsc::Sender<StreamingChunk>,
+    ) -> Result<AgentResponse> {
+        let start_time = std::time::Instant::now();
+
+        debug!("Processing streaming message in session {}", session_id);
+
+        let session = self.get_or_create_session(&session_id, &message).await?;
+        let db_session_id = session.id.clone();
+
+        self.session_manager.add_message(&db_session_id, message.clone()).await?;
+
+        let available_tools = self.get_available_tools(&session).await?;
+        let mut context = self.update_processing_context(
+            db_session_id.clone(), message, available_tools, workspace_override,
+        ).await?;
+
+        // Build initial streaming request
+        let llm_request = self.build_llm_request_streaming(&mut context).await?;
+
+        // Use streaming for the initial LLM call
+        let (initial_response, _streamed_text) = self.call_llm_streaming(
+            llm_request, &stream_tx,
+        ).await?;
+
+        // Process the response through the tool loop (tool calls use non-streaming)
+        let (response_message, tool_results, token_usage) = self.process_llm_response_streaming(
+            &db_session_id,
+            &mut context,
+            initial_response,
+            &stream_tx,
+        ).await?;
+
+        self.session_manager.add_message(&db_session_id, response_message.clone()).await?;
+
+        let mut session = self.session_manager.get_session(&db_session_id).await?
+            .ok_or_else(|| AgentError::ExecutionFailed {
+                message: "Session disappeared during processing".to_string()
+            })?;
+        session.add_tokens(token_usage.prompt_tokens, token_usage.completion_tokens);
+        self.session_manager.update_session(&session).await?;
+
+        let processing_time_ms = start_time.elapsed().as_millis() as u64;
+        self.update_stats(token_usage.total_tokens, processing_time_ms).await;
+
+        {
+            let mut state = self.state.write().await;
+            state.active_contexts.remove(&db_session_id);
+        }
+
+        Ok(AgentResponse {
+            message: response_message,
+            tool_results,
+            tokens_used: token_usage,
+            processing_time_ms,
+        })
+    }
+
+    /// Call LLM with streaming, forwarding chunks to the sender.
+    /// Returns the assembled `ChatCompletionResponse` and the accumulated text.
+    async fn call_llm_streaming(
+        &self,
+        request: ChatCompletionRequest,
+        stream_tx: &tokio::sync::mpsc::Sender<StreamingChunk>,
+    ) -> Result<(ChatCompletionResponse, String)> {
+        let model = request.model.clone();
+        let mut stream = self.llm_provider.stream_completion(request).await?;
+
+        let mut accumulated_text = String::new();
+        let mut accumulated_tool_calls: Vec<rockbot_llm::ToolCall> = Vec::new();
+        let mut response_id = String::new();
+        let mut finish_reason = "stop".to_string();
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    if response_id.is_empty() {
+                        response_id.clone_from(&chunk.id);
+                    }
+
+                    for choice in &chunk.choices {
+                        if let Some(ref content) = choice.delta.content {
+                            accumulated_text.push_str(content);
+                        }
+                        if let Some(ref tool_calls) = choice.delta.tool_calls {
+                            Self::merge_streaming_tool_calls(
+                                &mut accumulated_tool_calls, tool_calls,
+                            );
+                        }
+                        if let Some(ref reason) = choice.finish_reason {
+                            finish_reason.clone_from(reason);
+                        }
+                    }
+
+                    // Forward chunk to SSE consumer (ignore send errors — client may disconnect)
+                    let _ = stream_tx.send(chunk).await;
+                }
+                Err(e) => {
+                    error!("Streaming error: {}", e);
+                    return Err(crate::error::RockBotError::Agent(AgentError::ModelError {
+                        message: format!("Streaming error: {e}"),
+                    }));
+                }
+            }
+        }
+
+        // Assemble the response as if it were a non-streaming response
+        let tool_calls_option = if accumulated_tool_calls.is_empty() {
+            None
+        } else {
+            Some(accumulated_tool_calls)
+        };
+
+        #[allow(clippy::unwrap_used)] // SystemTime is always after UNIX_EPOCH
+        let response = ChatCompletionResponse {
+            id: if response_id.is_empty() {
+                format!("stream-{}", uuid::Uuid::new_v4())
+            } else {
+                response_id
+            },
+            object: "chat.completion".to_string(),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            model: model.clone(),
+            choices: vec![rockbot_llm::Choice {
+                index: 0,
+                message: rockbot_llm::Message {
+                    role: rockbot_llm::MessageRole::Assistant,
+                    content: accumulated_text.clone(),
+                    tool_calls: tool_calls_option,
+                    tool_call_id: None,
+                },
+                finish_reason,
+            }],
+            usage: rockbot_llm::Usage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+            },
+        };
+
+        Ok((response, accumulated_text))
+    }
+
+    /// Merge streaming tool call deltas into accumulated tool calls.
+    ///
+    /// Streaming providers send tool calls incrementally: first a chunk with the
+    /// tool call id and function name, then subsequent chunks with argument fragments.
+    fn merge_streaming_tool_calls(
+        accumulated: &mut Vec<rockbot_llm::ToolCall>,
+        deltas: &[rockbot_llm::ToolCall],
+    ) {
+        for delta in deltas {
+            // Find existing tool call by id, or create new
+            if let Some(existing) = accumulated.iter_mut().find(|tc| tc.id == delta.id) {
+                // Append argument fragments
+                existing.function.arguments.push_str(&delta.function.arguments);
+                if existing.function.name.is_empty() && !delta.function.name.is_empty() {
+                    existing.function.name.clone_from(&delta.function.name);
+                }
+            } else {
+                accumulated.push(delta.clone());
+            }
+        }
+    }
+
+    /// Process LLM response with streaming support for the agentic tool loop.
+    /// Text-only responses stream directly; tool call iterations use streaming for each LLM call.
+    async fn process_llm_response_streaming(
+        &self,
+        session_id: &str,
+        context: &mut ProcessingContext,
+        initial_llm_response: ChatCompletionResponse,
+        stream_tx: &tokio::sync::mpsc::Sender<StreamingChunk>,
+    ) -> Result<(Message, Vec<ToolExecutionResult>, TokenUsage)> {
+        let mut all_tool_results = Vec::new();
+        let mut cumulative_token_usage = TokenUsage {
+            prompt_tokens: initial_llm_response.usage.prompt_tokens,
+            completion_tokens: initial_llm_response.usage.completion_tokens,
+            total_tokens: initial_llm_response.usage.total_tokens,
+        };
+
+        let mut current_response = initial_llm_response;
+        let mut final_response_content = String::new();
+        let mut iteration_count = 0;
+
+        let configured_max = self.config.max_tool_calls.unwrap_or(0) as usize;
+        let tool_count = context.available_tools.len();
+        let scaled_max = 32 + tool_count * 8;
+        let max_tool_iterations = if configured_max > 0 {
+            configured_max
+        } else {
+            scaled_max.clamp(32, 160)
+        };
+
+        let mut loop_detector = ToolLoopDetector::new();
+
+        loop {
+            iteration_count += 1;
+            if iteration_count > max_tool_iterations {
+                warn!("Maximum tool iterations ({}) reached for session {}", max_tool_iterations, session_id);
+                final_response_content = format!(
+                    "Reached the maximum number of tool iterations ({max_tool_iterations}). \
+                     Completed {} tool call(s) before stopping.",
+                    all_tool_results.len()
+                );
+                break;
+            }
+
+            let has_tool_calls = current_response.choices
+                .first()
+                .and_then(|c| c.message.tool_calls.as_ref())
+                .is_some_and(|tc| !tc.is_empty());
+
+            if !has_tool_calls {
+                let response_text = current_response.choices
+                    .first()
+                    .map_or("", |c| c.message.content.as_str());
+                let clean_text = Self::strip_think_blocks(response_text);
+                if !clean_text.is_empty() {
+                    final_response_content = clean_text;
+                }
+                break;
+            }
+
+            // Record calls in loop detector
+            if let Some(choice) = current_response.choices.first() {
+                if let Some(ref tool_calls) = choice.message.tool_calls {
+                    for tc in tool_calls {
+                        loop_detector.record_call(&tc.function.name, &tc.function.arguments);
+                    }
+                }
+            }
+
+            let effective_workspace = self.resolve_workspace(context);
+            let (tool_results, tool_messages) = self.execute_tool_calls(
+                session_id, &current_response, &effective_workspace,
+            ).await?;
+
+            for (tr, tm) in tool_results.iter().zip(tool_messages.iter()) {
+                let result_text = tm.extract_text().unwrap_or_default();
+                loop_detector.record_result(&tr.tool_name, &result_text);
+            }
+
+            all_tool_results.extend(tool_results);
+
+            let verdict = loop_detector.check();
+            match &verdict {
+                LoopVerdict::Critical { message, .. } => {
+                    warn!("Tool loop CRITICAL for session {}: {}", session_id, message);
+                    final_response_content = format!(
+                        "Tool execution stopped: {message}\n\n\
+                         Completed {} tool call(s) before the loop was detected.",
+                        all_tool_results.len()
+                    );
+                    break;
+                }
+                LoopVerdict::Warning { .. } | LoopVerdict::Ok => {}
+            }
+
+            // Persist messages
+            if let Some(choice) = current_response.choices.first() {
+                let assistant_message = rockbot_llm::Message {
+                    role: rockbot_llm::MessageRole::Assistant,
+                    content: choice.message.content.clone(),
+                    tool_calls: choice.message.tool_calls.clone(),
+                    tool_call_id: None,
+                };
+                let assistant_msg = Message::from_llm_message(assistant_message, session_id, &self.config.id)?;
+                self.session_manager.add_message(session_id, assistant_msg.clone()).await?;
+                context.messages.push(assistant_msg);
+            }
+            for tool_message in tool_messages {
+                self.session_manager.add_message(session_id, tool_message.clone()).await?;
+                context.messages.push(tool_message);
+            }
+
+            // Check context compaction
+            let estimated_tokens: usize = context.messages.iter()
+                .map(|m| m.extract_text().unwrap_or_default().len() / 4)
+                .sum();
+            if estimated_tokens > 80_000 {
+                self.compact_context(context).await?;
+            }
+
+            // Next LLM call uses streaming
+            let next_request = self.build_llm_request_streaming(context).await?;
+            match self.call_llm_streaming(next_request, stream_tx).await {
+                Ok((response, _text)) => {
+                    cumulative_token_usage.prompt_tokens += response.usage.prompt_tokens;
+                    cumulative_token_usage.completion_tokens += response.usage.completion_tokens;
+                    cumulative_token_usage.total_tokens += response.usage.total_tokens;
+                    current_response = response;
+                }
+                Err(e) => {
+                    error!("LLM streaming error in tool loop: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+
+        if final_response_content.is_empty() && !all_tool_results.is_empty() {
+            final_response_content = format!("Executed {} tool(s) successfully.", all_tool_results.len());
+        }
+        final_response_content = Self::strip_think_blocks(&final_response_content);
+
+        let response_message = Message::text(&final_response_content)
+            .with_session_id(session_id)
+            .with_agent_id(&self.config.id)
+            .with_role(MessageRole::Assistant);
+
+        Ok((response_message, all_tool_results, cumulative_token_usage))
+    }
+
     /// Get or create a session for the given session ID
     ///
     /// The `session_id` may be a compound key like "agent_id:session_key" from the gateway.
@@ -661,6 +989,16 @@ impl Agent {
     
     /// Build LLM chat completion request with system prompt assembly
     async fn build_llm_request(&self, context: &mut ProcessingContext) -> Result<ChatCompletionRequest> {
+        self.build_llm_request_inner(context, false).await
+    }
+
+    /// Build LLM chat completion request, optionally with streaming enabled
+    async fn build_llm_request_streaming(&self, context: &mut ProcessingContext) -> Result<ChatCompletionRequest> {
+        self.build_llm_request_inner(context, true).await
+    }
+
+    /// Inner implementation for building LLM requests
+    async fn build_llm_request_inner(&self, context: &mut ProcessingContext, stream: bool) -> Result<ChatCompletionRequest> {
         // Assemble system prompt with context injection
         let system_prompt = self.assemble_system_prompt(context).await?;
         
@@ -742,7 +1080,7 @@ impl Agent {
             tools,
             temperature: Some(self.config.temperature.unwrap_or(0.3)),
             max_tokens: Some(self.config.max_tokens.unwrap_or(16000)),
-            stream: false,
+            stream,
         })
     }
     
@@ -1780,5 +2118,67 @@ mod tests {
     fn test_step_list_is_acknowledgment() {
         let steps = "Here's what I would do:\n1. Read the files\n- Analyze the structure\n- Report findings\n* Check for errors";
         assert!(Agent::looks_like_acknowledgment(steps));
+    }
+
+    // --- Streaming tests ---
+
+    #[test]
+    fn test_merge_streaming_tool_calls_new() {
+        let mut accumulated = Vec::new();
+        let deltas = vec![rockbot_llm::ToolCall {
+            id: "tc_1".to_string(),
+            r#type: "function".to_string(),
+            function: rockbot_llm::FunctionCall {
+                name: "read".to_string(),
+                arguments: r#"{"path":"#.to_string(),
+            },
+        }];
+        Agent::merge_streaming_tool_calls(&mut accumulated, &deltas);
+        assert_eq!(accumulated.len(), 1);
+        assert_eq!(accumulated[0].function.name, "read");
+        assert_eq!(accumulated[0].function.arguments, r#"{"path":"#);
+    }
+
+    #[test]
+    fn test_merge_streaming_tool_calls_append() {
+        let mut accumulated = vec![rockbot_llm::ToolCall {
+            id: "tc_1".to_string(),
+            r#type: "function".to_string(),
+            function: rockbot_llm::FunctionCall {
+                name: "read".to_string(),
+                arguments: "{\"path\":\"".to_string(),
+            },
+        }];
+        let deltas = vec![rockbot_llm::ToolCall {
+            id: "tc_1".to_string(),
+            r#type: "function".to_string(),
+            function: rockbot_llm::FunctionCall {
+                name: String::new(),
+                arguments: "file.txt\"}".to_string(),
+            },
+        }];
+        Agent::merge_streaming_tool_calls(&mut accumulated, &deltas);
+        assert_eq!(accumulated.len(), 1);
+        assert_eq!(accumulated[0].function.arguments, "{\"path\":\"file.txt\"}");
+    }
+
+    #[test]
+    fn test_build_llm_request_stream_flag() {
+        // Verify the stream parameter is correctly propagated
+        let req = rockbot_llm::ChatCompletionRequest {
+            model: "test".to_string(),
+            messages: vec![],
+            tools: None,
+            temperature: Some(0.3),
+            max_tokens: Some(1000),
+            stream: true,
+        };
+        assert!(req.stream);
+
+        let req2 = rockbot_llm::ChatCompletionRequest {
+            stream: false,
+            ..req
+        };
+        assert!(!req2.stream);
     }
 }

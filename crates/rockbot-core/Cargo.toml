@@ -57,6 +57,7 @@ tungstenite = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+tokio-stream = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

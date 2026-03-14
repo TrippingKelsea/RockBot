@@ -39,7 +39,8 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{body::Incoming as IncomingBody, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::Frame;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -48,6 +49,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, RwLock};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, info, warn};
+
+/// Response body type supporting both full and SSE streaming responses.
+type GatewayBody = http_body_util::Either<
+    Full<hyper::body::Bytes>,
+    StreamBody<tokio_stream::wrappers::ReceiverStream<std::result::Result<Frame<hyper::body::Bytes>, std::convert::Infallible>>>,
+>;
 
 /// Pending agent info (for agents that couldn't be created due to missing credentials)
 #[derive(Debug, Clone)]
@@ -527,7 +534,7 @@ impl Gateway {
     async fn handle_request(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let path = req.uri().path().to_string();
         
         match (req.method(), path.as_str()) {
@@ -647,13 +654,16 @@ impl Gateway {
             (&Method::GET, "/api/gateway/pending") => {
                 self.handle_list_pending_agents().await
             }
+            (&Method::POST, p) if p.starts_with("/api/agents/") && p.ends_with("/stream") => {
+                self.handle_agent_message_stream(req).await
+            }
             (&Method::POST, p) if p.starts_with("/api/agents/") => {
                 self.handle_agent_message(req).await
             }
             _ => {
                 Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
-                    .body(Full::new("Not Found".into()))
+                    .body(GatewayBody::Left(Full::new("Not Found".into())))
                     .unwrap())
             }
         }
@@ -664,7 +674,7 @@ impl Gateway {
     /// Handle list endpoints
     async fn handle_list_endpoints(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -688,7 +698,7 @@ impl Gateway {
     async fn handle_create_endpoint(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -735,7 +745,7 @@ impl Gateway {
     async fn handle_delete_endpoint(
         &self,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -756,7 +766,7 @@ impl Gateway {
         &self,
         req: Request<IncomingBody>,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -815,7 +825,7 @@ impl Gateway {
     /// Handle list pending approvals
     async fn handle_list_approvals(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -829,7 +839,7 @@ impl Gateway {
     async fn handle_approval_response(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -853,7 +863,7 @@ impl Gateway {
     /// Handle credentials status
     async fn handle_credentials_status(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let vault_exists = rockbot_credentials::CredentialVault::exists(&self.credentials_config.vault_path);
         
         let Some(manager) = &self.credential_manager else {
@@ -888,7 +898,7 @@ impl Gateway {
     async fn handle_unlock_vault(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -923,7 +933,7 @@ impl Gateway {
     /// Handle lock vault
     async fn handle_lock_vault(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -938,7 +948,7 @@ impl Gateway {
     async fn handle_init_vault(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         // Check if credentials are enabled in config
         if !self.credentials_config.enabled {
             return Ok(Self::json_error("Credential management not enabled in config", StatusCode::SERVICE_UNAVAILABLE));
@@ -1043,7 +1053,7 @@ impl Gateway {
     /// Handle list permissions
     async fn handle_list_permissions(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -1057,7 +1067,7 @@ impl Gateway {
     async fn handle_add_permission(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -1108,7 +1118,7 @@ impl Gateway {
     async fn handle_delete_permission(
         &self,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -1129,7 +1139,7 @@ impl Gateway {
     async fn handle_get_audit_log(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -1159,7 +1169,7 @@ impl Gateway {
         &self,
         path: &str,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -1211,7 +1221,7 @@ impl Gateway {
         &self,
         path: &str,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let Some(manager) = &self.credential_manager else {
             return Ok(Self::json_error("Credential management not enabled", StatusCode::SERVICE_UNAVAILABLE));
         };
@@ -1265,13 +1275,13 @@ impl Gateway {
     /// Serve the web UI dashboard
     async fn handle_web_ui(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let html = crate::web_ui::get_dashboard_html();
         
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "text/html; charset=utf-8")
-            .body(Full::new(html.into()))
+            .body(GatewayBody::Left(Full::new(html.into())))
             .unwrap())
     }
 
@@ -1280,7 +1290,7 @@ impl Gateway {
     /// List all registered providers and their status
     async fn handle_list_providers(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let registry = self.llm_registry.read().await;
         let providers = match registry.as_ref() {
             Some(reg) => self.build_provider_status_list(reg).await,
@@ -1291,7 +1301,7 @@ impl Gateway {
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .body(Full::new(serde_json::to_string(&json).unwrap().into()))
+            .body(GatewayBody::Left(Full::new(serde_json::to_string(&json).unwrap().into())))
             .unwrap())
     }
 
@@ -1299,7 +1309,7 @@ impl Gateway {
     async fn handle_get_provider(
         &self,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let provider_id = path.strip_prefix("/api/providers/").unwrap_or("");
 
         let registry = self.llm_registry.read().await;
@@ -1307,7 +1317,7 @@ impl Gateway {
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .header("Content-Type", "application/json")
-                .body(Full::new(r#"{"error":"LLM registry not initialized"}"#.into()))
+                .body(GatewayBody::Left(Full::new(r#"{"error":"LLM registry not initialized"}"#.into())))
                 .unwrap());
         };
 
@@ -1315,11 +1325,11 @@ impl Gateway {
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header("Content-Type", "application/json")
-                .body(Full::new(
+                .body(GatewayBody::Left(Full::new(
                     serde_json::json!({"error": format!("Provider '{}' not found", provider_id)})
                         .to_string()
                         .into(),
-                ))
+                )))
                 .unwrap());
         }
 
@@ -1330,16 +1340,16 @@ impl Gateway {
             Some(p) => Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
-                .body(Full::new(serde_json::to_string(&p).unwrap().into()))
+                .body(GatewayBody::Left(Full::new(serde_json::to_string(&p).unwrap().into())))
                 .unwrap()),
             None => Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header("Content-Type", "application/json")
-                .body(Full::new(
+                .body(GatewayBody::Left(Full::new(
                     serde_json::json!({"error": "Provider not found"})
                         .to_string()
                         .into(),
-                ))
+                )))
                 .unwrap()),
         }
     }
@@ -1348,7 +1358,7 @@ impl Gateway {
     async fn handle_test_provider(
         &self,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let provider_id = path
             .strip_prefix("/api/providers/")
             .and_then(|p| p.strip_suffix("/test"))
@@ -1359,7 +1369,7 @@ impl Gateway {
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .header("Content-Type", "application/json")
-                .body(Full::new(r#"{"error":"LLM registry not initialized"}"#.into()))
+                .body(GatewayBody::Left(Full::new(r#"{"error":"LLM registry not initialized"}"#.into())))
                 .unwrap());
         };
 
@@ -1402,7 +1412,7 @@ impl Gateway {
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .body(Full::new(result.to_string().into()))
+            .body(GatewayBody::Left(Full::new(result.to_string().into())))
             .unwrap())
     }
 
@@ -1410,7 +1420,7 @@ impl Gateway {
     async fn handle_chat(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let body = req.collect().await.unwrap().to_bytes();
 
         // Parse as raw JSON first to extract agent_id (not part of ChatCompletionRequest)
@@ -1428,11 +1438,11 @@ impl Gateway {
                 return Ok(Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(
+                    .body(GatewayBody::Left(Full::new(
                         serde_json::json!({"error": format!("Invalid request: {}", e)})
                             .to_string()
                             .into(),
-                    ))
+                    )))
                     .unwrap());
             }
         };
@@ -1486,7 +1496,7 @@ impl Gateway {
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .header("Content-Type", "application/json")
-                .body(Full::new(r#"{"error":"LLM registry not initialized"}"#.into()))
+                .body(GatewayBody::Left(Full::new(r#"{"error":"LLM registry not initialized"}"#.into())))
                 .unwrap());
         };
 
@@ -1515,11 +1525,11 @@ impl Gateway {
                 return Ok(Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(
+                    .body(GatewayBody::Left(Full::new(
                         serde_json::json!({"error": format!("{}", e)})
                             .to_string()
                             .into(),
-                    ))
+                    )))
                     .unwrap());
             }
         };
@@ -1530,18 +1540,18 @@ impl Gateway {
             Ok(response) => Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
-                .body(Full::new(serde_json::to_string(&response).unwrap().into()))
+                .body(GatewayBody::Left(Full::new(serde_json::to_string(&response).unwrap().into())))
                 .unwrap()),
             Err(e) => {
                 error!("Chat completion error: {e}");
                 Ok(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(
+                    .body(GatewayBody::Left(Full::new(
                         serde_json::json!({"error": format!("{}", e)})
                             .to_string()
                             .into(),
-                    ))
+                    )))
                     .unwrap())
             }
         }
@@ -1602,7 +1612,7 @@ impl Gateway {
     /// Return all credential schemas (LLM providers + channels + tools)
     async fn handle_credential_schemas(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let mut schemas: Vec<rockbot_credentials_schema::CredentialSchema> = Vec::new();
 
         // Collect from LLM providers
@@ -1621,7 +1631,7 @@ impl Gateway {
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .body(Full::new(serde_json::to_string(&json).unwrap().into()))
+            .body(GatewayBody::Left(Full::new(serde_json::to_string(&json).unwrap().into())))
             .unwrap())
     }
 
@@ -1633,7 +1643,7 @@ impl Gateway {
     async fn handle_list_sessions(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         // Parse optional query params
         let uri = req.uri();
         let query_string = uri.query().unwrap_or("");
@@ -1660,7 +1670,7 @@ impl Gateway {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(json.into()))
+                    .body(GatewayBody::Left(Full::new(json.into())))
                     .unwrap())
             }
             Err(e) => Ok(Self::json_error(&format!("Failed to query sessions: {e}"), StatusCode::INTERNAL_SERVER_ERROR)),
@@ -1671,7 +1681,7 @@ impl Gateway {
     async fn handle_create_session(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let body = req.collect().await.unwrap_or_default().to_bytes();
         let body_str = String::from_utf8_lossy(&body);
 
@@ -1708,7 +1718,7 @@ impl Gateway {
                 Ok(Response::builder()
                     .status(StatusCode::CREATED)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(json.into()))
+                    .body(GatewayBody::Left(Full::new(json.into())))
                     .unwrap())
             }
             Err(e) => Ok(Self::json_error(&format!("Failed to create session: {e}"), StatusCode::INTERNAL_SERVER_ERROR)),
@@ -1719,7 +1729,7 @@ impl Gateway {
     async fn handle_delete_session(
         &self,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let session_id = path.strip_prefix("/api/sessions/").unwrap_or("");
         if session_id.is_empty() {
             return Ok(Self::json_error("Missing session ID", StatusCode::BAD_REQUEST));
@@ -1730,7 +1740,7 @@ impl Gateway {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
-                    .body(Full::new("{\"archived\":true}".into()))
+                    .body(GatewayBody::Left(Full::new("{\"archived\":true}".into())))
                     .unwrap())
             }
             Err(e) => Ok(Self::json_error(&format!("Failed to archive session: {e}"), StatusCode::NOT_FOUND)),
@@ -1741,7 +1751,7 @@ impl Gateway {
     async fn handle_get_session_messages(
         &self,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let session_id = path
             .strip_prefix("/api/sessions/")
             .and_then(|p| p.strip_suffix("/messages"))
@@ -1756,7 +1766,7 @@ impl Gateway {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(json.into()))
+                    .body(GatewayBody::Left(Full::new(json.into())))
                     .unwrap())
             }
             Err(e) => Ok(Self::json_error(&format!("Failed to get messages: {e}"), StatusCode::INTERNAL_SERVER_ERROR)),
@@ -1768,7 +1778,7 @@ impl Gateway {
     /// Handle reload agents request
     async fn handle_reload_agents(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         match self.reload_agents().await {
             Ok((created, pending)) => {
                 let body = serde_json::json!({
@@ -1785,7 +1795,7 @@ impl Gateway {
     /// Handle list pending agents request
     async fn handle_list_pending_agents(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let pending = self.list_pending_agents().await;
         let pending_info: Vec<_> = pending.iter().map(|p| {
             serde_json::json!({
@@ -1804,22 +1814,22 @@ impl Gateway {
 
     // ==================== Helper methods ====================
 
-    fn json_response(body: &str, status: StatusCode) -> Response<Full<hyper::body::Bytes>> {
+    fn json_response(body: &str, status: StatusCode) -> Response<GatewayBody> {
         Response::builder()
             .status(status)
             .header("Content-Type", "application/json")
-            .body(Full::new(body.to_string().into()))
+            .body(GatewayBody::Left(Full::new(body.to_string().into())))
             .unwrap()
     }
 
-    fn json_error(message: &str, status: StatusCode) -> Response<Full<hyper::body::Bytes>> {
+    fn json_error(message: &str, status: StatusCode) -> Response<GatewayBody> {
         let body = serde_json::json!({
             "error": message,
         });
         Response::builder()
             .status(status)
             .header("Content-Type", "application/json")
-            .body(Full::new(body.to_string().into()))
+            .body(GatewayBody::Left(Full::new(body.to_string().into())))
             .unwrap()
     }
 
@@ -1992,26 +2002,26 @@ impl Gateway {
     async fn handle_websocket_upgrade(
         &self,
         _req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         // For simplicity, we'll return an error for now
         // In a full implementation, this would handle the WebSocket upgrade protocol
         Ok(Response::builder()
             .status(StatusCode::BAD_REQUEST)
-            .body(Full::new("WebSocket upgrade not implemented in this demo".into()))
+            .body(GatewayBody::Left(Full::new("WebSocket upgrade not implemented in this demo".into())))
             .unwrap())
     }
     
     /// Handle health check endpoint
     async fn handle_health_check(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let health = self.get_health_status().await;
         let body = serde_json::to_string(&health).unwrap();
         
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .body(Full::new(body.into()))
+            .body(GatewayBody::Left(Full::new(body.into())))
             .unwrap())
     }
     
@@ -2019,7 +2029,7 @@ impl Gateway {
     /// active agents, pending agents, and config-declared agents.
     async fn handle_list_agents(
         &self,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let active = self.agents.read().await;
         let pending = self.pending_agents.read().await;
         let configs = self.agents_config.read().await;
@@ -2100,7 +2110,7 @@ impl Gateway {
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .body(Full::new(body.into()))
+            .body(GatewayBody::Left(Full::new(body.into())))
             .unwrap())
     }
 
@@ -2108,7 +2118,7 @@ impl Gateway {
     async fn handle_create_agent(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let body = match req.collect().await {
             Ok(collected) => collected.to_bytes(),
             Err(_) => return Ok(Self::json_error("Failed to read body", StatusCode::BAD_REQUEST)),
@@ -2210,7 +2220,7 @@ impl Gateway {
     async fn handle_update_agent(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let path = req.uri().path().to_string();
         let agent_id = path.strip_prefix("/api/agents/").unwrap_or("").to_string();
 
@@ -2314,7 +2324,7 @@ impl Gateway {
     async fn handle_delete_agent(
         &self,
         path: &str,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let agent_id = path.strip_prefix("/api/agents/").unwrap_or("").to_string();
 
         if agent_id.is_empty() {
@@ -2348,7 +2358,7 @@ impl Gateway {
     async fn handle_agent_message(
         &self,
         req: Request<IncomingBody>,
-    ) -> std::result::Result<Response<Full<hyper::body::Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let path = req.uri().path().to_string();
         let agent_id = path.strip_prefix("/api/agents/")
             .and_then(|s| s.strip_suffix("/message"))
@@ -2357,7 +2367,7 @@ impl Gateway {
         if agent_id.is_empty() {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .body(Full::new("Invalid agent ID".into()))
+                .body(GatewayBody::Left(Full::new("Invalid agent ID".into())))
                 .unwrap());
         }
         
@@ -2370,7 +2380,7 @@ impl Gateway {
             Err(_) => {
                 return Ok(Response::builder()
                     .status(StatusCode::BAD_REQUEST)
-                    .body(Full::new("Failed to read request body".into()))
+                    .body(GatewayBody::Left(Full::new("Failed to read request body".into())))
                     .unwrap());
             }
         };
@@ -2380,7 +2390,7 @@ impl Gateway {
             Err(_) => {
                 return Ok(Response::builder()
                     .status(StatusCode::BAD_REQUEST)
-                    .body(Full::new("Invalid JSON".into()))
+                    .body(GatewayBody::Left(Full::new("Invalid JSON".into())))
                     .unwrap());
             }
         };
@@ -2392,7 +2402,7 @@ impl Gateway {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(body.into()))
+                    .body(GatewayBody::Left(Full::new(body.into())))
                     .unwrap())
             }
             Err(e) => {
@@ -2404,12 +2414,131 @@ impl Gateway {
                 Ok(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(body.into()))
+                    .body(GatewayBody::Left(Full::new(body.into())))
                     .unwrap())
             }
         }
     }
     
+    /// Handle agent message with SSE streaming response.
+    ///
+    /// `POST /api/agents/{id}/stream` — returns `text/event-stream` with
+    /// `StreamingChunk` JSON objects as SSE data events.
+    async fn handle_agent_message_stream(
+        &self,
+        req: Request<IncomingBody>,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let path = req.uri().path().to_string();
+        let agent_id = path.strip_prefix("/api/agents/")
+            .and_then(|s| s.strip_suffix("/stream"))
+            .unwrap_or("");
+
+        if agent_id.is_empty() {
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(GatewayBody::Left(Full::new("Invalid agent ID".into())))
+                .unwrap());
+        }
+
+        let agent_id = agent_id.to_string();
+
+        let body = match req.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(GatewayBody::Left(Full::new("Failed to read request body".into())))
+                    .unwrap());
+            }
+        };
+
+        let message_request: MessageRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(_) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(GatewayBody::Left(Full::new("Invalid JSON".into())))
+                    .unwrap());
+            }
+        };
+
+        // Get agent reference
+        let agent = {
+            let agents = self.agents.read().await;
+            match agents.get(&agent_id) {
+                Some(a) => a.clone(),
+                None => {
+                    return Ok(Self::json_error(&format!("Agent '{agent_id}' not found"), StatusCode::NOT_FOUND));
+                }
+            }
+        };
+
+        let session_id = format!("{agent_id}:{}", message_request.session_key);
+        let message = Message::text(message_request.message)
+            .with_session_id(&session_id)
+            .with_role(MessageRole::User);
+        let workspace = message_request.workspace.map(std::path::PathBuf::from);
+
+        // Create mpsc channel for SSE events
+        let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<
+            std::result::Result<Frame<hyper::body::Bytes>, std::convert::Infallible>,
+        >(128);
+
+        // Create streaming chunk channel for the agent
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<rockbot_llm::StreamingChunk>(128);
+
+        // Spawn task to forward StreamingChunks as SSE data events
+        let sse_tx_clone = sse_tx.clone();
+        tokio::spawn(async move {
+            while let Some(chunk) = stream_rx.recv().await {
+                let json = match serde_json::to_string(&chunk) {
+                    Ok(j) => j,
+                    Err(_) => continue,
+                };
+                let sse_event = format!("data: {json}\n\n");
+                let frame = Frame::data(hyper::body::Bytes::from(sse_event));
+                if sse_tx_clone.send(Ok(frame)).await.is_err() {
+                    break; // Client disconnected
+                }
+            }
+        });
+
+        // Spawn the agent processing task
+        tokio::spawn(async move {
+            let result = agent.process_message_streaming(
+                session_id, message, workspace, stream_tx,
+            ).await;
+
+            // Send final event with the complete AgentResponse
+            match result {
+                Ok(response) => {
+                    if let Ok(json) = serde_json::to_string(&response) {
+                        let event = format!("event: done\ndata: {json}\n\n");
+                        let _ = sse_tx.send(Ok(Frame::data(hyper::body::Bytes::from(event)))).await;
+                    }
+                }
+                Err(e) => {
+                    let error_json = serde_json::json!({"error": e.to_string()});
+                    let event = format!("event: error\ndata: {error_json}\n\n");
+                    let _ = sse_tx.send(Ok(Frame::data(hyper::body::Bytes::from(event)))).await;
+                }
+            }
+            // Channel drops, stream ends
+        });
+
+        // Return SSE streaming response
+        let stream = tokio_stream::wrappers::ReceiverStream::new(sse_rx);
+        let body = StreamBody::new(stream);
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("Connection", "keep-alive")
+            .body(GatewayBody::Right(body))
+            .unwrap())
+    }
+
     /// Process an agent message
     async fn process_agent_message(
         &self,

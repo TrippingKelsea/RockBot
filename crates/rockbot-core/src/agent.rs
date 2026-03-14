@@ -544,6 +544,18 @@ impl Agent {
 
         debug!("Processing streaming message in session {}", session_id);
 
+        // Fire PreMessage hook
+        let pre_event = HookEvent::PreMessage {
+            agent_id: self.config.id.clone(),
+            session_id: session_id.clone(),
+            message: message.clone(),
+        };
+        if let HookResult::Abort { reason } = self.hook_registry.fire(&pre_event).await {
+            return Err(AgentError::ExecutionFailed {
+                message: format!("PreMessage hook aborted: {reason}"),
+            }.into());
+        }
+
         let session = self.get_or_create_session(&session_id, &message).await?;
         let db_session_id = session.id.clone();
 
@@ -581,6 +593,25 @@ impl Agent {
 
         let processing_time_ms = start_time.elapsed().as_millis() as u64;
         self.update_stats(token_usage.total_tokens, processing_time_ms).await;
+
+        // Record observability metrics
+        crate::metrics::record_agent_message(&self.config.id);
+        let model_label = self.config.model.as_deref().unwrap_or("default");
+        crate::metrics::record_llm_request(
+            &self.config.id,
+            model_label,
+            start_time.elapsed(),
+            token_usage.prompt_tokens as u64,
+            token_usage.completion_tokens as u64,
+        );
+
+        // Fire PostMessage hook
+        let post_event = HookEvent::PostMessage {
+            agent_id: self.config.id.clone(),
+            session_id: db_session_id.clone(),
+            response: response_message.clone(),
+        };
+        self.hook_registry.fire(&post_event).await;
 
         {
             let mut state = self.state.write().await;

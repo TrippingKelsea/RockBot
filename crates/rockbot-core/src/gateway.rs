@@ -128,6 +128,8 @@ pub struct Gateway {
     tool_provider_registry: Arc<rockbot_tools::ToolProviderRegistry>,
     /// Active WebSocket connections
     ws_connections: Arc<RwLock<HashMap<String, WsConnection>>>,
+    /// A2A task store for agent-to-agent protocol
+    a2a_task_store: Arc<crate::a2a::TaskStore>,
     /// Shutdown broadcast channel
     shutdown_tx: broadcast::Sender<()>,
 }
@@ -301,6 +303,7 @@ impl Gateway {
             channel_registry: Arc::new(channel_registry),
             tool_provider_registry: Arc::new(tool_provider_registry),
             ws_connections: Arc::new(RwLock::new(HashMap::new())),
+            a2a_task_store: Arc::new(crate::a2a::TaskStore::new()),
             shutdown_tx,
         })
     }
@@ -544,6 +547,13 @@ impl Gateway {
             }
             (&Method::GET, "/ws") => {
                 self.handle_websocket_upgrade(req).await
+            }
+            // A2A Protocol
+            (&Method::GET, "/.well-known/agent.json") => {
+                self.handle_agent_card().await
+            }
+            (&Method::POST, "/a2a") => {
+                self.handle_a2a_request(req).await
             }
             (&Method::GET, "/health") | (&Method::GET, "/api/status") => {
                 self.handle_health_check().await
@@ -2714,6 +2724,68 @@ impl Gateway {
             .body(GatewayBody::Left(Full::new(response_json.into())))
             .unwrap())
     }
+
+    /// `GET /.well-known/agent.json` — serve the A2A agent card for discovery.
+    async fn handle_agent_card(
+        &self,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let base_url = format!("http://{}:{}", self.config.bind_host, self.config.port);
+        let card = crate::a2a::build_agent_card(
+            "rockbot",
+            "RockBot AI Gateway",
+            &base_url,
+            true,
+        );
+        let body = serde_json::to_string(&card).unwrap_or_default();
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(GatewayBody::Left(Full::new(body.into())))
+            .unwrap())
+    }
+
+    /// `POST /a2a` — JSON-RPC 2.0 dispatch for A2A protocol.
+    async fn handle_a2a_request(
+        &self,
+        req: Request<IncomingBody>,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let body = match req.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(GatewayBody::Left(Full::new("Failed to read request body".into())))
+                    .unwrap());
+            }
+        };
+
+        let rpc_request: crate::a2a::JsonRpcRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(_) => {
+                let resp = crate::a2a::JsonRpcResponse::error(
+                    None,
+                    -32700,
+                    "Parse error: invalid JSON",
+                );
+                let json = serde_json::to_string(&resp).unwrap_or_default();
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(json.into())))
+                    .unwrap());
+            }
+        };
+
+        let dispatcher = crate::a2a::A2ADispatcher::new(Arc::clone(&self.a2a_task_store));
+        let rpc_response = dispatcher.dispatch(rpc_request).await;
+        let json = serde_json::to_string(&rpc_response).unwrap_or_default();
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(GatewayBody::Left(Full::new(json.into())))
+            .unwrap())
+    }
 }
 
 // Clone trait for Gateway (needed for Tokio spawning)
@@ -2734,6 +2806,7 @@ impl Clone for Gateway {
             channel_registry: Arc::clone(&self.channel_registry),
             tool_provider_registry: Arc::clone(&self.tool_provider_registry),
             ws_connections: Arc::clone(&self.ws_connections),
+            a2a_task_store: Arc::clone(&self.a2a_task_store),
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }

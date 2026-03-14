@@ -28,6 +28,7 @@ pub mod message;
 pub mod web_ui;
 pub mod metrics;
 pub mod hooks;
+pub mod a2a;
 
 pub use config::{
     Config, GatewayConfig, AgentConfig, ProvidersConfig, 

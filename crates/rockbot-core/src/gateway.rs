@@ -2995,10 +2995,28 @@ impl Gateway {
     ) {
         // Intercept /overseer commands before agent processing
         #[cfg(feature = "overseer")]
-        if let Some(ref overseer) = self.overseer {
-            if let rockbot_overseer::CommandResult::Handled(output) =
-                overseer.dispatch_command(&user_message)
-            {
+        if user_message.trim().starts_with("/overseer") {
+            let output = if let Some(ref overseer) = self.overseer {
+                match overseer.dispatch_command(&user_message) {
+                    rockbot_overseer::CommandResult::Handled(out) => out,
+                    rockbot_overseer::CommandResult::NotHandled => String::new(),
+                }
+            } else {
+                "## Overseer\n\n\
+                 The overseer feature is compiled in but not configured.\n\n\
+                 Add an `[overseer]` section to your config file to enable it:\n\n\
+                 ```toml\n\
+                 [overseer]\n\
+                 # Uses defaults (Qwen2.5-1.5B-Instruct, advisory mode)\n\
+                 ```\n\n\
+                 Or configure specific options:\n\n\
+                 ```toml\n\
+                 [overseer]\n\
+                 model_id = \"Qwen/Qwen2.5-1.5B-Instruct-GGUF\"\n\
+                 enforce = false\n\
+                 ```".to_string()
+            };
+            if !output.is_empty() {
                 let resp = WsResponseType::AgentResponseMsg {
                     session_key,
                     content: output,
@@ -3038,7 +3056,12 @@ impl Gateway {
         let message = Message::text(user_message)
             .with_session_id(&session_id)
             .with_role(MessageRole::User);
-        let workspace_path = workspace.map(std::path::PathBuf::from);
+        // Use the client-provided workspace only if it exists on this machine.
+        // When a remote TUI sends its local cwd, that path won't exist here —
+        // fall back to the agent's configured workspace instead.
+        let workspace_path = workspace
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.exists());
 
         // Create a progress channel to send real-time updates to the client
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3960,10 +3983,17 @@ impl Gateway {
         
         // Intercept /overseer commands before agent processing
         #[cfg(feature = "overseer")]
-        if let Some(ref overseer) = self.overseer {
-            if let rockbot_overseer::CommandResult::Handled(output) =
-                overseer.dispatch_command(&message_request.message)
-            {
+        if message_request.message.trim().starts_with("/overseer") {
+            let output = if let Some(ref overseer) = self.overseer {
+                match overseer.dispatch_command(&message_request.message) {
+                    rockbot_overseer::CommandResult::Handled(out) => Some(out),
+                    rockbot_overseer::CommandResult::NotHandled => None,
+                }
+            } else {
+                Some("The overseer feature is compiled in but not configured. \
+                      Add an `[overseer]` section to your config file.".to_string())
+            };
+            if let Some(output) = output {
                 let resp = serde_json::json!({ "response": output });
                 return Ok(Response::builder()
                     .status(StatusCode::OK)

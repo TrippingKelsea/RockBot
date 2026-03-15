@@ -411,6 +411,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             .append(true)
             .open(&log_file)?;
 
+        // Print log path to stderr before the TUI takes over the terminal
+        eprintln!("TUI logs: {}", log_file.display());
+
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::sync::Mutex::new(file))

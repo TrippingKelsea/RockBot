@@ -2,6 +2,7 @@
 
 pub mod gateway;
 pub mod config;
+pub mod cert;
 pub mod session;
 pub mod agent;
 pub mod tool;

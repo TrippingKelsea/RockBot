@@ -56,6 +56,10 @@ tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
 rcgen = { workspace = true }
+x509-parser = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+time = { workspace = true }
 rpassword = "7"
 getrandom = "0.2"
 atty = "0.2"
@@ -68,3 +72,6 @@ tachyonfx = "0.7"
 # WebSocket
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

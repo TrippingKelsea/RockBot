@@ -66,7 +66,7 @@ async fn init_config(output_path: &PathBuf, force: bool) -> Result<()> {
     let key_path = config_dir.join("gateway.key");
 
     if !cert_path.exists() || force {
-        generate_self_signed_cert(&cert_path, &key_path).await?;
+        super::cert::generate_self_signed_cert(&cert_path, &key_path, &[], 365).await?;
         println!("   TLS cert: {}", cert_path.display());
         println!("   TLS key:  {}", key_path.display());
     }
@@ -82,45 +82,6 @@ async fn init_config(output_path: &PathBuf, force: bool) -> Result<()> {
 
     println!("Default configuration created at {}", output_path.display());
     println!("   Edit the file to customize your setup");
-
-    Ok(())
-}
-
-/// Generate a self-signed TLS certificate and private key.
-async fn generate_self_signed_cert(
-    cert_path: &std::path::Path,
-    key_path: &std::path::Path,
-) -> Result<()> {
-    use rcgen::{CertifiedKey, generate_simple_self_signed};
-
-    // Include common local names in the SAN list
-    let mut san_names = vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-        "::1".to_string(),
-    ];
-
-    // Try to include the system hostname
-    if let Ok(hostname) = std::process::Command::new("hostname").output() {
-        if let Ok(name) = String::from_utf8(hostname.stdout) {
-            let name = name.trim().to_string();
-            if !name.is_empty() && !san_names.contains(&name) {
-                san_names.push(name);
-            }
-        }
-    }
-
-    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(san_names)?;
-
-    tokio::fs::write(cert_path, cert.pem()).await?;
-    tokio::fs::write(key_path, key_pair.serialize_pem()).await?;
-
-    // Restrict key file permissions on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
-    }
 
     Ok(())
 }

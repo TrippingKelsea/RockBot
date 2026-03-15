@@ -112,6 +112,8 @@ tiktoken-rs = "0.6"
 # TLS
 tokio-rustls = "0.26"
 rcgen = "0.13"
+x509-parser = "0.16"
+time = "0.3"
 
 # OpenTelemetry (optional, behind `otel` feature)
 # Noise Protocol for encrypted remote execution
@@ -166,7 +168,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # Package metadata for all crates
 [workspace.package]
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

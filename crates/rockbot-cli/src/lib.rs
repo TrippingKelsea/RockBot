@@ -68,6 +68,12 @@ pub enum Commands {
         command: CredentialsCommands,
     },
     
+    /// TLS certificate management
+    Cert {
+        #[command(subcommand)]
+        command: CertCommands,
+    },
+
     /// Health and diagnostics
     Doctor,
     
@@ -142,6 +148,68 @@ pub enum ConfigCommands {
         /// Overwrite existing file
         #[arg(short, long)]
         force: bool,
+    },
+}
+
+/// Certificate management commands
+#[derive(Subcommand)]
+pub enum CertCommands {
+    /// Generate a new self-signed TLS certificate
+    Generate {
+        /// Output directory for cert and key files
+        #[arg(short, long)]
+        output_dir: Option<PathBuf>,
+        /// Additional Subject Alternative Names (hostnames or IPs)
+        #[arg(long)]
+        san: Vec<String>,
+        /// Certificate validity in days
+        #[arg(long, default_value = "365")]
+        days: u32,
+        /// Overwrite existing certificate files
+        #[arg(short, long)]
+        force: bool,
+        /// Update the app config to use the new certificate
+        #[arg(long)]
+        update_config: bool,
+    },
+    /// Show certificate details (expiry, SANs, issuer)
+    Info {
+        /// Path to PEM certificate file (defaults to config value)
+        #[arg(long)]
+        cert: Option<PathBuf>,
+    },
+    /// Rotate the certificate: generate a new one and update config
+    Rotate {
+        /// Additional Subject Alternative Names
+        #[arg(long)]
+        san: Vec<String>,
+        /// Certificate validity in days
+        #[arg(long, default_value = "365")]
+        days: u32,
+        /// Back up old certificate files before replacing
+        #[arg(long)]
+        backup: bool,
+    },
+    /// Import an external certificate and key into the config
+    Import {
+        /// Path to PEM certificate file
+        #[arg(long)]
+        cert: PathBuf,
+        /// Path to PEM private key file
+        #[arg(long)]
+        key: PathBuf,
+        /// Copy files into the config directory instead of referencing in-place
+        #[arg(long)]
+        copy: bool,
+    },
+    /// Verify that a certificate and key are valid and match
+    Verify {
+        /// Path to PEM certificate file (defaults to config value)
+        #[arg(long)]
+        cert: Option<PathBuf>,
+        /// Path to PEM private key file (defaults to config value)
+        #[arg(long)]
+        key: Option<PathBuf>,
     },
 }
 
@@ -463,6 +531,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Credentials { command } => {
             commands::credentials::run(command, &config_path).await
+        }
+        Commands::Cert { command } => {
+            commands::cert::run(command, &config_path).await
         }
         Commands::Doctor => {
             commands::doctor::run(&config_path).await

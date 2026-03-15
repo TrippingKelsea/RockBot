@@ -4295,7 +4295,7 @@ impl Gateway {
             .with_role(MessageRole::User);
         
         // Process message with optional workspace override from the client
-        agent.process_message(session_id, message, request.workspace.map(std::path::PathBuf::from)).await
+        Ok(agent.process_message(session_id, message, request.workspace.map(std::path::PathBuf::from)).await?)
     }
     
     /// Get gateway health status

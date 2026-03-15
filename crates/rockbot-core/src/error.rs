@@ -66,4 +66,7 @@ pub enum RockBotError {
 
     #[error("Session manager error: {0}")]
     SessionManager(#[from] rockbot_session::Error),
+
+    #[error("Agent engine error: {0}")]
+    AgentEngine(#[from] rockbot_agent::Error),
 }

@@ -153,7 +153,7 @@ fn render_vault_init(frame: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .title("Initialize Vault");
 
     let paragraph = Paragraph::new(content)
@@ -174,7 +174,7 @@ fn render_vault_locked(frame: &mut Frame, area: Rect) {
     ];
 
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .title("Unlock Vault");
 
     let paragraph = Paragraph::new(content)
@@ -187,7 +187,7 @@ fn render_vault_locked(frame: &mut Frame, area: Rect) {
 /// Render the Endpoints tab as a selectable vertical list
 fn render_endpoints_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Endpoints (Enter:View  a:Add  d:Delete)");
 
@@ -252,7 +252,7 @@ fn render_endpoints_list(frame: &mut Frame, area: Rect, state: &AppState) {
 /// Render the Providers tab as a selectable vertical list
 fn render_providers_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Providers (Enter:View  e:Configure)");
 
@@ -323,7 +323,7 @@ fn render_providers_list(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_permissions_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Permissions (Enter:View  p:Add Rule)");
 
@@ -420,7 +420,7 @@ fn render_audit_list(frame: &mut Frame, area: Rect) {
     ];
 
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Audit Log");
 

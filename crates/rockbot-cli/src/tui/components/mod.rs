@@ -112,3 +112,26 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 pub fn key_hint(key: &str, action: &str) -> String {
     format!("{key}:{action} ")
 }
+
+/// Render horizontal scroll indicators below a card strip.
+/// `area` is the filler rect after the last visible card.
+/// `can_left`/`can_right` indicate whether more items exist off-screen.
+pub fn render_card_scroll_hint(frame: &mut Frame, area: Rect, can_left: bool, can_right: bool) {
+    if !can_left && !can_right { return; }
+    let hint = match (can_left, can_right) {
+        (true, true) => "◀ ▶",
+        (true, false) => "◀",
+        (false, true) => "▶",
+        _ => "",
+    };
+    if area.width < hint.len() as u16 || area.height == 0 { return; }
+    let row = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    let p = Paragraph::new(Span::styled(hint, Style::default().fg(Color::DarkGray)))
+        .alignment(Alignment::Right);
+    frame.render_widget(p, row);
+}

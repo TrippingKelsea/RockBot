@@ -95,7 +95,7 @@ fn render_cron_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_sta
 
 fn render_cron_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Cron Jobs");
 

@@ -40,7 +40,7 @@ pub fn render_models(frame: &mut Frame, cards_area: Rect, detail_area: Rect, sta
 
 fn render_no_providers(frame: &mut Frame, area: Rect) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .title("LLM Providers");
 
     let content = vec![
@@ -158,14 +158,13 @@ fn render_provider_cards(frame: &mut Frame, area: Rect, state: &AppState, effect
     }
 
     if visible_count < card_chunks.len() {
-        let filler = Block::default().borders(Borders::NONE);
-        frame.render_widget(filler, card_chunks[visible_count]);
+        super::render_card_scroll_hint(frame, card_chunks[visible_count], start > 0, end < total);
     }
 }
 
 fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Provider Details");
 

@@ -176,7 +176,7 @@ fn render_detail_panel(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_gateway_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Gateway");
 
@@ -258,7 +258,7 @@ fn render_gateway_detail(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_agents_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Agents Overview");
 
@@ -319,7 +319,7 @@ fn render_agents_detail(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_sessions_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Sessions Overview");
 
@@ -379,7 +379,7 @@ fn render_sessions_detail(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_vault_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Vault");
 

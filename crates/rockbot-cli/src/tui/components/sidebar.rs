@@ -1,76 +1,103 @@
-//! Sidebar navigation component
+//! Sidebar navigation component — compact scrollable menu
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
 use crate::tui::effects::{self, palette, EffectState};
 use crate::tui::state::{AppState, MenuItem};
 
-/// Render the sidebar navigation
+/// Render the sidebar navigation as a compact scrollable menu.
+/// Fits within the same height as the card strip (typically 5 rows).
 pub fn render_sidebar(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
-    // Split into title row + menu list
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(area);
+    let all_items = MenuItem::all();
+    let total = all_items.len();
+    let selected = state.menu_index;
 
-    // Title bar
-    let title_style = if state.sidebar_focus {
-        Style::default().fg(palette::ACTIVE_PRIMARY).add_modifier(Modifier::BOLD)
+    // Border takes 0 top, 0 bottom, 0 left, 1 right = usable height is area.height
+    // We use Borders::RIGHT as the visual separator
+    let usable = area.height as usize;
+
+    // Determine the visible window: keep selected item centered
+    let (start, visible_count) = if total <= usable {
+        (0, total)
     } else {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        let half = usable / 2;
+        let start = if selected < half {
+            0
+        } else if selected + half >= total {
+            total - usable
+        } else {
+            selected - half
+        };
+        (start, usable)
     };
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(" 🦀 ", title_style),
-        Span::styled("RockBot", title_style),
-    ]));
-    frame.render_widget(title, chunks[0]);
+    let end = (start + visible_count).min(total);
 
-    // Menu items
-    let items: Vec<ListItem> = MenuItem::all()
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let num = i + 1;
-            let content = format!(" {num} {} {}", item.icon(), item.title());
-            ListItem::new(content)
-        })
-        .collect();
+    let can_scroll_up = start > 0;
+    let can_scroll_down = end < total;
 
-    // Use animated purple border when sidebar is focused
+    // Build scroll indicator for right border
     let border_style = if state.sidebar_focus {
         effects::active_border_style(effect_state.elapsed_secs())
     } else {
         effects::inactive_border_style()
     };
 
-    let highlight_style = if state.sidebar_focus {
-        Style::default()
-            .bg(palette::ACTIVE_PRIMARY)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
+    // Build the right-border title to show scroll arrows
+    let scroll_hint = match (can_scroll_up, can_scroll_down) {
+        (true, true) => "▲▼",
+        (true, false) => "▲ ",
+        (false, true) => " ▼",
+        (false, false) => "",
     };
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::RIGHT)
-                .border_style(border_style),
-        )
-        .highlight_style(highlight_style)
-        .highlight_symbol("▶ ");
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(border_style)
+        .title_bottom(Line::from(Span::styled(
+            scroll_hint,
+            Style::default().fg(Color::DarkGray),
+        )).right_aligned());
 
-    let mut list_state = ListState::default();
-    list_state.select(Some(state.menu_index));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+    // Render visible menu items
+    for (vi, idx) in (start..end).enumerate() {
+        let item = &all_items[idx];
+        let is_selected = idx == selected;
+
+        let style = if is_selected && state.sidebar_focus {
+            Style::default()
+                .bg(palette::ACTIVE_PRIMARY)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let num = idx + 1;
+        let prefix = if is_selected { "▶" } else { " " };
+        let text = format!("{prefix}{num} {} {}", item.icon(), item.title());
+
+        if vi < inner.height as usize {
+            let row = Rect {
+                x: inner.x,
+                y: inner.y + vi as u16,
+                width: inner.width,
+                height: 1,
+            };
+            let line = Paragraph::new(text).style(style);
+            frame.render_widget(line, row);
+        }
+    }
 }

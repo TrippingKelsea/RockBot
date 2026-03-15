@@ -152,16 +152,15 @@ fn render_agent_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_st
         frame.render_widget(paragraph, render_area);
     }
 
-    // Fill remaining space
+    // Fill remaining space with scroll hint
     if visible_count < card_chunks.len() {
-        let filler = Block::default().borders(Borders::NONE);
-        frame.render_widget(filler, card_chunks[visible_count]);
+        super::render_card_scroll_hint(frame, card_chunks[visible_count], start > 0, end < total);
     }
 }
 
 fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Agent Details");
 

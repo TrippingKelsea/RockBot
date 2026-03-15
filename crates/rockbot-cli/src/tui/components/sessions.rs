@@ -153,11 +153,9 @@ fn render_session_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_
         render_session_card(frame, card_chunks[vi], session, state, is_selected, elapsed);
     }
 
-    // Fill remaining space with empty block
+    // Fill remaining space with scroll hint
     if visible_count < card_chunks.len() {
-        let filler = Block::default()
-            .borders(Borders::NONE);
-        frame.render_widget(filler, card_chunks[visible_count]);
+        super::render_card_scroll_hint(frame, card_chunks[visible_count], start > 0, end < total);
     }
 }
 
@@ -293,7 +291,7 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
         render_chat_messages(frame, chunks[0], state, messages, chat_loading, chat_scroll, auto_scroll);
     } else if state.sessions.is_empty() {
         let block = Block::default()
-            .borders(Borders::TOP)
+            .borders(Borders::NONE)
             .border_style(effects::inactive_border_style());
         let content = Paragraph::new(vec![
             Line::from(""),
@@ -307,7 +305,7 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
         frame.render_widget(content, chunks[0]);
     } else if let Some(err) = &state.sessions_error {
         let block = Block::default()
-            .borders(Borders::TOP)
+            .borders(Borders::NONE)
             .border_style(Style::default().fg(palette::ERROR));
         let content = Paragraph::new(Line::from(Span::styled(
             format!("Error: {err}"),
@@ -319,7 +317,7 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
     } else {
         // Session selected but no messages
         let block = Block::default()
-            .borders(Borders::TOP)
+            .borders(Borders::NONE)
             .border_style(effects::inactive_border_style());
         let content = Paragraph::new(vec![
             Line::from(""),
@@ -346,7 +344,7 @@ fn render_chat_messages(
     auto_scroll: bool,
 ) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::NONE)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER));
 
     let inner = block.inner(area);
@@ -485,7 +483,7 @@ fn render_chat_messages(
     // Re-render block with scroll indicator if needed
     if !scroll_indicator.is_empty() {
         let block_with_hint = Block::default()
-            .borders(Borders::TOP)
+            .borders(Borders::NONE)
             .border_style(Style::default().fg(palette::INACTIVE_BORDER))
             .title_bottom(Line::from(Span::styled(
                 scroll_indicator,

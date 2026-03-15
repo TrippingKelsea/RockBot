@@ -2931,31 +2931,25 @@ impl App {
 
     /// Render the entire UI
     fn render(&mut self, frame: &mut Frame) {
-        // Layout: sidebar (left) | content (right) with cards + detail | status bar (bottom)
-        let outer = Layout::default()
+        // Layout: top strip (menu + cards) | main content | status bar
+        let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .constraints([Constraint::Length(5), Constraint::Min(0), Constraint::Length(1)])
             .split(frame.area());
 
-        // Main area: sidebar | content
-        let columns = Layout::default()
+        // Top strip: menu (left) | 1-col gap | cards (right)
+        let top = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(22), Constraint::Min(0)])
-            .split(outer[0]);
+            .constraints([Constraint::Length(22), Constraint::Length(1), Constraint::Min(0)])
+            .split(rows[0]);
 
-        // Sidebar spans full height
-        render_sidebar(frame, columns[0], &self.state, &self.effect_state);
+        // Sidebar menu — same height as cards
+        render_sidebar(frame, top[0], &self.state, &self.effect_state);
 
-        // Right side: cards row (5 rows) + detail area
-        let right = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(0)])
-            .split(columns[1]);
+        let cards_area = top[2];
+        let detail_area = rows[1];
 
-        let cards_area = right[0];
-        let detail_area = right[1];
-
-        // Content: page cards on top, detail below
+        // Content: page cards in top strip, detail in main area (borderless)
         match self.state.menu_item {
             MenuItem::Dashboard => render_dashboard(frame, cards_area, detail_area, &self.state, &self.effect_state),
             MenuItem::Credentials => render_credentials(frame, cards_area, detail_area, &self.state, self.state.credentials_tab, &self.effect_state),
@@ -2968,7 +2962,7 @@ impl App {
 
         // Status bar
         let help_text = self.get_help_text();
-        render_status_bar(frame, outer[1], self.state.status_message.as_ref(), &help_text);
+        render_status_bar(frame, rows[2], self.state.status_message.as_ref(), &help_text);
 
         // Render modals on top
         self.render_modals(frame);

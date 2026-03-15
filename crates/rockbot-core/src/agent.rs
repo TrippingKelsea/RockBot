@@ -2218,11 +2218,9 @@ The user wants me to explore the codebase. I should start by listing the directo
                     && Self::looks_like_acknowledgment(&clean_text);
                 // Model did work (tools were called) but produced no visible output —
                 // only <think> blocks or truly empty response. Nudge it to answer.
-                // Limit empty_after_work nudges to 1 since models that structurally
-                // separate reasoning from text rarely recover with repeated nudges.
                 let is_empty_after_work = !all_tool_results.is_empty()
                     && clean_text.is_empty();
-                let nudge_limit = if is_empty_after_work { 1 } else { max_consecutive_nudges };
+                let nudge_limit = max_consecutive_nudges;
                 if (is_initial_ack || is_mid_task_pause || is_empty_after_work)
                     && consecutive_nudge_count < nudge_limit
                     && !user_is_asking_question
@@ -2316,7 +2314,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                 if !clean_text.is_empty() {
                     final_response_content = clean_text;
                 } else if !all_tool_results.is_empty() {
-                    // Model never produced visible output despite nudges.
+                    // Model never produced any output despite nudges.
                     // Synthesize a summary from tool results including output previews.
                     let tool_summary: Vec<String> = all_tool_results.iter().map(|tr: &ToolExecutionResult| {
                         let status = if tr.success { "✓" } else { "✗" };

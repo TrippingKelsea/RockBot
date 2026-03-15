@@ -1328,7 +1328,7 @@ impl Agent {
         // Create new session
         let key = message.metadata.source.as_deref()
             .unwrap_or(session_key);
-        self.session_manager.create_session(&self.config.id, key).await
+        Ok(self.session_manager.create_session(&self.config.id, key).await?)
     }
     
     /// Get available tools for the current session

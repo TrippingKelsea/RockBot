@@ -32,6 +32,7 @@ workspace = true
 
 [dependencies]
 rockbot-config = { path = "../rockbot-config" }
+rockbot-session = { path = "../rockbot-session" }
 rockbot-webui = { path = "../rockbot-webui" }
 rockbot-tools = { path = "../rockbot-tools" }
 rockbot-memory = { path = "../rockbot-memory" }

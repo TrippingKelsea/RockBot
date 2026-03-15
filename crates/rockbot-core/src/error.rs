@@ -63,4 +63,7 @@ pub enum RockBotError {
 
     #[error("LLM error: {0}")]
     Llm(#[from] rockbot_llm::LlmError),
+
+    #[error("Session manager error: {0}")]
+    SessionManager(#[from] rockbot_session::Error),
 }

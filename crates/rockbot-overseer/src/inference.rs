@@ -6,6 +6,7 @@
 use candle_core::{Device, IndexOp, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::quantized_llama as qllama;
+use candle_transformers::models::quantized_qwen2 as qqwen2;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 use tracing::{debug, info};
@@ -74,13 +75,28 @@ impl Default for InferenceConfig {
     }
 }
 
+/// Supported GGUF model architectures, auto-detected from metadata.
+enum ModelArch {
+    Llama(qllama::ModelWeights),
+    Qwen2(qqwen2::ModelWeights),
+}
+
+impl ModelArch {
+    fn forward(&mut self, x: &Tensor, index_pos: usize) -> candle_core::Result<Tensor> {
+        match self {
+            Self::Llama(m) => m.forward(x, index_pos),
+            Self::Qwen2(m) => m.forward(x, index_pos),
+        }
+    }
+}
+
 /// Local GGUF model inference engine.
 ///
 /// Loads a quantized model via candle and provides synchronous
 /// (blocking) text generation. Designed to run on CPU with modest
 /// memory requirements (~1-2 GB for Q4 1.5B-parameter models).
 pub struct InferenceEngine {
-    model: qllama::ModelWeights,
+    model: ModelArch,
     tokenizer: Tokenizer,
     device: Device,
     config: InferenceConfig,
@@ -99,6 +115,9 @@ struct CumulativeStats {
 impl InferenceEngine {
     /// Load a GGUF model from disk.
     ///
+    /// Auto-detects the model architecture from GGUF metadata
+    /// (`general.architecture`). Supports: llama, qwen2.
+    ///
     /// This is a blocking operation — call from a `spawn_blocking` context.
     pub fn load(config: InferenceConfig) -> Result<Self, InferenceError> {
         if !config.model_path.exists() {
@@ -109,12 +128,28 @@ impl InferenceEngine {
         let device = Device::Cpu;
 
         let mut file = std::fs::File::open(&config.model_path)?;
-        let model = qllama::ModelWeights::from_gguf(
-            candle_core::quantized::gguf_file::Content::read(&mut file)
-                .map_err(|e| InferenceError::Candle(e))?,
-            &mut file,
-            &device,
-        )?;
+        let content = candle_core::quantized::gguf_file::Content::read(&mut file)
+            .map_err(InferenceError::Candle)?;
+
+        // Read architecture from GGUF metadata
+        let arch = content
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .map(|s| s.trim().to_lowercase())
+            .unwrap_or_default();
+
+        info!("GGUF architecture: {}", if arch.is_empty() { "(not set)" } else { &arch });
+
+        let model = match arch.as_str() {
+            "qwen2" => {
+                ModelArch::Qwen2(qqwen2::ModelWeights::from_gguf(content, &mut file, &device)?)
+            }
+            // Default to llama — covers llama, mistral, and many llama-compatible models
+            _ => {
+                ModelArch::Llama(qllama::ModelWeights::from_gguf(content, &mut file, &device)?)
+            }
+        };
 
         info!("Loading tokenizer from {}", config.tokenizer_path.display());
         let tokenizer = Tokenizer::from_file(&config.tokenizer_path)

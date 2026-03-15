@@ -1,0 +1,29 @@
+[package]
+name = "rockbot-overseer"
+version.workspace = true
+edition = "2021"
+description = "Embedded local model overseer for RockBot gateway"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Candle - pure Rust ML inference
+candle-core = "0.8"
+candle-transformers = "0.8"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+hf-hub = { version = "0.4", default-features = false, features = ["tokio"] }
+
+# Workspace dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

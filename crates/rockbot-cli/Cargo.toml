@@ -20,6 +20,8 @@ signal = ["rockbot-core/signal"]
 tools-credentials = ["rockbot-core/tools-credentials"]
 tools-mcp = ["rockbot-core/tools-mcp"]
 tools-markdown = ["rockbot-core/tools-markdown"]
+# Embedded overseer
+overseer = ["rockbot-core/overseer"]
 
 [lints]
 workspace = true

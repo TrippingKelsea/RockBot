@@ -28,6 +28,10 @@ pub struct Config {
     /// LLM provider settings
     #[serde(default)]
     pub providers: ProvidersConfig,
+    /// Overseer configuration (requires `overseer` feature).
+    /// Stored as raw Value so the config always deserializes even without the feature.
+    #[serde(default)]
+    pub overseer: Option<serde_json::Value>,
 }
 
 /// Gateway server configuration
@@ -786,6 +790,7 @@ mod tests {
             },
             credentials: CredentialsConfig::default(),
             providers: ProvidersConfig::default(),
+            overseer: None,
         };
 
         assert!(config.validate().is_ok());

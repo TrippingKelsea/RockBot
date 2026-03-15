@@ -31,6 +31,8 @@ tools-markdown = ["rockbot-cli/tools-markdown", "rockbot-core/tools-markdown"]
 all-tools = ["tools-credentials", "tools-mcp", "tools-markdown"]
 # Telemetry
 otel = ["rockbot-core/otel"]
+# Embedded overseer
+overseer = ["rockbot-cli/overseer", "rockbot-core/overseer"]
 
 [lints]
 workspace = true

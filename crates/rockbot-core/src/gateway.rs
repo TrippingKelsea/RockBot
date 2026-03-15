@@ -162,6 +162,9 @@ pub struct Gateway {
     blackboard: Arc<crate::orchestration::SwarmBlackboard>,
     /// Cron scheduler for timed job execution
     cron_scheduler: Arc<crate::cron::CronScheduler>,
+    /// Embedded overseer for agent behavior monitoring
+    #[cfg(feature = "overseer")]
+    overseer: Option<Arc<rockbot_overseer::Overseer>>,
     /// Shutdown broadcast channel
     shutdown_tx: broadcast::Sender<()>,
 }
@@ -427,6 +430,32 @@ impl Gateway {
             ));
         }
 
+        // Initialize overseer if configured and feature-enabled
+        #[cfg(feature = "overseer")]
+        let overseer = if let Some(ref overseer_value) = config.overseer {
+            match serde_json::from_value::<rockbot_overseer::OverseerConfig>(overseer_value.clone()) {
+                Ok(overseer_config) => {
+                    match rockbot_overseer::Overseer::init(overseer_config).await {
+                        Ok(o) => {
+                            info!("Overseer initialized");
+                            Some(Arc::new(o))
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize overseer: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Invalid overseer config: {}", e);
+                    None
+                }
+            }
+        } else {
+            debug!("Overseer not configured");
+            None
+        };
+
         Ok(Self {
             config: config.gateway,
             credentials_config: config.credentials,
@@ -466,6 +495,8 @@ impl Gateway {
                     }
                 }
             },
+            #[cfg(feature = "overseer")]
+            overseer,
             shutdown_tx,
         })
     }
@@ -515,7 +546,13 @@ impl Gateway {
     pub fn credential_manager(&self) -> Option<&Arc<CredentialManager>> {
         self.credential_manager.as_ref()
     }
-    
+
+    /// Get a reference to the overseer, if enabled.
+    #[cfg(feature = "overseer")]
+    pub fn overseer(&self) -> Option<&Arc<rockbot_overseer::Overseer>> {
+        self.overseer.as_ref()
+    }
+
     /// Register an agent with the gateway
     pub async fn register_agent(&self, agent: Arc<Agent>) {
         let agent_id = agent.id().to_string();
@@ -2819,6 +2856,26 @@ impl Gateway {
         user_message: String,
         workspace: Option<String>,
     ) {
+        // Intercept /overseer commands before agent processing
+        #[cfg(feature = "overseer")]
+        if let Some(ref overseer) = self.overseer {
+            if let rockbot_overseer::CommandResult::Handled(output) =
+                overseer.dispatch_command(&user_message)
+            {
+                let resp = WsResponseType::AgentResponseMsg {
+                    session_key,
+                    content: output,
+                    tool_calls: vec![],
+                    tokens_used: None,
+                    processing_time_ms: None,
+                };
+                let _ = outbound_tx.send(WsMessage::Text(
+                    serde_json::to_string(&resp).unwrap_or_default(),
+                ));
+                return;
+            }
+        }
+
         // Look up agent
         let agents = self.agents.read().await;
         let agent = match agents.get(&agent_id) {
@@ -3496,6 +3553,23 @@ impl Gateway {
             }
         };
         
+        // Intercept /overseer commands before agent processing
+        #[cfg(feature = "overseer")]
+        if let Some(ref overseer) = self.overseer {
+            if let rockbot_overseer::CommandResult::Handled(output) =
+                overseer.dispatch_command(&message_request.message)
+            {
+                let resp = serde_json::json!({ "response": output });
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(
+                        serde_json::to_string(&resp).unwrap_or_default().into(),
+                    )))
+                    .unwrap());
+            }
+        }
+
         // Process message
         match self.process_agent_message(&agent_id, message_request).await {
             Ok(response) => {
@@ -4103,6 +4177,8 @@ impl Clone for Gateway {
             a2a_task_store: Arc::clone(&self.a2a_task_store),
             blackboard: Arc::clone(&self.blackboard),
             cron_scheduler: Arc::clone(&self.cron_scheduler),
+            #[cfg(feature = "overseer")]
+            overseer: self.overseer.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }
@@ -4368,6 +4444,7 @@ mod tests {
             },
             credentials: CredentialsConfig::default(),
             providers: ProvidersConfig::default(),
+            overseer: None,
         };
 
         Gateway::new(config, session_manager).await.unwrap()

@@ -22,6 +22,8 @@ tools-mcp = ["dep:rockbot-tools-mcp"]
 tools-markdown = ["dep:rockbot-tools-markdown"]
 # Telemetry
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+# Embedded overseer
+overseer = ["dep:rockbot-overseer"]
 
 [lints]
 workspace = true
@@ -80,6 +82,9 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
+
+# Embedded overseer (optional)
+rockbot-overseer = { path = "../rockbot-overseer", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

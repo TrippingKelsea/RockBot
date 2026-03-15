@@ -135,5 +135,6 @@ fn create_default_config() -> Config {
         },
         credentials: CredentialsConfig::default(),
         providers: rockbot_core::ProvidersConfig::default(),
+        overseer: None,
     }
 }

@@ -104,10 +104,7 @@ fn render_settings_detail(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn render_general(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("General");
+    let body = super::render_detail_header(frame, area, "General");
 
     let gateway_status = if state.gateway.connected {
         Span::styled("● Running", Style::default().fg(Color::Green))
@@ -148,16 +145,12 @@ fn render_general(frame: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     let paragraph = Paragraph::new(content)
-        .block(block)
         .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, body);
 }
 
 fn render_paths(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Paths");
+    let body = super::render_detail_header(frame, area, "Paths");
 
     let content = vec![
         Line::from(vec![
@@ -184,16 +177,12 @@ fn render_paths(frame: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     let paragraph = Paragraph::new(content)
-        .block(block)
         .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, body);
 }
 
 fn render_about(frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("About");
+    let body = super::render_detail_header(frame, area, "About");
 
     let content = vec![
         Line::from(""),
@@ -211,7 +200,6 @@ fn render_about(frame: &mut Frame, area: Rect) {
     ];
 
     let paragraph = Paragraph::new(content)
-        .block(block)
         .alignment(Alignment::Center);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, body);
 }

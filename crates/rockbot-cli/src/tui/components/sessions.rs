@@ -290,9 +290,6 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
     if !messages.is_empty() || chat_loading {
         render_chat_messages(frame, chunks[0], state, messages, chat_loading, chat_scroll, auto_scroll);
     } else if state.sessions.is_empty() {
-        let block = Block::default()
-            .borders(Borders::NONE)
-            .border_style(effects::inactive_border_style());
         let content = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -300,25 +297,17 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
                 Style::default().fg(Color::DarkGray),
             )),
         ])
-        .block(block)
         .alignment(Alignment::Center);
         frame.render_widget(content, chunks[0]);
     } else if let Some(err) = &state.sessions_error {
-        let block = Block::default()
-            .borders(Borders::NONE)
-            .border_style(Style::default().fg(palette::ERROR));
         let content = Paragraph::new(Line::from(Span::styled(
             format!("Error: {err}"),
             Style::default().fg(Color::Red),
         )))
-        .block(block)
         .alignment(Alignment::Center);
         frame.render_widget(content, chunks[0]);
     } else {
         // Session selected but no messages
-        let block = Block::default()
-            .borders(Borders::NONE)
-            .border_style(effects::inactive_border_style());
         let content = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -326,7 +315,6 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
                 Style::default().fg(Color::DarkGray),
             )),
         ])
-        .block(block)
         .alignment(Alignment::Center);
         frame.render_widget(content, chunks[0]);
     }
@@ -343,12 +331,12 @@ fn render_chat_messages(
     scroll: usize,
     auto_scroll: bool,
 ) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width.saturating_sub(1),
+        height: area.height,
+    };
 
     if messages.is_empty() && !loading {
         let empty = Paragraph::new(vec![

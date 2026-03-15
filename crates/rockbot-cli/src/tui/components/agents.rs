@@ -159,10 +159,7 @@ fn render_agent_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_st
 }
 
 fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Agent Details");
+    let body = super::render_detail_header(frame, area, "Agent Details");
 
     if let Some(agent) = state.agents.get(state.selected_agent) {
         let status_text = agent.status.label();
@@ -248,30 +245,21 @@ fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
         )));
 
         let paragraph = Paragraph::new(content)
-            .block(block)
             .wrap(Wrap { trim: false });
-        frame.render_widget(paragraph, area);
+        frame.render_widget(paragraph, body);
     } else if let Some(err) = &state.agents_error {
-        let content = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("Error: {err}"),
-                Style::default().fg(Color::Red),
-            )),
-        ])
-        .block(block)
+        let content = Paragraph::new(Span::styled(
+            format!("Error: {err}"),
+            Style::default().fg(Color::Red),
+        ))
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
     } else {
-        let content = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Select an agent or press 'a' to create one",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ])
-        .block(block)
+        let content = Paragraph::new(Span::styled(
+            "Select an agent or press 'a' to create one",
+            Style::default().fg(Color::DarkGray),
+        ))
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
     }
 }

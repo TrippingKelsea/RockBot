@@ -131,6 +131,8 @@ fn render_tab_cards(
 }
 
 fn render_vault_init(frame: &mut Frame, area: Rect, state: &AppState) {
+    let body = super::render_detail_header(frame, area, "Initialize Vault");
+
     let content = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -152,18 +154,15 @@ fn render_vault_init(frame: &mut Frame, area: Rect, state: &AppState) {
         )),
     ];
 
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .title("Initialize Vault");
-
     let paragraph = Paragraph::new(content)
-        .block(block)
         .alignment(Alignment::Center);
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, body);
 }
 
 fn render_vault_locked(frame: &mut Frame, area: Rect) {
+    let body = super::render_detail_header(frame, area, "Unlock Vault");
+
     let content = vec![
         Line::from(""),
         Line::from(Span::styled("Vault Locked", Style::default().fg(Color::Yellow))),
@@ -173,23 +172,15 @@ fn render_vault_locked(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("Press 'u' to unlock", Style::default().fg(Color::Green))),
     ];
 
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .title("Unlock Vault");
-
     let paragraph = Paragraph::new(content)
-        .block(block)
         .alignment(Alignment::Center);
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, body);
 }
 
 /// Render the Endpoints tab as a selectable vertical list
 fn render_endpoints_list(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Endpoints (Enter:View  a:Add  d:Delete)");
+    let body = super::render_detail_header(frame, area, "Endpoints (Enter:View  a:Add  d:Delete)");
 
     if state.endpoints.is_empty() {
         let content = Paragraph::new(vec![
@@ -198,9 +189,8 @@ fn render_endpoints_list(frame: &mut Frame, area: Rect, state: &AppState) {
             Line::from(""),
             Line::from(Span::styled("Press 'a' to add a credential endpoint", Style::default().fg(Color::DarkGray))),
         ])
-        .block(block)
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
         return;
     }
 
@@ -237,7 +227,6 @@ fn render_endpoints_list(frame: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let list = List::new(items)
-        .block(block)
         .highlight_style(highlight_style)
         .highlight_symbol("▶ ");
 
@@ -246,15 +235,12 @@ fn render_endpoints_list(frame: &mut Frame, area: Rect, state: &AppState) {
         list_state.select(Some(state.selected_endpoint.min(state.endpoints.len().saturating_sub(1))));
     }
 
-    frame.render_stateful_widget(list, area, &mut list_state);
+    frame.render_stateful_widget(list, body, &mut list_state);
 }
 
 /// Render the Providers tab as a selectable vertical list
 fn render_providers_list(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Providers (Enter:View  e:Configure)");
+    let body = super::render_detail_header(frame, area, "Providers (Enter:View  e:Configure)");
 
     if state.credential_schemas.is_empty() {
         let content = Paragraph::new(vec![
@@ -269,9 +255,8 @@ fn render_providers_list(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(Color::DarkGray),
             )),
         ])
-        .block(block)
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
         return;
     }
 
@@ -309,7 +294,6 @@ fn render_providers_list(frame: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let list = List::new(items)
-        .block(block)
         .highlight_style(highlight_style)
         .highlight_symbol("▶ ");
 
@@ -318,14 +302,11 @@ fn render_providers_list(frame: &mut Frame, area: Rect, state: &AppState) {
         list_state.select(Some(state.selected_provider_index.min(state.credential_schemas.len().saturating_sub(1))));
     }
 
-    frame.render_stateful_widget(list, area, &mut list_state);
+    frame.render_stateful_widget(list, body, &mut list_state);
 }
 
 fn render_permissions_list(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Permissions (Enter:View  p:Add Rule)");
+    let body = super::render_detail_header(frame, area, "Permissions (Enter:View  p:Add Rule)");
 
     if state.permissions.is_empty() {
         let content = Paragraph::new(vec![
@@ -348,9 +329,8 @@ fn render_permissions_list(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(Color::DarkGray),
             )),
         ])
-        .block(block)
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
         return;
     }
 
@@ -396,7 +376,6 @@ fn render_permissions_list(frame: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let list = List::new(items)
-        .block(block)
         .highlight_style(highlight_style)
         .highlight_symbol("▶ ");
 
@@ -405,10 +384,12 @@ fn render_permissions_list(frame: &mut Frame, area: Rect, state: &AppState) {
         list_state.select(Some(state.selected_permission.min(state.permissions.len().saturating_sub(1))));
     }
 
-    frame.render_stateful_widget(list, area, &mut list_state);
+    frame.render_stateful_widget(list, body, &mut list_state);
 }
 
 fn render_audit_list(frame: &mut Frame, area: Rect) {
+    let body = super::render_detail_header(frame, area, "Audit Log");
+
     let content = vec![
         Line::from(""),
         Line::from("Audit log tracks all credential access."),
@@ -419,11 +400,6 @@ fn render_audit_list(frame: &mut Frame, area: Rect) {
         )),
     ];
 
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Audit Log");
-
-    let paragraph = Paragraph::new(content).block(block);
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(content);
+    frame.render_widget(paragraph, body);
 }

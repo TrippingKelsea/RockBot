@@ -175,15 +175,10 @@ fn render_detail_panel(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn render_gateway_detail(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Gateway");
+    let body = super::render_detail_header(frame, area, "Gateway");
 
     if state.gateway_loading {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        render_spinner(frame, inner, "Checking gateway...", state.tick_count);
+        render_spinner(frame, body, "Checking gateway...", state.tick_count);
         return;
     }
 
@@ -251,21 +246,15 @@ fn render_gateway_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     )));
 
     let paragraph = Paragraph::new(content)
-        .block(block)
         .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, body);
 }
 
 fn render_agents_detail(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Agents Overview");
+    let body = super::render_detail_header(frame, area, "Agents Overview");
 
     if state.agents_loading {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        render_spinner(frame, inner, "Loading agents...", state.tick_count);
+        render_spinner(frame, body, "Loading agents...", state.tick_count);
         return;
     }
 
@@ -276,9 +265,8 @@ fn render_agents_detail(frame: &mut Frame, area: Rect, state: &AppState) {
             Line::from(""),
             Line::from(Span::styled("Go to Agents tab (3) to add agents", Style::default().fg(Color::DarkGray))),
         ])
-        .block(block)
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
         return;
     }
 
@@ -311,22 +299,16 @@ fn render_agents_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     let table = Table::new(rows, widths)
-        .header(header)
-        .block(block);
+        .header(header);
 
-    frame.render_widget(table, area);
+    frame.render_widget(table, body);
 }
 
 fn render_sessions_detail(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Sessions Overview");
+    let body = super::render_detail_header(frame, area, "Sessions Overview");
 
     if state.sessions_loading {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        render_spinner(frame, inner, "Loading sessions...", state.tick_count);
+        render_spinner(frame, body, "Loading sessions...", state.tick_count);
         return;
     }
 
@@ -337,9 +319,8 @@ fn render_sessions_detail(frame: &mut Frame, area: Rect, state: &AppState) {
             Line::from(""),
             Line::from(Span::styled("Go to Sessions tab (4) to create one", Style::default().fg(Color::DarkGray))),
         ])
-        .block(block)
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
         return;
     }
 
@@ -373,20 +354,15 @@ fn render_sessions_detail(frame: &mut Frame, area: Rect, state: &AppState) {
         )));
     }
 
-    let paragraph = Paragraph::new(content).block(block);
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(content);
+    frame.render_widget(paragraph, body);
 }
 
 fn render_vault_detail(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Vault");
+    let body = super::render_detail_header(frame, area, "Vault");
 
     if state.vault_loading {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        render_spinner(frame, inner, "Checking vault...", state.tick_count);
+        render_spinner(frame, body, "Checking vault...", state.tick_count);
         return;
     }
 
@@ -429,6 +405,6 @@ fn render_vault_detail(frame: &mut Frame, area: Rect, state: &AppState) {
         }
     }
 
-    let paragraph = Paragraph::new(content).block(block);
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(content);
+    frame.render_widget(paragraph, body);
 }

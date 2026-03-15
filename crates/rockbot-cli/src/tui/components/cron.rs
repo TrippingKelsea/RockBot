@@ -94,15 +94,10 @@ fn render_cron_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_sta
 }
 
 fn render_cron_detail(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Cron Jobs");
+    let body = super::render_detail_header(frame, area, "Cron Jobs");
 
     if state.cron_loading {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        render_spinner(frame, inner, "Loading cron jobs...", state.tick_count);
+        render_spinner(frame, body, "Loading cron jobs...", state.tick_count);
         return;
     }
 
@@ -120,9 +115,8 @@ fn render_cron_detail(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(Color::Cyan),
             )),
         ])
-        .block(block)
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
         return;
     }
 
@@ -142,9 +136,8 @@ fn render_cron_detail(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(Color::DarkGray),
             )),
         ])
-        .block(block)
         .alignment(Alignment::Center);
-        frame.render_widget(content, area);
+        frame.render_widget(content, body);
         return;
     }
 
@@ -204,14 +197,11 @@ fn render_cron_detail(frame: &mut Frame, area: Rect, state: &AppState) {
         }
     }
 
-    // Split detail area into table + footer
-    let inner = block.inner(area);
+    // Split body area into table + footer
     let detail_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(footer_lines.len() as u16 + 1)])
-        .split(inner);
-
-    frame.render_widget(block, area);
+        .split(body);
 
     let table = Table::new(rows, widths).header(header);
     frame.render_widget(table, detail_chunks[0]);

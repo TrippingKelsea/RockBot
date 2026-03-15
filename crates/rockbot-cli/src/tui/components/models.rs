@@ -39,9 +39,7 @@ pub fn render_models(frame: &mut Frame, cards_area: Rect, detail_area: Rect, sta
 }
 
 fn render_no_providers(frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .title("LLM Providers");
+    let body = super::render_detail_header(frame, area, "LLM Providers");
 
     let content = vec![
         Line::from(""),
@@ -59,8 +57,8 @@ fn render_no_providers(frame: &mut Frame, area: Rect) {
         )),
     ];
 
-    let paragraph = Paragraph::new(content).block(block);
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(content);
+    frame.render_widget(paragraph, body);
 }
 
 fn render_provider_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_state: &EffectState) {
@@ -163,15 +161,12 @@ fn render_provider_cards(frame: &mut Frame, area: Rect, state: &AppState, effect
 }
 
 fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::NONE)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER))
-        .title("Provider Details");
+    let body = super::render_detail_header(frame, area, "Provider Details");
 
     let idx = state.selected_provider.min(state.providers.len().saturating_sub(1));
     let Some(provider) = state.providers.get(idx) else {
-        let paragraph = Paragraph::new("No provider selected").block(block);
-        frame.render_widget(paragraph, area);
+        let paragraph = Paragraph::new("No provider selected");
+        frame.render_widget(paragraph, body);
         return;
     };
 
@@ -282,9 +277,8 @@ fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState) {
     )));
 
     let paragraph = Paragraph::new(content)
-        .block(block)
         .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, body);
 }
 
 fn auth_type_label(auth_type: &str) -> &str {

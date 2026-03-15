@@ -33,8 +33,8 @@ pub use modals::{
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
-    text::Span,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
@@ -111,6 +111,31 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 /// Create styled key hint spans
 pub fn key_hint(key: &str, action: &str) -> String {
     format!("{key}:{action} ")
+}
+
+/// Split a detail area into a title row + body, and render the title.
+/// Returns the body `Rect` for the caller to render content into.
+pub fn render_detail_header(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!(" {title}"),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    frame.render_widget(header, chunks[0]);
+
+    // Body area with 1-char left padding
+    Rect {
+        x: chunks[1].x + 1,
+        y: chunks[1].y,
+        width: chunks[1].width.saturating_sub(1),
+        height: chunks[1].height,
+    }
 }
 
 /// Render horizontal scroll indicators below a card strip.

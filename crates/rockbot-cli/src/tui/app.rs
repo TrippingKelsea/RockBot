@@ -100,11 +100,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config_path: PathBuf, vault_path: PathBuf) -> Self {
+    pub fn new(config_path: PathBuf, vault_path: PathBuf, gateway_url: String) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         Self {
-            state: AppState::new(config_path, vault_path, tx),
+            state: AppState::new(config_path, vault_path, gateway_url, tx),
             rx,
             effect_state: EffectState::new(),
             models_tab: 0,
@@ -185,8 +185,8 @@ impl App {
         // the connection succeeds.
         self.ws_pending_rx = Some(ws_ready_rx);
 
+        let ws_url = self.state.ws_url();
         tokio::spawn(async move {
-            let ws_url = "ws://127.0.0.1:18080/ws";
 
             // Retry loop: try to connect with back-off
             let mut attempt = 0u32;
@@ -194,7 +194,7 @@ impl App {
                 attempt += 1;
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    tokio_tungstenite::connect_async(ws_url),
+                    tokio_tungstenite::connect_async(&ws_url),
                 ).await {
                     Ok(Ok((stream, _))) => {
                         tracing::info!("WebSocket connected to gateway (attempt {attempt})");
@@ -273,8 +273,9 @@ impl App {
     /// Spawn a task to check gateway status
     fn spawn_gateway_check(&self) {
         let tx = self.state.tx.clone();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match check_gateway_status().await {
+            match check_gateway_status(&gw).await {
                 Ok(status) => {
                     let _ = tx.send(Message::GatewayStatus(status));
                 }
@@ -289,8 +290,9 @@ impl App {
     fn spawn_agents_load(&self) {
         let tx = self.state.tx.clone();
         let config_path = self.state.config_path.clone();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match load_agents(&config_path).await {
+            match load_agents(&config_path, &gw).await {
                 Ok(agents) => {
                     let _ = tx.send(Message::AgentsLoaded(agents));
                 }
@@ -304,9 +306,10 @@ impl App {
     /// Spawn a task to load cron jobs from gateway
     fn spawn_cron_jobs_load(&mut self) {
         let tx = self.state.tx.clone();
+        let gw = self.state.gateway_url.clone();
         self.state.cron_loading = true;
         tokio::spawn(async move {
-            match load_cron_jobs_from_gateway().await {
+            match load_cron_jobs_from_gateway(&gw).await {
                 Ok(jobs) => {
                     let _ = tx.send(Message::CronJobsLoaded(jobs));
                 }
@@ -320,8 +323,9 @@ impl App {
     fn spawn_cron_job_toggle(&self, job_id: &str, enabled: bool) {
         let tx = self.state.tx.clone();
         let job_id = job_id.to_string();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match toggle_cron_job(&job_id, enabled).await {
+            match toggle_cron_job(&gw, &job_id, enabled).await {
                 Ok(()) => {
                     let _ = tx.send(Message::CronJobToggled(job_id, enabled));
                 }
@@ -335,8 +339,9 @@ impl App {
     fn spawn_cron_job_delete(&self, job_id: &str) {
         let tx = self.state.tx.clone();
         let job_id = job_id.to_string();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match delete_cron_job(&job_id).await {
+            match delete_cron_job(&gw, &job_id).await {
                 Ok(()) => {
                     let _ = tx.send(Message::CronJobDeleted(job_id));
                 }
@@ -350,8 +355,9 @@ impl App {
     fn spawn_cron_job_trigger(&self, job_id: &str) {
         let tx = self.state.tx.clone();
         let job_id = job_id.to_string();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match trigger_cron_job(&job_id).await {
+            match trigger_cron_job(&gw, &job_id).await {
                 Ok(()) => {
                     let _ = tx.send(Message::SetStatus("Cron job triggered".to_string(), false));
                 }
@@ -381,8 +387,9 @@ impl App {
     /// Spawn a task to load credential schemas from gateway
     fn spawn_credential_schemas_load(&self) {
         let tx = self.state.tx.clone();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match load_credential_schemas().await {
+            match load_credential_schemas(&gw).await {
                 Ok(schemas) if !schemas.is_empty() => {
                     let _ = tx.send(Message::CredentialSchemasLoaded(schemas));
                 }
@@ -394,8 +401,9 @@ impl App {
     /// Spawn a task to load providers from gateway
     fn spawn_providers_load(&self) {
         let tx = self.state.tx.clone();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match load_providers_from_gateway().await {
+            match load_providers_from_gateway(&gw).await {
                 Ok(providers) if !providers.is_empty() => {
                     let _ = tx.send(Message::ModelsLoaded(providers));
                 }
@@ -409,8 +417,9 @@ impl App {
     /// Spawn a task to load sessions from gateway
     fn spawn_sessions_load(&self) {
         let tx = self.state.tx.clone();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match load_sessions_from_gateway().await {
+            match load_sessions_from_gateway(&gw).await {
                 Ok(sessions) => {
                     let _ = tx.send(Message::SessionsLoaded(sessions));
                 }
@@ -1363,13 +1372,14 @@ impl App {
     fn spawn_gateway_control(&self, action: &str) {
         let tx = self.state.tx.clone();
         let action = action.to_string();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
             match run_gateway_control(&action).await {
                 Ok(msg) => {
                     let _ = tx.send(Message::SetStatus(msg, false));
                     // Refresh gateway status after action
                     tokio::time::sleep(Duration::from_millis(500)).await;
-                    if let Ok(status) = check_gateway_status().await {
+                    if let Ok(status) = check_gateway_status(&gw).await {
                         let _ = tx.send(Message::GatewayStatus(status));
                     }
                 }
@@ -1391,9 +1401,10 @@ impl App {
         let tx = self.state.tx.clone();
         let id = provider_id.to_string();
         let name = provider_name.to_string();
+        let gw = self.state.gateway_url.clone();
 
         tokio::spawn(async move {
-            match test_provider_via_gateway(&id).await {
+            match test_provider_via_gateway(&gw, &id).await {
                 Ok((models_found, _)) => {
                     let _ = tx.send(Message::SetStatus(
                         format!("✅ {name}: connection OK ({models_found} models)"),
@@ -1414,8 +1425,9 @@ impl App {
     fn spawn_load_session_messages(&self, session_key: &str) {
         let tx = self.state.tx.clone();
         let key = session_key.to_string();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match load_session_messages(&key).await {
+            match load_session_messages(&gw, &key).await {
                 Ok(messages) => {
                     let _ = tx.send(Message::SessionMessagesLoaded(key, messages));
                 }
@@ -1460,8 +1472,9 @@ impl App {
     fn spawn_kill_session(&self, session_key: &str) {
         let tx = self.state.tx.clone();
         let key = session_key.to_string();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match kill_session(&key).await {
+            match kill_session(&gw, &key).await {
                 Ok(()) => {
                     let _ = tx.send(Message::SetStatus(format!("✅ Session archived: {key}"), false));
                     let _ = tx.send(Message::ReloadSessions);
@@ -1915,8 +1928,9 @@ impl App {
         secret: String,
     ) {
         let tx = self.state.tx.clone();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match save_provider_via_gateway(&provider_name, &endpoint_type, &base_url, &secret).await {
+            match save_provider_via_gateway(&gw, &provider_name, &endpoint_type, &base_url, &secret).await {
                 Ok(()) => {
                     let _ = tx.send(Message::SetStatus(
                         format!("✅ {provider_name} credentials saved"),
@@ -2093,8 +2107,9 @@ impl App {
 
     fn spawn_create_session(&self, agent_id: Option<String>, model: Option<String>) {
         let tx = self.state.tx.clone();
+        let gw = self.state.gateway_url.clone();
         tokio::spawn(async move {
-            match create_session_via_gateway(agent_id.as_deref(), model.as_deref()).await {
+            match create_session_via_gateway(&gw, agent_id.as_deref(), model.as_deref()).await {
                 Ok(session_id) => {
                     let _ = tx.send(Message::SessionCreated(session_id));
                     let _ = tx.send(Message::ReloadSessions);
@@ -2149,6 +2164,7 @@ impl App {
         let agent_id = state.id.clone();
         let tx = self.state.tx.clone();
         let config_path = self.state.config_path.clone();
+        let gateway_url = self.state.gateway_url.clone();
 
         // Try gateway API first, fall back to direct config file edit
         tokio::spawn(async move {
@@ -2158,12 +2174,12 @@ impl App {
                 .unwrap();
 
             let gateway_result = if is_edit {
-                client.put(format!("http://127.0.0.1:18080/api/agents/{agent_id}"))
+                client.put(format!("{gateway_url}/api/agents/{agent_id}"))
                     .json(&json_body)
                     .send()
                     .await
             } else {
-                client.post("http://127.0.0.1:18080/api/agents")
+                client.post(format!("{gateway_url}/api/agents"))
                     .json(&json_body)
                     .send()
                     .await
@@ -2580,7 +2596,8 @@ impl App {
 
     fn fetch_context_files(&self, agent_id: &str) {
         let tx = self.state.tx.clone();
-        let url = format!("http://127.0.0.1:18080/api/agents/{}/files", agent_id);
+        let gateway_url = self.state.gateway_url.clone();
+        let url = format!("{gateway_url}/api/agents/{}/files", agent_id);
         let agent_id = agent_id.to_string();
         tokio::spawn(async move {
             match reqwest::get(&url).await {
@@ -2603,7 +2620,8 @@ impl App {
 
     fn fetch_context_file(&self, agent_id: &str, filename: &str) {
         let tx = self.state.tx.clone();
-        let url = format!("http://127.0.0.1:18080/api/agents/{}/files/{}", agent_id, filename);
+        let gateway_url = self.state.gateway_url.clone();
+        let url = format!("{gateway_url}/api/agents/{}/files/{}", agent_id, filename);
         let agent_id = agent_id.to_string();
         let filename = filename.to_string();
         tokio::spawn(async move {
@@ -2628,7 +2646,8 @@ impl App {
 
     fn save_context_file(&self, agent_id: &str, filename: &str, content: &str) {
         let tx = self.state.tx.clone();
-        let url = format!("http://127.0.0.1:18080/api/agents/{}/files/{}", agent_id, filename);
+        let gateway_url = self.state.gateway_url.clone();
+        let url = format!("{gateway_url}/api/agents/{}/files/{}", agent_id, filename);
         let agent_id = agent_id.to_string();
         let filename = filename.to_string();
         let body = serde_json::json!({ "content": content });
@@ -3245,7 +3264,7 @@ fn update_credential_in_vault(
 }
 
 /// Run the main async TUI event loop
-pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
+pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: String) -> Result<()> {
     use crossterm::{
         execute,
         event::{PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags, KeyboardEnhancementFlags},
@@ -3268,7 +3287,7 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create and initialize app
-    let mut app = App::new(config_path, vault_path);
+    let mut app = App::new(config_path, vault_path, gateway_url);
     app.init().await?;
 
     // Tick interval for animations and periodic updates
@@ -3500,7 +3519,7 @@ fn handle_ws_response(tx: &mpsc::UnboundedSender<Message>, text: &str) {
 
 use super::state::{AgentInfo, AgentStatus, AuthMethodInfo, CredentialFieldInfo, CredentialSchemaInfo, CronJobInfo, GatewayStatus, ModelProvider, ModelProviderModel, VaultStatus};
 
-async fn check_gateway_status() -> Result<GatewayStatus> {
+async fn check_gateway_status(gateway_url: &str) -> Result<GatewayStatus> {
     use tokio::time::timeout;
 
     // Try to fetch actual status from the gateway API
@@ -3511,7 +3530,7 @@ async fn check_gateway_status() -> Result<GatewayStatus> {
         .unwrap_or_else(|_| reqwest::Client::new());
     let status_result = timeout(
         Duration::from_secs(3),
-        client.get("http://127.0.0.1:18080/api/status").send()
+        client.get(format!("{gateway_url}/api/status")).send()
     ).await;
 
     match status_result {
@@ -3549,9 +3568,9 @@ async fn check_gateway_status() -> Result<GatewayStatus> {
 }
 
 /// Load agents from the gateway API, falling back to the config file if the gateway is unreachable.
-async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
+async fn load_agents(config_path: &PathBuf, gateway_url: &str) -> Result<Vec<AgentInfo>> {
     // Try loading from gateway first
-    if let Ok(agents) = load_agents_from_gateway().await {
+    if let Ok(agents) = load_agents_from_gateway(gateway_url).await {
         if !agents.is_empty() {
             return Ok(agents);
         }
@@ -3562,12 +3581,12 @@ async fn load_agents(config_path: &PathBuf) -> Result<Vec<AgentInfo>> {
 }
 
 /// Load agents from the gateway's /api/agents endpoint
-async fn load_agents_from_gateway() -> Result<Vec<AgentInfo>> {
+async fn load_agents_from_gateway(gateway_url: &str) -> Result<Vec<AgentInfo>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
 
-    let resp = client.get("http://127.0.0.1:18080/api/agents").send().await?;
+    let resp = client.get(format!("{gateway_url}/api/agents")).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("Gateway returned {}", resp.status());
     }
@@ -3752,12 +3771,12 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
 /// Send a chat message via the gateway
 /// Truncate a tool result string for display
 /// Load cron jobs from the gateway API
-async fn load_cron_jobs_from_gateway() -> Result<Vec<CronJobInfo>> {
+async fn load_cron_jobs_from_gateway(gateway_url: &str) -> Result<Vec<CronJobInfo>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
 
-    let resp = client.get("http://127.0.0.1:18080/api/cron/jobs").send().await?;
+    let resp = client.get(format!("{gateway_url}/api/cron/jobs")).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("Gateway returned {}", resp.status());
     }
@@ -3816,13 +3835,13 @@ async fn load_cron_jobs_from_gateway() -> Result<Vec<CronJobInfo>> {
     Ok(jobs)
 }
 
-async fn toggle_cron_job(job_id: &str, enabled: bool) -> Result<()> {
+async fn toggle_cron_job(gateway_url: &str, job_id: &str, enabled: bool) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     let resp = client
-        .put(format!("http://127.0.0.1:18080/api/cron/jobs/{job_id}"))
+        .put(format!("{gateway_url}/api/cron/jobs/{job_id}"))
         .json(&serde_json::json!({ "enabled": enabled }))
         .send()
         .await?;
@@ -3832,13 +3851,13 @@ async fn toggle_cron_job(job_id: &str, enabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn delete_cron_job(job_id: &str) -> Result<()> {
+async fn delete_cron_job(gateway_url: &str, job_id: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     let resp = client
-        .delete(format!("http://127.0.0.1:18080/api/cron/jobs/{job_id}"))
+        .delete(format!("{gateway_url}/api/cron/jobs/{job_id}"))
         .send()
         .await?;
     if !resp.status().is_success() {
@@ -3847,13 +3866,13 @@ async fn delete_cron_job(job_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn trigger_cron_job(job_id: &str) -> Result<()> {
+async fn trigger_cron_job(gateway_url: &str, job_id: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     let resp = client
-        .post(format!("http://127.0.0.1:18080/api/cron/jobs/{job_id}/trigger"))
+        .post(format!("{gateway_url}/api/cron/jobs/{job_id}/trigger"))
         .send()
         .await?;
     if !resp.status().is_success() {
@@ -3894,10 +3913,10 @@ async fn run_gateway_control(action: &str) -> Result<String> {
 }
 
 /// Test a provider connection via the gateway API
-async fn test_provider_via_gateway(provider_id: &str) -> Result<(u64, String)> {
+async fn test_provider_via_gateway(gateway_url: &str, provider_id: &str) -> Result<(u64, String)> {
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://127.0.0.1:18080/api/providers/{provider_id}/test"))
+        .post(format!("{gateway_url}/api/providers/{provider_id}/test"))
         .timeout(Duration::from_secs(10))
         .send()
         .await?;
@@ -3915,10 +3934,10 @@ async fn test_provider_via_gateway(provider_id: &str) -> Result<(u64, String)> {
 }
 
 /// Kill a session via gateway API
-async fn kill_session(session_key: &str) -> Result<()> {
+async fn kill_session(gateway_url: &str, session_key: &str) -> Result<()> {
     let client = reqwest::Client::new();
     let response = client
-        .delete(format!("http://127.0.0.1:18080/api/sessions/{session_key}"))
+        .delete(format!("{gateway_url}/api/sessions/{session_key}"))
         .timeout(Duration::from_secs(5))
         .send()
         .await?;
@@ -3932,13 +3951,13 @@ async fn kill_session(session_key: &str) -> Result<()> {
 }
 
 /// Load message history for a session from the gateway
-async fn load_session_messages(session_key: &str) -> Result<Vec<ChatMessage>> {
+async fn load_session_messages(gateway_url: &str, session_key: &str) -> Result<Vec<ChatMessage>> {
     use tokio::time::timeout;
 
     let client = reqwest::Client::new();
     let result = timeout(
         Duration::from_secs(3),
-        client.get(format!("http://127.0.0.1:18080/api/sessions/{session_key}/messages")).send(),
+        client.get(format!("{gateway_url}/api/sessions/{session_key}/messages")).send(),
     )
     .await;
 
@@ -4011,6 +4030,7 @@ fn base64_encode(input: &[u8]) -> String {
 
 /// Save provider credentials via gateway API
 async fn save_provider_via_gateway(
+    gateway_url: &str,
     provider_name: &str,
     endpoint_type: &str,
     base_url: &str,
@@ -4020,7 +4040,7 @@ async fn save_provider_via_gateway(
 
     // Step 1: Create endpoint
     let ep_response = client
-        .post("http://127.0.0.1:18080/api/credentials/endpoints")
+        .post(format!("{gateway_url}/api/credentials/endpoints"))
         .json(&serde_json::json!({
             "name": provider_name,
             "endpoint_type": endpoint_type,
@@ -4043,7 +4063,7 @@ async fn save_provider_via_gateway(
     // Step 2: Store credential (base64 encoded)
     let encoded_secret = base64_encode(secret.as_bytes());
     let cred_response = client
-        .post(format!("http://127.0.0.1:18080/api/credentials/endpoints/{ep_id}/credential"))
+        .post(format!("{gateway_url}/api/credentials/endpoints/{ep_id}/credential"))
         .json(&serde_json::json!({
             "credential_type": "bearer_token",
             "secret": encoded_secret,
@@ -4062,13 +4082,13 @@ async fn save_provider_via_gateway(
 }
 
 /// Load providers from the gateway API
-async fn load_providers_from_gateway() -> Result<Vec<ModelProvider>> {
+async fn load_providers_from_gateway(gateway_url: &str) -> Result<Vec<ModelProvider>> {
     use tokio::time::timeout;
 
     let client = reqwest::Client::new();
     let result = timeout(
         Duration::from_secs(2),
-        client.get("http://127.0.0.1:18080/api/providers").send(),
+        client.get(format!("{gateway_url}/api/providers")).send(),
     )
     .await;
 
@@ -4130,13 +4150,13 @@ async fn load_providers_from_gateway() -> Result<Vec<ModelProvider>> {
 }
 
 /// Load credential schemas from the gateway API
-async fn load_credential_schemas() -> Result<Vec<CredentialSchemaInfo>> {
+async fn load_credential_schemas(gateway_url: &str) -> Result<Vec<CredentialSchemaInfo>> {
     use tokio::time::timeout;
 
     let client = reqwest::Client::new();
     let result = timeout(
         Duration::from_secs(2),
-        client.get("http://127.0.0.1:18080/api/credentials/schemas").send(),
+        client.get(format!("{gateway_url}/api/credentials/schemas")).send(),
     )
     .await;
 
@@ -4209,13 +4229,13 @@ async fn load_credential_schemas() -> Result<Vec<CredentialSchemaInfo>> {
 }
 
 /// Load sessions from the gateway API
-async fn load_sessions_from_gateway() -> Result<Vec<super::state::SessionInfo>> {
+async fn load_sessions_from_gateway(gateway_url: &str) -> Result<Vec<super::state::SessionInfo>> {
     use tokio::time::timeout;
 
     let client = reqwest::Client::new();
     let result = timeout(
         Duration::from_secs(2),
-        client.get("http://127.0.0.1:18080/api/sessions").send(),
+        client.get(format!("{gateway_url}/api/sessions")).send(),
     )
     .await;
 
@@ -4263,7 +4283,7 @@ async fn load_sessions_from_gateway() -> Result<Vec<super::state::SessionInfo>> 
 }
 
 /// Create a session via the gateway API
-async fn create_session_via_gateway(agent_id: Option<&str>, model: Option<&str>) -> Result<String> {
+async fn create_session_via_gateway(gateway_url: &str, agent_id: Option<&str>, model: Option<&str>) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()?;
@@ -4277,7 +4297,7 @@ async fn create_session_via_gateway(agent_id: Option<&str>, model: Option<&str>)
     }
 
     let response = client
-        .post("http://127.0.0.1:18080/api/sessions")
+        .post(format!("{gateway_url}/api/sessions"))
         .json(&serde_json::Value::Object(body))
         .send()
         .await?;

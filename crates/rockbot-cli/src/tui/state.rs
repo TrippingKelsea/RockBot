@@ -555,6 +555,9 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub vault_path: PathBuf,
     pub launch_dir: PathBuf,
+
+    // Gateway connection
+    pub gateway_url: String,
     
     // Gateway
     pub gateway: GatewayStatus,
@@ -2078,16 +2081,18 @@ impl AppState {
     pub fn new(
         config_path: PathBuf,
         vault_path: PathBuf,
+        gateway_url: String,
         tx: mpsc::UnboundedSender<Message>,
     ) -> Self {
         Self {
             menu_item: MenuItem::Dashboard,
             menu_index: 0,
             sidebar_focus: true,
-            
+
             config_path,
             vault_path,
             launch_dir: std::env::current_dir().unwrap_or_default(),
+            gateway_url,
             
             gateway: GatewayStatus::default(),
             gateway_loading: true,
@@ -2558,6 +2563,19 @@ pub enum ProviderCategory {
 }
 
 impl AppState {
+    /// Build a full HTTP API URL from a path (e.g. "/api/agents").
+    pub fn api_url(&self, path: &str) -> String {
+        format!("{}{path}", self.gateway_url)
+    }
+
+    /// Build the WebSocket URL from the gateway URL.
+    pub fn ws_url(&self) -> String {
+        let ws = self.gateway_url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
+        format!("{ws}/ws")
+    }
+
     /// Clear the input buffer and reset cursor
     pub fn clear_input(&mut self) {
         self.input_buffer.clear();

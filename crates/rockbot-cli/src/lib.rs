@@ -72,7 +72,11 @@ pub enum Commands {
     Doctor,
     
     /// Interactive TUI dashboard
-    Tui,
+    Tui {
+        /// Gateway URL to connect to (default: http://127.0.0.1:18080)
+        #[arg(short, long, default_value = "http://127.0.0.1:18080")]
+        gateway: String,
+    },
     
     /// Migration from OpenClaw
     Migrate {
@@ -417,10 +421,11 @@ pub async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor => {
             commands::doctor::run(&config_path).await
         }
-        Commands::Tui => {
+        Commands::Tui { gateway } => {
             // Load config to get vault path
             let config = load_config(&config_path).await?;
-            tui::run_app(config_path.clone(), config.credentials.vault_path).await
+            let gateway_url = gateway.trim_end_matches('/').to_string();
+            tui::run_app(config_path.clone(), config.credentials.vault_path, gateway_url).await
         }
         Commands::Migrate { command } => {
             commands::migrate::run(command).await

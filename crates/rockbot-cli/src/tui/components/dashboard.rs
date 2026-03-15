@@ -216,7 +216,7 @@ fn render_gateway_detail(frame: &mut Frame, area: Rect, state: &AppState) {
         ]),
         Line::from(vec![
             Span::styled("Endpoint: ", Style::default().fg(Color::Cyan)),
-            Span::raw("http://127.0.0.1:18080"),
+            Span::raw(state.gateway_url.as_str()),
         ]),
     ];
 

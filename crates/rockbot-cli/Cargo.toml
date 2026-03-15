@@ -24,6 +24,8 @@ tools-markdown = ["rockbot-core/tools-markdown"]
 overseer = ["rockbot-core/overseer"]
 # Remote tool execution
 remote-exec = ["rockbot-core/remote-exec", "rockbot-client/remote-exec"]
+# Allow plain-text HTTP/WS connections
+http-insecure = ["rockbot-core/http-insecure", "rockbot-client/http-insecure"]
 
 [lints]
 workspace = true
@@ -53,6 +55,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
+rcgen = { workspace = true }
 rpassword = "7"
 getrandom = "0.2"
 atty = "0.2"

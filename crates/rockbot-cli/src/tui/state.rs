@@ -556,8 +556,9 @@ pub struct AppState {
     pub vault_path: PathBuf,
     pub launch_dir: PathBuf,
 
-    // Gateway connection
+    // Gateway connection (WS URL for WebSocket, HTTP URL for REST API)
     pub gateway_url: String,
+    pub gateway_http_url: String,
     
     // Gateway
     pub gateway: GatewayStatus,
@@ -2092,6 +2093,7 @@ impl AppState {
             config_path,
             vault_path,
             launch_dir: std::env::current_dir().unwrap_or_default(),
+            gateway_http_url: rockbot_client::ws_url_to_http(&gateway_url),
             gateway_url,
             
             gateway: GatewayStatus::default(),
@@ -2565,15 +2567,12 @@ pub enum ProviderCategory {
 impl AppState {
     /// Build a full HTTP API URL from a path (e.g. "/api/agents").
     pub fn api_url(&self, path: &str) -> String {
-        format!("{}{path}", self.gateway_url)
+        format!("{}{path}", self.gateway_http_url)
     }
 
-    /// Build the WebSocket URL from the gateway URL.
+    /// Return the WebSocket URL (already normalized by `normalize_gateway_url`).
     pub fn ws_url(&self) -> String {
-        let ws = self.gateway_url
-            .replace("https://", "wss://")
-            .replace("http://", "ws://");
-        format!("{ws}/ws")
+        self.gateway_url.clone()
     }
 
     /// Clear the input buffer and reset cursor

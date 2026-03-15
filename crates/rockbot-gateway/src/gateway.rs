@@ -897,6 +897,44 @@ impl Gateway {
         Ok((created, still_pending_count))
     }
     
+    /// Load a TLS acceptor from the configured cert/key paths.
+    fn load_tls_acceptor(&self) -> Result<Option<tokio_rustls::TlsAcceptor>> {
+        let (cert_path, key_path) = match (&self.config.tls_cert, &self.config.tls_key) {
+            (Some(c), Some(k)) => (c, k),
+            _ => return Ok(None),
+        };
+
+        let tls_config_err = |msg: String| -> crate::error::RockBotError {
+            crate::error::RockBotError::Config(
+                rockbot_config::ConfigError::Invalid { message: msg },
+            )
+        };
+
+        let cert_pem = std::fs::read(cert_path)
+            .map_err(|e| tls_config_err(format!("Failed to read TLS cert {}: {e}", cert_path.display())))?;
+        let key_pem = std::fs::read(key_path)
+            .map_err(|e| tls_config_err(format!("Failed to read TLS key {}: {e}", key_path.display())))?;
+
+        let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
+            rustls_pemfile::certs(&mut &cert_pem[..])
+                .filter_map(|r| r.ok())
+                .collect();
+        if certs.is_empty() {
+            return Err(tls_config_err("No valid certificates found in TLS cert file".into()));
+        }
+
+        let key = rustls_pemfile::private_key(&mut &key_pem[..])
+            .map_err(|e| tls_config_err(format!("Invalid TLS key: {e}")))?
+            .ok_or_else(|| tls_config_err("No private key found in TLS key file".into()))?;
+
+        let tls_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| tls_config_err(format!("TLS config error: {e}")))?;
+
+        Ok(Some(tokio_rustls::TlsAcceptor::from(Arc::new(tls_config))))
+    }
+
     /// Start the gateway server
     pub async fn start(&self) -> Result<()> {
         let addr = format!("{}:{}", self.config.bind_host, self.config.port);
@@ -906,22 +944,51 @@ impl Gateway {
                 port: self.config.port,
             }
         })?;
-        
-        info!("Gateway server listening on {}", addr);
-        
+
+        let tls_acceptor = self.load_tls_acceptor()?;
+
+        match &tls_acceptor {
+            Some(_) => info!("Gateway server listening on {addr} (TLS)"),
+            None => {
+                #[cfg(not(feature = "http-insecure"))]
+                {
+                    warn!("No TLS cert configured and http-insecure not enabled. \
+                           Run `rockbot config init` to generate a self-signed cert, \
+                           or set tls_cert/tls_key in config.");
+                }
+                info!("Gateway server listening on {addr} (plain HTTP)");
+            }
+        }
+
         let mut shutdown_rx = self.shutdown_tx.subscribe();
-        
+
         loop {
             tokio::select! {
                 result = listener.accept() => {
                     match result {
                         Ok((stream, addr)) => {
                             let gateway = self.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = gateway.handle_connection(stream, addr).await {
-                                    error!("Connection error: {}", e);
-                                }
-                            });
+                            if let Some(ref acceptor) = tls_acceptor {
+                                let acceptor = acceptor.clone();
+                                tokio::spawn(async move {
+                                    match acceptor.accept(stream).await {
+                                        Ok(tls_stream) => {
+                                            if let Err(e) = gateway.handle_tls_connection(tls_stream, addr).await {
+                                                error!("TLS connection error: {e}");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            debug!("TLS handshake failed from {addr}: {e}");
+                                        }
+                                    }
+                                });
+                            } else {
+                                tokio::spawn(async move {
+                                    if let Err(e) = gateway.handle_connection(stream, addr).await {
+                                        error!("Connection error: {e}");
+                                    }
+                                });
+                            }
                         }
                         Err(e) => {
                             error!("Failed to accept connection: {}", e);
@@ -934,7 +1001,39 @@ impl Gateway {
                 }
             }
         }
-        
+
+        Ok(())
+    }
+
+    /// Handle a TLS-wrapped TCP connection
+    async fn handle_tls_connection(
+        &self,
+        stream: tokio_rustls::server::TlsStream<TcpStream>,
+        addr: SocketAddr,
+    ) -> Result<()> {
+        debug!("New TLS connection from {addr}");
+
+        let io = TokioIo::new(stream);
+
+        let gateway = self.clone();
+        let service = service_fn(move |req| {
+            let gateway = gateway.clone();
+            async move { gateway.handle_request(req).await }
+        });
+
+        if let Err(err) = http1::Builder::new()
+            .serve_connection(io, service)
+            .with_upgrades()
+            .await
+        {
+            let msg = format!("{err:?}");
+            if msg.contains("IncompleteMessage") {
+                debug!("TLS client disconnected early from {addr}: {err}");
+            } else {
+                error!("Error serving TLS connection from {addr}: {err:?}");
+            }
+        }
+
         Ok(())
     }
     
@@ -4990,6 +5089,8 @@ mod tests {
                 max_connections: 100,
                 request_timeout: 30,
                 require_api_key: None,
+                tls_cert: None,
+                tls_key: None,
             },
             agents: AgentConfig {
                 defaults: AgentDefaults {

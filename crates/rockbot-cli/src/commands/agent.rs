@@ -52,12 +52,9 @@ pub async fn run(command: &AgentCommands, config_path: &PathBuf) -> Result<()> {
 async fn run_agent_session(agent_id: &str, gateway_url: &str, _exec: bool) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let ws_url = gateway_url
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    let ws_url = format!("{ws_url}/ws");
+    let ws_url = rockbot_client::normalize_gateway_url(gateway_url);
 
-    println!("Connecting to gateway at {gateway_url}...");
+    println!("Connecting to gateway at {ws_url}...");
     let client = rockbot_client::GatewayClient::connect(&ws_url);
     let mut events = client.subscribe();
 

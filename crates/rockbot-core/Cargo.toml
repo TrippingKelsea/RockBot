@@ -26,6 +26,8 @@ otel = ["rockbot-agent/otel", "rockbot-gateway/otel"]
 overseer = ["rockbot-gateway/overseer"]
 # Remote tool execution over Noise Protocol
 remote-exec = ["rockbot-client/remote-exec", "rockbot-agent/remote-exec", "rockbot-gateway/remote-exec"]
+# Allow plain-text HTTP/WS connections (insecure; default requires TLS)
+http-insecure = ["rockbot-gateway/http-insecure", "rockbot-client/http-insecure"]
 
 [lints]
 workspace = true

@@ -73,8 +73,8 @@ pub enum Commands {
     
     /// Interactive TUI dashboard
     Tui {
-        /// Gateway URL to connect to (default: http://127.0.0.1:18080)
-        #[arg(short, long, default_value = "http://127.0.0.1:18080")]
+        /// Gateway address (e.g. 172.30.200.146:18181, https://host:port)
+        #[arg(short, long, default_value = "127.0.0.1:18080")]
         gateway: String,
     },
     
@@ -220,8 +220,8 @@ pub enum AgentCommands {
     Run {
         /// Agent ID to interact with
         agent_id: String,
-        /// Gateway URL
-        #[arg(short, long, default_value = "http://127.0.0.1:18080")]
+        /// Gateway address (e.g. 172.30.200.146:18181, https://host:port)
+        #[arg(short, long, default_value = "127.0.0.1:18080")]
         gateway: String,
         /// Register as remote tool executor
         #[arg(long)]
@@ -470,7 +470,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Commands::Tui { gateway } => {
             // Load config to get vault path
             let config = load_config(&config_path).await?;
-            let gateway_url = gateway.trim_end_matches('/').to_string();
+            let gateway_url = rockbot_client::normalize_gateway_url(gateway);
             tui::run_app(config_path.clone(), config.credentials.vault_path, gateway_url).await
         }
         Commands::Migrate { command } => {

@@ -204,41 +204,75 @@ impl GatewayClient {
         }
     }
 
-    /// Internal connection loop with retry.
+    /// Try connecting to a single WebSocket URL with retries.
+    ///
+    /// Returns `Some(stream)` on success, `None` after exhausting attempts.
+    async fn try_connect_url(
+        url: &str,
+        max_attempts: u32,
+    ) -> Option<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
+        for attempt in 1..=max_attempts {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio_tungstenite::connect_async(url),
+            )
+            .await
+            {
+                Ok(Ok((stream, _))) => {
+                    info!("WebSocket connected to {url} (attempt {attempt})");
+                    return Some(stream);
+                }
+                Ok(Err(e)) => {
+                    debug!("WebSocket connect to {url} attempt {attempt} failed: {e}");
+                }
+                Err(_) => {
+                    debug!("WebSocket connect to {url} attempt {attempt} timed out");
+                }
+            }
+            if attempt < max_attempts {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        }
+        None
+    }
+
+    /// Internal connection loop with protocol fallback and retry.
     async fn run_connection(
         url: String,
         ws_tx: Arc<tokio::sync::RwLock<Option<mpsc::UnboundedSender<String>>>>,
         event_tx: broadcast::Sender<GatewayEvent>,
         connected: Arc<AtomicBool>,
     ) {
-        let mut attempt = 0u32;
-        let ws_stream = loop {
-            attempt += 1;
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                tokio_tungstenite::connect_async(&url),
-            )
-            .await
-            {
-                Ok(Ok((stream, _))) => {
-                    info!("WebSocket connected to gateway (attempt {attempt})");
-                    break stream;
-                }
-                Ok(Err(e)) => {
-                    debug!("WebSocket connect attempt {attempt} failed: {e}");
-                }
-                Err(_) => {
-                    debug!("WebSocket connect attempt {attempt} timed out");
-                }
+        // Build candidate URLs: primary first, then fallback(s)
+        #[allow(unused_mut)]
+        let mut candidates = vec![url.clone()];
+
+        // If the primary URL is wss://, add a ws:// fallback when http-insecure is enabled
+        #[cfg(feature = "http-insecure")]
+        if url.starts_with("wss://") {
+            let fallback = format!("ws://{}", &url[6..]);
+            candidates.push(fallback);
+        }
+
+        let mut ws_stream = None;
+        for candidate in &candidates {
+            let attempts = if candidates.len() > 1 { 3 } else { 6 };
+            if let Some(stream) = Self::try_connect_url(candidate, attempts).await {
+                ws_stream = Some(stream);
+                break;
             }
-            if attempt >= 6 {
-                debug!("WebSocket gave up after {attempt} attempts");
+        }
+
+        let ws_stream = match ws_stream {
+            Some(s) => s,
+            None => {
+                let tried = candidates.join(", ");
+                debug!("WebSocket gave up after trying: {tried}");
                 let _ = event_tx.send(GatewayEvent::Disconnected {
-                    reason: "Connection failed after 6 attempts".to_string(),
+                    reason: format!("Connection failed (tried: {tried})"),
                 });
                 return;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         };
 
         connected.store(true, Ordering::Relaxed);
@@ -601,6 +635,70 @@ pub enum ClientError {
     Disconnected,
 }
 
+/// Derive the HTTP base URL from a WebSocket URL.
+///
+/// `wss://host:port/ws` → `https://host:port`
+/// `ws://host:port/ws`  → `http://host:port`
+pub fn ws_url_to_http(ws_url: &str) -> String {
+    let base = ws_url
+        .trim_end_matches("/ws")
+        .trim_end_matches('/');
+    if base.starts_with("wss://") {
+        format!("https://{}", &base[6..])
+    } else if base.starts_with("ws://") {
+        format!("http://{}", &base[5..])
+    } else {
+        base.to_string()
+    }
+}
+
+/// Normalize a raw gateway address into a fully-qualified WebSocket URL.
+///
+/// Accepts:
+///   - `ws://host:port/ws` or `wss://host:port/ws` — returned as-is
+///   - `http://host:port` — converted to `ws://host:port/ws`
+///   - `https://host:port` — converted to `wss://host:port/ws`
+///   - `host:port` or `host` — protocol probing will be attempted
+///
+/// When no scheme is given and `http-insecure` is **not** enabled, the
+/// connection defaults to `wss://`.  With `http-insecure`, it tries WSS
+/// first then falls back to WS.
+pub fn normalize_gateway_url(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+
+    // Already has a WS scheme — use as-is (append /ws if missing)
+    if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
+        return if trimmed.ends_with("/ws") {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}/ws")
+        };
+    }
+
+    // HTTP(S) scheme — convert to WS equivalent
+    if trimmed.starts_with("https://") {
+        let host_port = trimmed.strip_prefix("https://").unwrap_or(trimmed);
+        let host_port = host_port.trim_end_matches("/ws");
+        return format!("wss://{host_port}/ws");
+    }
+    if trimmed.starts_with("http://") {
+        let host_port = trimmed.strip_prefix("http://").unwrap_or(trimmed);
+        let host_port = host_port.trim_end_matches("/ws");
+        #[cfg(not(feature = "http-insecure"))]
+        {
+            tracing::warn!(
+                "Plain HTTP not available (build with http-insecure feature). Upgrading to wss://"
+            );
+            return format!("wss://{host_port}/ws");
+        }
+        #[cfg(feature = "http-insecure")]
+        return format!("ws://{host_port}/ws");
+    }
+
+    // Bare host:port — default to wss, will fall back to ws if http-insecure
+    format!("wss://{trimmed}/ws")
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -664,5 +762,40 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(16);
         GatewayClient::parse_and_emit(&tx, "not json");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_normalize_bare_host_port() {
+        assert_eq!(normalize_gateway_url("172.30.200.146:18181"), "wss://172.30.200.146:18181/ws");
+    }
+
+    #[test]
+    fn test_normalize_https() {
+        assert_eq!(normalize_gateway_url("https://example.com:8080"), "wss://example.com:8080/ws");
+    }
+
+    #[test]
+    fn test_normalize_wss_passthrough() {
+        assert_eq!(normalize_gateway_url("wss://host:1234/ws"), "wss://host:1234/ws");
+    }
+
+    #[test]
+    fn test_normalize_wss_appends_path() {
+        assert_eq!(normalize_gateway_url("wss://host:1234"), "wss://host:1234/ws");
+    }
+
+    #[test]
+    fn test_normalize_trailing_slash() {
+        assert_eq!(normalize_gateway_url("172.30.200.146:18181/"), "wss://172.30.200.146:18181/ws");
+    }
+
+    #[test]
+    fn test_ws_url_to_http_wss() {
+        assert_eq!(ws_url_to_http("wss://host:1234/ws"), "https://host:1234");
+    }
+
+    #[test]
+    fn test_ws_url_to_http_ws() {
+        assert_eq!(ws_url_to_http("ws://host:1234/ws"), "http://host:1234");
     }
 }

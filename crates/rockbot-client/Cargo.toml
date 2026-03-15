@@ -8,6 +8,8 @@ license = "MIT"
 [features]
 # Remote tool execution over Noise Protocol
 remote-exec = ["dep:snow"]
+# Allow plain-text HTTP/WS connections (insecure; default is TLS-only)
+http-insecure = []
 
 [lints]
 workspace = true

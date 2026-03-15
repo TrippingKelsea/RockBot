@@ -203,7 +203,7 @@ impl App {
     /// Spawn a task to check gateway status
     fn spawn_gateway_check(&self) {
         let tx = self.state.tx.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match check_gateway_status(&gw).await {
                 Ok(status) => {
@@ -220,7 +220,7 @@ impl App {
     fn spawn_agents_load(&self) {
         let tx = self.state.tx.clone();
         let config_path = self.state.config_path.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match load_agents(&config_path, &gw).await {
                 Ok(agents) => {
@@ -236,7 +236,7 @@ impl App {
     /// Spawn a task to load cron jobs from gateway
     fn spawn_cron_jobs_load(&mut self) {
         let tx = self.state.tx.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         self.state.cron_loading = true;
         tokio::spawn(async move {
             match load_cron_jobs_from_gateway(&gw).await {
@@ -253,7 +253,7 @@ impl App {
     fn spawn_cron_job_toggle(&self, job_id: &str, enabled: bool) {
         let tx = self.state.tx.clone();
         let job_id = job_id.to_string();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match toggle_cron_job(&gw, &job_id, enabled).await {
                 Ok(()) => {
@@ -269,7 +269,7 @@ impl App {
     fn spawn_cron_job_delete(&self, job_id: &str) {
         let tx = self.state.tx.clone();
         let job_id = job_id.to_string();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match delete_cron_job(&gw, &job_id).await {
                 Ok(()) => {
@@ -285,7 +285,7 @@ impl App {
     fn spawn_cron_job_trigger(&self, job_id: &str) {
         let tx = self.state.tx.clone();
         let job_id = job_id.to_string();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match trigger_cron_job(&gw, &job_id).await {
                 Ok(()) => {
@@ -317,7 +317,7 @@ impl App {
     /// Spawn a task to load credential schemas from gateway
     fn spawn_credential_schemas_load(&self) {
         let tx = self.state.tx.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match load_credential_schemas(&gw).await {
                 Ok(schemas) if !schemas.is_empty() => {
@@ -331,7 +331,7 @@ impl App {
     /// Spawn a task to load providers from gateway
     fn spawn_providers_load(&self) {
         let tx = self.state.tx.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match load_providers_from_gateway(&gw).await {
                 Ok(providers) if !providers.is_empty() => {
@@ -347,7 +347,7 @@ impl App {
     /// Spawn a task to load sessions from gateway
     fn spawn_sessions_load(&self) {
         let tx = self.state.tx.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match load_sessions_from_gateway(&gw).await {
                 Ok(sessions) => {
@@ -1302,7 +1302,7 @@ impl App {
     fn spawn_gateway_control(&self, action: &str) {
         let tx = self.state.tx.clone();
         let action = action.to_string();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match run_gateway_control(&action).await {
                 Ok(msg) => {
@@ -1331,7 +1331,7 @@ impl App {
         let tx = self.state.tx.clone();
         let id = provider_id.to_string();
         let name = provider_name.to_string();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
 
         tokio::spawn(async move {
             match test_provider_via_gateway(&gw, &id).await {
@@ -1355,7 +1355,7 @@ impl App {
     fn spawn_load_session_messages(&self, session_key: &str) {
         let tx = self.state.tx.clone();
         let key = session_key.to_string();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match load_session_messages(&gw, &key).await {
                 Ok(messages) => {
@@ -1402,7 +1402,7 @@ impl App {
     fn spawn_kill_session(&self, session_key: &str) {
         let tx = self.state.tx.clone();
         let key = session_key.to_string();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match kill_session(&gw, &key).await {
                 Ok(()) => {
@@ -1858,7 +1858,7 @@ impl App {
         secret: String,
     ) {
         let tx = self.state.tx.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match save_provider_via_gateway(&gw, &provider_name, &endpoint_type, &base_url, &secret).await {
                 Ok(()) => {
@@ -2037,7 +2037,7 @@ impl App {
 
     fn spawn_create_session(&self, agent_id: Option<String>, model: Option<String>) {
         let tx = self.state.tx.clone();
-        let gw = self.state.gateway_url.clone();
+        let gw = self.state.gateway_http_url.clone();
         tokio::spawn(async move {
             match create_session_via_gateway(&gw, agent_id.as_deref(), model.as_deref()).await {
                 Ok(session_id) => {
@@ -2094,11 +2094,11 @@ impl App {
         let agent_id = state.id.clone();
         let tx = self.state.tx.clone();
         let config_path = self.state.config_path.clone();
-        let gateway_url = self.state.gateway_url.clone();
+        let gateway_url = self.state.gateway_http_url.clone();
 
         // Try gateway API first, fall back to direct config file edit
         tokio::spawn(async move {
-            let client = reqwest::Client::builder()
+            let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
                 .unwrap();
@@ -2526,7 +2526,7 @@ impl App {
 
     fn fetch_context_files(&self, agent_id: &str) {
         let tx = self.state.tx.clone();
-        let gateway_url = self.state.gateway_url.clone();
+        let gateway_url = self.state.gateway_http_url.clone();
         let url = format!("{gateway_url}/api/agents/{}/files", agent_id);
         let agent_id = agent_id.to_string();
         tokio::spawn(async move {
@@ -2550,7 +2550,7 @@ impl App {
 
     fn fetch_context_file(&self, agent_id: &str, filename: &str) {
         let tx = self.state.tx.clone();
-        let gateway_url = self.state.gateway_url.clone();
+        let gateway_url = self.state.gateway_http_url.clone();
         let url = format!("{gateway_url}/api/agents/{}/files/{}", agent_id, filename);
         let agent_id = agent_id.to_string();
         let filename = filename.to_string();
@@ -2576,13 +2576,13 @@ impl App {
 
     fn save_context_file(&self, agent_id: &str, filename: &str, content: &str) {
         let tx = self.state.tx.clone();
-        let gateway_url = self.state.gateway_url.clone();
+        let gateway_url = self.state.gateway_http_url.clone();
         let url = format!("{gateway_url}/api/agents/{}/files/{}", agent_id, filename);
         let agent_id = agent_id.to_string();
         let filename = filename.to_string();
         let body = serde_json::json!({ "content": content });
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            let client = http_client();
             match client.put(&url).json(&body).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     let _ = tx.send(Message::ContextFileSaved(agent_id, filename));
@@ -3715,15 +3715,25 @@ async fn handle_gateway_event(
 
 use super::state::{AgentInfo, AgentStatus, AuthMethodInfo, CredentialFieldInfo, CredentialSchemaInfo, CronJobInfo, GatewayStatus, ModelProvider, ModelProviderModel, VaultStatus};
 
+/// Build a reqwest client that accepts self-signed TLS certificates.
+///
+/// All TUI HTTP calls go through this so that self-signed gateway certs work.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap_or_default()
+}
+
 async fn check_gateway_status(gateway_url: &str) -> Result<GatewayStatus> {
     use tokio::time::timeout;
 
     // Try to fetch actual status from the gateway API
-    let client = reqwest::Client::builder()
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_secs(3))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+        .unwrap_or_else(|_| http_client());
     let status_result = timeout(
         Duration::from_secs(3),
         client.get(format!("{gateway_url}/api/status")).send()
@@ -3778,7 +3788,7 @@ async fn load_agents(config_path: &PathBuf, gateway_url: &str) -> Result<Vec<Age
 
 /// Load agents from the gateway's /api/agents endpoint
 async fn load_agents_from_gateway(gateway_url: &str) -> Result<Vec<AgentInfo>> {
-    let client = reqwest::Client::builder()
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
 
@@ -3968,7 +3978,7 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
 /// Truncate a tool result string for display
 /// Load cron jobs from the gateway API
 async fn load_cron_jobs_from_gateway(gateway_url: &str) -> Result<Vec<CronJobInfo>> {
-    let client = reqwest::Client::builder()
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
 
@@ -4032,7 +4042,7 @@ async fn load_cron_jobs_from_gateway(gateway_url: &str) -> Result<Vec<CronJobInf
 }
 
 async fn toggle_cron_job(gateway_url: &str, job_id: &str, enabled: bool) -> Result<()> {
-    let client = reqwest::Client::builder()
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
@@ -4048,7 +4058,7 @@ async fn toggle_cron_job(gateway_url: &str, job_id: &str, enabled: bool) -> Resu
 }
 
 async fn delete_cron_job(gateway_url: &str, job_id: &str) -> Result<()> {
-    let client = reqwest::Client::builder()
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
@@ -4063,7 +4073,7 @@ async fn delete_cron_job(gateway_url: &str, job_id: &str) -> Result<()> {
 }
 
 async fn trigger_cron_job(gateway_url: &str, job_id: &str) -> Result<()> {
-    let client = reqwest::Client::builder()
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
@@ -4110,7 +4120,7 @@ async fn run_gateway_control(action: &str) -> Result<String> {
 
 /// Test a provider connection via the gateway API
 async fn test_provider_via_gateway(gateway_url: &str, provider_id: &str) -> Result<(u64, String)> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = client
         .post(format!("{gateway_url}/api/providers/{provider_id}/test"))
         .timeout(Duration::from_secs(10))
@@ -4131,7 +4141,7 @@ async fn test_provider_via_gateway(gateway_url: &str, provider_id: &str) -> Resu
 
 /// Kill a session via gateway API
 async fn kill_session(gateway_url: &str, session_key: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = client
         .delete(format!("{gateway_url}/api/sessions/{session_key}"))
         .timeout(Duration::from_secs(5))
@@ -4150,7 +4160,7 @@ async fn kill_session(gateway_url: &str, session_key: &str) -> Result<()> {
 async fn load_session_messages(gateway_url: &str, session_key: &str) -> Result<Vec<ChatMessage>> {
     use tokio::time::timeout;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let result = timeout(
         Duration::from_secs(3),
         client.get(format!("{gateway_url}/api/sessions/{session_key}/messages")).send(),
@@ -4232,7 +4242,7 @@ async fn save_provider_via_gateway(
     base_url: &str,
     secret: &str,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     // Step 1: Create endpoint
     let ep_response = client
@@ -4281,7 +4291,7 @@ async fn save_provider_via_gateway(
 async fn load_providers_from_gateway(gateway_url: &str) -> Result<Vec<ModelProvider>> {
     use tokio::time::timeout;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let result = timeout(
         Duration::from_secs(2),
         client.get(format!("{gateway_url}/api/providers")).send(),
@@ -4349,7 +4359,7 @@ async fn load_providers_from_gateway(gateway_url: &str) -> Result<Vec<ModelProvi
 async fn load_credential_schemas(gateway_url: &str) -> Result<Vec<CredentialSchemaInfo>> {
     use tokio::time::timeout;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let result = timeout(
         Duration::from_secs(2),
         client.get(format!("{gateway_url}/api/credentials/schemas")).send(),
@@ -4428,7 +4438,7 @@ async fn load_credential_schemas(gateway_url: &str) -> Result<Vec<CredentialSche
 async fn load_sessions_from_gateway(gateway_url: &str) -> Result<Vec<super::state::SessionInfo>> {
     use tokio::time::timeout;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let result = timeout(
         Duration::from_secs(2),
         client.get(format!("{gateway_url}/api/sessions")).send(),
@@ -4480,7 +4490,7 @@ async fn load_sessions_from_gateway(gateway_url: &str) -> Result<Vec<super::stat
 
 /// Create a session via the gateway API
 async fn create_session_via_gateway(gateway_url: &str, agent_id: Option<&str>, model: Option<&str>) -> Result<String> {
-    let client = reqwest::Client::builder()
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(5))
         .build()?;
 

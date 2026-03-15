@@ -55,6 +55,12 @@ pub struct GatewayConfig {
     /// Require API key for programmatic access (default: false for localhost, true otherwise)
     #[serde(default)]
     pub require_api_key: Option<bool>,
+    /// Path to TLS certificate file (PEM)
+    #[serde(default)]
+    pub tls_cert: Option<std::path::PathBuf>,
+    /// Path to TLS private key file (PEM)
+    #[serde(default)]
+    pub tls_key: Option<std::path::PathBuf>,
 }
 
 impl GatewayConfig {
@@ -808,6 +814,8 @@ mod tests {
                 max_connections: 1000,
                 request_timeout: 30,
                 require_api_key: None,
+                tls_cert: None,
+                tls_key: None,
             },
             agents: AgentConfig {
                 defaults: AgentDefaults {

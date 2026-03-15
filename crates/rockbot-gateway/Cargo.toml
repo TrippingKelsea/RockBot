@@ -26,6 +26,8 @@ otel = ["rockbot-agent/otel"]
 overseer = ["dep:rockbot-overseer"]
 # Remote tool execution over Noise Protocol
 remote-exec = ["dep:snow", "rockbot-client/remote-exec"]
+# Allow plain-text HTTP/WS connections (insecure; default requires TLS)
+http-insecure = []
 
 [lints]
 workspace = true
@@ -82,6 +84,11 @@ cron = { workspace = true }
 
 # Embedded overseer (optional)
 rockbot-overseer = { path = "../rockbot-overseer", optional = true }
+
+# TLS for gateway listener
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 
 # Noise Protocol for remote execution (optional)
 snow = { workspace = true, optional = true }

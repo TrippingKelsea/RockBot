@@ -9,4 +9,4 @@ pub mod client;
 #[cfg(feature = "remote-exec")]
 pub mod remote_exec;
 
-pub use client::{ClientError, GatewayClient, GatewayEvent, GatewaySender, TokenUsageInfo, ToolCallSummary};
+pub use client::{ClientError, GatewayClient, GatewayEvent, GatewaySender, TokenUsageInfo, ToolCallSummary, normalize_gateway_url, ws_url_to_http};

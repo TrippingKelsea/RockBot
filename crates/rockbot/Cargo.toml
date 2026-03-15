@@ -35,6 +35,8 @@ otel = ["rockbot-core/otel"]
 overseer = ["rockbot-cli/overseer", "rockbot-core/overseer"]
 # Remote tool execution
 remote-exec = ["rockbot-cli/remote-exec", "rockbot-core/remote-exec"]
+# Allow plain-text HTTP/WS connections (not in default — secure by default)
+http-insecure = ["rockbot-cli/http-insecure", "rockbot-core/http-insecure"]
 
 [lints]
 workspace = true

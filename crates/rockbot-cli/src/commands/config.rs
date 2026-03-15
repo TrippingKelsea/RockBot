@@ -55,22 +55,73 @@ async fn init_config(output_path: &PathBuf, force: bool) -> Result<()> {
             output_path.display()
         );
     }
-    
-    // Create default configuration
-    let default_config = create_default_config();
-    
+
     // Create parent directory if it doesn't exist
-    if let Some(parent) = output_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+    let config_dir = output_path.parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    tokio::fs::create_dir_all(config_dir).await?;
+
+    // Generate self-signed TLS certificate
+    let cert_path = config_dir.join("gateway.crt");
+    let key_path = config_dir.join("gateway.key");
+
+    if !cert_path.exists() || force {
+        generate_self_signed_cert(&cert_path, &key_path).await?;
+        println!("   TLS cert: {}", cert_path.display());
+        println!("   TLS key:  {}", key_path.display());
     }
-    
+
+    // Create default configuration with TLS paths
+    let mut default_config = create_default_config();
+    default_config.gateway.tls_cert = Some(cert_path);
+    default_config.gateway.tls_key = Some(key_path);
+
     // Write configuration
     let toml_string = toml::to_string_pretty(&default_config)?;
     tokio::fs::write(output_path, toml_string).await?;
-    
-    println!("✅ Default configuration created at {}", output_path.display());
+
+    println!("Default configuration created at {}", output_path.display());
     println!("   Edit the file to customize your setup");
-    
+
+    Ok(())
+}
+
+/// Generate a self-signed TLS certificate and private key.
+async fn generate_self_signed_cert(
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> Result<()> {
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
+
+    // Include common local names in the SAN list
+    let mut san_names = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+
+    // Try to include the system hostname
+    if let Ok(hostname) = std::process::Command::new("hostname").output() {
+        if let Ok(name) = String::from_utf8(hostname.stdout) {
+            let name = name.trim().to_string();
+            if !name.is_empty() && !san_names.contains(&name) {
+                san_names.push(name);
+            }
+        }
+    }
+
+    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(san_names)?;
+
+    tokio::fs::write(cert_path, cert.pem()).await?;
+    tokio::fs::write(key_path, key_pair.serialize_pem()).await?;
+
+    // Restrict key file permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
     Ok(())
 }
 
@@ -83,6 +134,8 @@ fn create_default_config() -> Config {
             max_connections: 1000,
             request_timeout: 30,
             require_api_key: None, // Auto-detect: false for localhost, true otherwise
+            tls_cert: None,
+            tls_key: None,
         },
         agents: AgentConfig {
             defaults: AgentDefaults {

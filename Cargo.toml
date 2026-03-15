@@ -51,7 +51,7 @@ hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 tungstenite = "0.24"
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 
 # Cryptography - minimal, well-audited
 ring = "0.17"
@@ -109,6 +109,10 @@ metrics = "0.24"
 # BPE tokenizer for accurate token counting
 tiktoken-rs = "0.6"
 
+# TLS
+tokio-rustls = "0.26"
+rcgen = "0.13"
+
 # OpenTelemetry (optional, behind `otel` feature)
 # Noise Protocol for encrypted remote execution
 snow = "0.9"
@@ -162,7 +166,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # Package metadata for all crates
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

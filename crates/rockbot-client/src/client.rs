@@ -204,6 +204,57 @@ impl GatewayClient {
         }
     }
 
+    /// Build a TLS connector that accepts self-signed certificates.
+    fn tls_connector() -> Option<tokio_tungstenite::Connector> {
+        /// Verifier that accepts any server certificate (for self-signed certs).
+        #[derive(Debug)]
+        struct AcceptAnyCert;
+
+        impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &rustls::pki_types::CertificateDer<'_>,
+                _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+                _server_name: &rustls::pki_types::ServerName<'_>,
+                _ocsp_response: &[u8],
+                _now: rustls::pki_types::UnixTime,
+            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::pki_types::CertificateDer<'_>,
+                _dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::pki_types::CertificateDer<'_>,
+                _dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+            }
+
+            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+                rustls::crypto::ring::default_provider()
+                    .signature_verification_algorithms
+                    .supported_schemes()
+            }
+        }
+
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyCert))
+            .with_no_client_auth();
+
+        Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(config)))
+    }
+
     /// Try connecting to a single WebSocket URL with retries.
     ///
     /// Returns `Some(stream)` on success, `None` after exhausting attempts.
@@ -211,10 +262,13 @@ impl GatewayClient {
         url: &str,
         max_attempts: u32,
     ) -> Option<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
+        let connector = Self::tls_connector();
         for attempt in 1..=max_attempts {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                tokio_tungstenite::connect_async(url),
+                tokio_tungstenite::connect_async_tls_with_config(
+                    url, None, false, connector.clone(),
+                ),
             )
             .await
             {

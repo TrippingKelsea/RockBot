@@ -61,6 +61,21 @@ pub struct GatewayConfig {
     /// Path to TLS private key file (PEM)
     #[serde(default)]
     pub tls_key: Option<std::path::PathBuf>,
+    /// Path to CA certificate for client verification (enables mTLS)
+    #[serde(default)]
+    pub tls_ca: Option<std::path::PathBuf>,
+    /// Require valid client certificate (mTLS).
+    /// When false + tls_ca is set: optional client auth (accepts but doesn't require).
+    /// When true + tls_ca is set: mandatory mTLS.
+    #[serde(default)]
+    pub require_client_cert: bool,
+    /// Path to the PKI directory (default: ~/.config/rockbot/pki/)
+    #[serde(default)]
+    pub pki_dir: Option<std::path::PathBuf>,
+    /// Pre-shared key for CSR enrollment endpoint.
+    /// If set, enables POST /api/cert/sign with PSK auth.
+    #[serde(default)]
+    pub enrollment_psk: Option<String>,
 }
 
 impl GatewayConfig {
@@ -72,6 +87,11 @@ impl GatewayConfig {
     /// Check if API key authentication is required
     pub fn requires_api_key(&self) -> bool {
         self.require_api_key.unwrap_or_else(|| !self.is_localhost())
+    }
+
+    /// Check if mTLS client verification is configured
+    pub fn has_mtls(&self) -> bool {
+        self.tls_ca.is_some()
     }
 }
 
@@ -816,6 +836,10 @@ mod tests {
                 require_api_key: None,
                 tls_cert: None,
                 tls_key: None,
+                tls_ca: None,
+                require_client_cert: false,
+                pki_dir: None,
+                enrollment_psk: None,
             },
             agents: AgentConfig {
                 defaults: AgentDefaults {

@@ -24,6 +24,7 @@ members = [
     "crates/rockbot-agent",
     "crates/rockbot-client",
     "crates/rockbot-gateway",
+    "crates/rockbot-pki",
 ]
 resolver = "2"
 
@@ -111,7 +112,7 @@ tiktoken-rs = "0.6"
 
 # TLS
 tokio-rustls = "0.26"
-rcgen = "0.13"
+rcgen = { version = "0.13", features = ["x509-parser", "pem"] }
 x509-parser = "0.16"
 time = "0.3"
 
@@ -168,7 +169,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # Package metadata for all crates
 [workspace.package]
-version = "0.2.12"
+version = "0.2.13"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

@@ -85,10 +85,11 @@ cron = { workspace = true }
 # Embedded overseer (optional)
 rockbot-overseer = { path = "../rockbot-overseer", optional = true }
 
-# TLS for gateway listener
+# TLS for gateway listener + mTLS CSR signing
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
+rockbot-pki = { path = "../rockbot-pki" }
 
 # Noise Protocol for remote execution (optional)
 snow = { workspace = true, optional = true }

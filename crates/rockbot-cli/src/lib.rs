@@ -154,55 +154,41 @@ pub enum ConfigCommands {
 /// Certificate management commands
 #[derive(Subcommand)]
 pub enum CertCommands {
-    /// Generate a new self-signed TLS certificate
-    Generate {
-        /// Output directory for cert and key files
-        #[arg(short, long)]
-        output_dir: Option<PathBuf>,
-        /// Additional Subject Alternative Names (hostnames or IPs)
+    /// Certificate Authority management
+    Ca {
+        #[command(subcommand)]
+        command: CaCertCommands,
+    },
+    /// Client certificate management (gateway, agent, TUI instances)
+    Client {
+        #[command(subcommand)]
+        command: ClientCertCommands,
+    },
+    /// Sign a CSR with the CA (offline signing)
+    Sign {
+        /// Path to PEM-encoded CSR
         #[arg(long)]
-        san: Vec<String>,
+        csr: PathBuf,
+        /// Client name for the signed certificate
+        #[arg(long)]
+        name: String,
+        /// Role: gateway, agent, or tui
+        #[arg(long, default_value = "agent")]
+        role: String,
         /// Certificate validity in days
         #[arg(long, default_value = "365")]
         days: u32,
-        /// Overwrite existing certificate files
+        /// Output path for signed certificate
         #[arg(short, long)]
-        force: bool,
-        /// Update the app config to use the new certificate
-        #[arg(long)]
-        update_config: bool,
+        output: Option<PathBuf>,
     },
-    /// Show certificate details (expiry, SANs, issuer)
-    Info {
-        /// Path to PEM certificate file (defaults to config value)
+    /// Install certificates into the app config (updates rockbot.toml)
+    Install {
+        /// Client name whose cert to install
         #[arg(long)]
-        cert: Option<PathBuf>,
+        name: String,
     },
-    /// Rotate the certificate: generate a new one and update config
-    Rotate {
-        /// Additional Subject Alternative Names
-        #[arg(long)]
-        san: Vec<String>,
-        /// Certificate validity in days
-        #[arg(long, default_value = "365")]
-        days: u32,
-        /// Back up old certificate files before replacing
-        #[arg(long)]
-        backup: bool,
-    },
-    /// Import an external certificate and key into the config
-    Import {
-        /// Path to PEM certificate file
-        #[arg(long)]
-        cert: PathBuf,
-        /// Path to PEM private key file
-        #[arg(long)]
-        key: PathBuf,
-        /// Copy files into the config directory instead of referencing in-place
-        #[arg(long)]
-        copy: bool,
-    },
-    /// Verify that a certificate and key are valid and match
+    /// Verify certificate chain, key match, and revocation status
     Verify {
         /// Path to PEM certificate file (defaults to config value)
         #[arg(long)]
@@ -210,6 +196,131 @@ pub enum CertCommands {
         /// Path to PEM private key file (defaults to config value)
         #[arg(long)]
         key: Option<PathBuf>,
+        /// Path to CA certificate for chain verification
+        #[arg(long)]
+        ca: Option<PathBuf>,
+    },
+    /// Show details of any PEM certificate file
+    Info {
+        /// Path to PEM certificate file
+        cert: PathBuf,
+    },
+    /// Manage enrollment tokens for remote CSR signing
+    Enroll {
+        #[command(subcommand)]
+        command: EnrollCommands,
+    },
+}
+
+/// CA certificate commands
+#[derive(Subcommand)]
+pub enum CaCertCommands {
+    /// Initialize a new Certificate Authority
+    Generate {
+        /// CA certificate validity in days
+        #[arg(long, default_value = "3650")]
+        days: u32,
+        /// PKI directory (default: ~/.config/rockbot/pki/)
+        #[arg(long)]
+        pki_dir: Option<PathBuf>,
+        /// Overwrite existing CA
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Show CA certificate details
+    Info,
+    /// Rotate the CA (generates new CA, re-signs active client certs)
+    Rotate {
+        /// New CA validity in days
+        #[arg(long, default_value = "3650")]
+        days: u32,
+        /// Back up old CA files
+        #[arg(long)]
+        backup: bool,
+    },
+}
+
+/// Client certificate commands
+#[derive(Subcommand)]
+pub enum ClientCertCommands {
+    /// Generate a new client certificate signed by the CA
+    Generate {
+        /// Client name (becomes CN and filename)
+        name: String,
+        /// Additional Subject Alternative Names (hostnames or IPs)
+        #[arg(long)]
+        san: Vec<String>,
+        /// Certificate validity in days
+        #[arg(long, default_value = "365")]
+        days: u32,
+        /// Role: gateway, agent, or tui
+        #[arg(long, default_value = "agent")]
+        role: String,
+    },
+    /// List all issued client certificates
+    List,
+    /// Show details of a specific client certificate
+    Info {
+        /// Client name
+        name: String,
+    },
+    /// Revoke a client certificate
+    Revoke {
+        /// Client name
+        name: String,
+    },
+    /// Rotate a client certificate (revoke old, generate new)
+    Rotate {
+        /// Client name
+        name: String,
+        /// Additional Subject Alternative Names
+        #[arg(long)]
+        san: Vec<String>,
+        /// Certificate validity in days
+        #[arg(long, default_value = "365")]
+        days: u32,
+        /// Back up old certificate files
+        #[arg(long)]
+        backup: bool,
+    },
+}
+
+/// Enrollment token commands
+#[derive(Subcommand)]
+pub enum EnrollCommands {
+    /// Create a new enrollment token for remote CSR signing
+    Create {
+        /// Role for certificates signed with this token
+        #[arg(long, default_value = "agent")]
+        role: String,
+        /// Maximum number of uses (omit for unlimited)
+        #[arg(long)]
+        uses: Option<u32>,
+        /// Token expiry duration (e.g. "1h", "24h", "7d")
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    /// List active enrollment tokens
+    List,
+    /// Revoke an enrollment token
+    Revoke {
+        /// Token ID
+        id: String,
+    },
+    /// Enroll this client with a remote gateway using a PSK
+    Submit {
+        /// Gateway address (e.g. https://host:port)
+        #[arg(long)]
+        gateway: String,
+        /// Pre-shared enrollment key
+        #[arg(long)]
+        psk: String,
+        /// Client name
+        #[arg(long)]
+        name: String,
+        /// Role: gateway, agent, or tui
+        #[arg(long, default_value = "tui")]
+        role: String,
     },
 }
 

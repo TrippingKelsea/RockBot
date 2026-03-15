@@ -6,6 +6,7 @@
 use rockbot_agent::agent::{Agent, AgentResponse};
 use rockbot_config::{Config, CredentialsConfig, GatewayConfig};
 use rockbot_credentials::{CredentialManager, MasterKey, generate_salt};
+use rockbot_pki::KeyBackend;
 
 /// Simple base64 encoding (using standard alphabet)
 #[cfg(feature = "remote-exec")]
@@ -909,6 +910,7 @@ impl Gateway {
     }
 
     /// Load a TLS acceptor from the configured cert/key paths.
+    /// Supports optional mTLS when `tls_ca` is configured.
     fn load_tls_acceptor(&self) -> Result<Option<tokio_rustls::TlsAcceptor>> {
         let (cert_path, key_path) = match (&self.config.tls_cert, &self.config.tls_key) {
             (Some(c), Some(k)) => (Self::expand_tilde(c), Self::expand_tilde(k)),
@@ -938,10 +940,48 @@ impl Gateway {
             .map_err(|e| tls_config_err(format!("Invalid TLS key: {e}")))?
             .ok_or_else(|| tls_config_err("No private key found in TLS key file".into()))?;
 
-        let tls_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .map_err(|e| tls_config_err(format!("TLS config error: {e}")))?;
+        // Build client auth configuration
+        let tls_config = if let Some(ca_path) = &self.config.tls_ca {
+            let ca_path = Self::expand_tilde(ca_path);
+            let ca_pem = std::fs::read(&ca_path)
+                .map_err(|e| tls_config_err(format!("Failed to read CA cert {}: {e}", ca_path.display())))?;
+            let ca_certs: Vec<rustls::pki_types::CertificateDer<'static>> =
+                rustls_pemfile::certs(&mut &ca_pem[..])
+                    .filter_map(|r| r.ok())
+                    .collect();
+            if ca_certs.is_empty() {
+                return Err(tls_config_err("No valid certificates found in CA cert file".into()));
+            }
+
+            let mut root_store = rustls::RootCertStore::empty();
+            for ca_cert in ca_certs {
+                root_store.add(ca_cert)
+                    .map_err(|e| tls_config_err(format!("Invalid CA certificate: {e}")))?;
+            }
+
+            let verifier = if self.config.require_client_cert {
+                info!("mTLS enabled: requiring client certificates (CA: {})", ca_path.display());
+                rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                    .build()
+                    .map_err(|e| tls_config_err(format!("Client cert verifier error: {e}")))?
+            } else {
+                info!("mTLS enabled: accepting optional client certificates (CA: {})", ca_path.display());
+                rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                    .allow_unauthenticated()
+                    .build()
+                    .map_err(|e| tls_config_err(format!("Client cert verifier error: {e}")))?
+            };
+
+            rustls::ServerConfig::builder()
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(certs, key)
+                .map_err(|e| tls_config_err(format!("TLS config error: {e}")))?
+        } else {
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .map_err(|e| tls_config_err(format!("TLS config error: {e}")))?
+        };
 
         Ok(Some(tokio_rustls::TlsAcceptor::from(Arc::new(tls_config))))
     }
@@ -1258,6 +1298,13 @@ impl Gateway {
             }
             (&Method::GET, "/api/cron/clients") => {
                 self.handle_list_cron_clients().await
+            }
+            // Certificate API (PSK-authenticated CSR signing)
+            (&Method::POST, "/api/cert/sign") => {
+                self.handle_cert_sign(req).await
+            }
+            (&Method::GET, "/api/cert/ca") => {
+                self.handle_cert_ca_info().await
             }
             _ => {
                 Ok(Response::builder()
@@ -4785,6 +4832,170 @@ impl Gateway {
             .unwrap())
     }
 
+    // ==================== Certificate API Handlers ====================
+
+    /// Handle POST /api/cert/sign — PSK-authenticated CSR signing
+    async fn handle_cert_sign(
+        &self,
+        req: Request<IncomingBody>,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        // Check that PKI is configured
+        let pki_dir = match &self.config.pki_dir {
+            Some(d) => Self::expand_tilde(d),
+            None => {
+                let default = dirs::config_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                    .join("rockbot")
+                    .join("pki");
+                default
+            }
+        };
+
+        let ca_cert_path = pki_dir.join("ca.crt");
+        let ca_key_path = pki_dir.join("ca.key");
+        if !ca_cert_path.exists() || !ca_key_path.exists() {
+            return Ok(Self::json_error(
+                "PKI not initialized. Run 'rockbot cert ca generate' first.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+
+        // Parse request body
+        let body = match req.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                return Ok(Self::json_error(&format!("Failed to read body: {e}"), StatusCode::BAD_REQUEST));
+            }
+        };
+
+        #[derive(serde::Deserialize)]
+        struct SignRequest {
+            csr: String,
+            psk: String,
+            name: String,
+            #[serde(default = "default_role")]
+            role: String,
+            #[serde(default = "default_days")]
+            days: u32,
+        }
+        fn default_role() -> String { "agent".to_string() }
+        fn default_days() -> u32 { 365 }
+
+        let sign_req: SignRequest = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(Self::json_error(&format!("Invalid JSON: {e}"), StatusCode::BAD_REQUEST));
+            }
+        };
+
+        // Validate PSK against enrollment tokens in the index
+        let index_path = pki_dir.join("index.json");
+        let mut index = match rockbot_pki::PkiIndex::load(&index_path) {
+            Ok(idx) => idx,
+            Err(e) => {
+                return Ok(Self::json_error(&format!("Failed to load PKI index: {e}"), StatusCode::INTERNAL_SERVER_ERROR));
+            }
+        };
+
+        let role = match rockbot_pki::CertRole::from_str(&sign_req.role) {
+            Some(r) => r,
+            None => {
+                return Ok(Self::json_error(
+                    &format!("Invalid role '{}'. Must be: gateway, agent, or tui", sign_req.role),
+                    StatusCode::BAD_REQUEST,
+                ));
+            }
+        };
+
+        if let Err(e) = index.validate_enrollment(&sign_req.psk, role) {
+            return Ok(Self::json_error(&format!("Enrollment failed: {e}"), StatusCode::FORBIDDEN));
+        }
+
+        // Load CA cert and key
+        let ca_cert_pem = match std::fs::read_to_string(&ca_cert_path) {
+            Ok(s) => s,
+            Err(e) => {
+                return Ok(Self::json_error(&format!("Failed to read CA cert: {e}"), StatusCode::INTERNAL_SERVER_ERROR));
+            }
+        };
+
+        let backend = rockbot_pki::FileBackend::new(pki_dir.clone());
+        let ca_key = match backend.load(&ca_key_path) {
+            Ok(k) => k,
+            Err(e) => {
+                return Ok(Self::json_error(&format!("Failed to load CA key: {e}"), StatusCode::INTERNAL_SERVER_ERROR));
+            }
+        };
+
+        // Sign the CSR
+        let serial = index.next_serial();
+        match rockbot_pki::sign_csr(&sign_req.csr, &ca_cert_pem, &ca_key, &sign_req.name, role, sign_req.days, serial) {
+            Ok((cert_pem, entry)) => {
+                // Save the signed cert to the clients directory
+                let clients_dir = pki_dir.join("clients");
+                let _ = std::fs::create_dir_all(&clients_dir);
+                let cert_path = clients_dir.join(format!("{}.crt", sign_req.name));
+                let _ = std::fs::write(&cert_path, &cert_pem);
+
+                index.add_entry(entry);
+                if let Err(e) = index.save(&index_path) {
+                    warn!("Failed to save PKI index after signing: {e}");
+                }
+
+                info!("Signed CSR for '{}' (role: {}, serial: {})", sign_req.name, sign_req.role, serial);
+
+                let response = serde_json::json!({
+                    "certificate": cert_pem,
+                    "ca_certificate": ca_cert_pem,
+                });
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(response.to_string().into())))
+                    .unwrap())
+            }
+            Err(e) => {
+                Ok(Self::json_error(&format!("Failed to sign CSR: {e}"), StatusCode::INTERNAL_SERVER_ERROR))
+            }
+        }
+    }
+
+    /// Handle GET /api/cert/ca — return CA certificate info (public)
+    async fn handle_cert_ca_info(
+        &self,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let pki_dir = match &self.config.pki_dir {
+            Some(d) => Self::expand_tilde(d),
+            None => {
+                dirs::config_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                    .join("rockbot")
+                    .join("pki")
+            }
+        };
+
+        let ca_cert_path = pki_dir.join("ca.crt");
+        if !ca_cert_path.exists() {
+            return Ok(Self::json_error("PKI not initialized", StatusCode::SERVICE_UNAVAILABLE));
+        }
+
+        match std::fs::read_to_string(&ca_cert_path) {
+            Ok(pem) => {
+                let response = serde_json::json!({
+                    "ca_certificate": pem,
+                });
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(GatewayBody::Left(Full::new(response.to_string().into())))
+                    .unwrap())
+            }
+            Err(e) => {
+                Ok(Self::json_error(&format!("Failed to read CA cert: {e}"), StatusCode::INTERNAL_SERVER_ERROR))
+            }
+        }
+    }
+
     async fn handle_a2a_request(
         &self,
         req: Request<IncomingBody>,
@@ -5102,6 +5313,10 @@ mod tests {
                 require_api_key: None,
                 tls_cert: None,
                 tls_key: None,
+                tls_ca: None,
+                require_client_cert: false,
+                pki_dir: None,
+                enrollment_psk: None,
             },
             agents: AgentConfig {
                 defaults: AgentDefaults {

@@ -1,0 +1,28 @@
+[package]
+name = "rockbot-pki"
+version.workspace = true
+edition = "2021"
+description = "PKI management for RockBot (CA, client certs, mTLS)"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+rcgen = { workspace = true }
+x509-parser = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+time = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+ring = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

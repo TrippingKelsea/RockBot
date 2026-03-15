@@ -97,6 +97,10 @@ fn create_default_config() -> Config {
             require_api_key: None, // Auto-detect: false for localhost, true otherwise
             tls_cert: None,
             tls_key: None,
+            tls_ca: None,
+            require_client_cert: false,
+            pki_dir: None,
+            enrollment_psk: None,
         },
         agents: AgentConfig {
             defaults: AgentDefaults {

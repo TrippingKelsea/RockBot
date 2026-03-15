@@ -82,6 +82,14 @@ type GatewayBody = http_body_util::Either<
     StreamBody<tokio_stream::wrappers::ReceiverStream<std::result::Result<Frame<hyper::body::Bytes>, std::convert::Infallible>>>,
 >;
 
+/// Shared transport state map for Noise Protocol handshakes (remote-exec feature).
+///
+/// After the 3-step Noise handshake completes, the transport is stored here keyed by
+/// connection ID. When the client sends its `remote_capabilities` message, the transport
+/// is consumed from this map and moved into the `NoiseSession`.
+#[cfg(feature = "remote-exec")]
+static NOISE_TRANSPORT_STATES: std::sync::OnceLock<tokio::sync::Mutex<HashMap<String, snow::TransportState>>> = std::sync::OnceLock::new();
+
 /// Pending agent info (for agents that couldn't be created due to missing credentials)
 #[derive(Debug, Clone)]
 pub struct PendingAgent {
@@ -437,6 +445,50 @@ pub struct GatewayHealth {
 pub struct MemoryUsage {
     pub allocated_bytes: usize,
     pub heap_size_bytes: usize,
+}
+
+// Conversion helpers — these live here (not in config.rs) because they reference
+// rockbot_tools / rockbot_security types which config should not depend on.
+
+pub(crate) fn convert_tool_config(config: crate::config::ToolConfig) -> rockbot_tools::ToolConfig {
+    rockbot_tools::ToolConfig {
+        profile: config.profile,
+        deny: config.deny,
+        configs: config.configs,
+    }
+}
+
+pub(crate) fn convert_security_config(config: crate::config::SecurityConfig) -> rockbot_security::SecurityConfig {
+    rockbot_security::SecurityConfig {
+        sandbox: rockbot_security::SandboxConfig {
+            mode: config.sandbox.mode,
+            scope: config.sandbox.scope,
+            image: config.sandbox.image,
+        },
+        capabilities: rockbot_security::CapabilityConfig {
+            filesystem: config.capabilities.filesystem.map(|fs| {
+                rockbot_security::FilesystemCapabilities {
+                    read_paths: fs.read_paths,
+                    write_paths: fs.write_paths,
+                    forbidden_paths: fs.forbidden_paths,
+                }
+            }),
+            network: config.capabilities.network.map(|net| {
+                rockbot_security::NetworkCapabilities {
+                    allowed_domains: net.allowed_domains,
+                    blocked_domains: net.blocked_domains,
+                    max_request_size: net.max_request_size,
+                }
+            }),
+            process: config.capabilities.process.map(|proc| {
+                rockbot_security::ProcessCapabilities {
+                    allowed_commands: proc.allowed_commands,
+                    blocked_commands: proc.blocked_commands,
+                    max_execution_time: proc.max_execution_time,
+                }
+            }),
+        },
+    }
 }
 
 impl Gateway {
@@ -3458,9 +3510,8 @@ impl Gateway {
                             }
                         };
 
-                        // Store the transport in the connection metadata via a separate map
-                        static TRANSPORT_STATES: OnceLock<tokio::sync::Mutex<HashMap<String, snow::TransportState>>> = OnceLock::new();
-                        let transports = TRANSPORT_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+                        // Store the transport in the shared module-level map
+                        let transports = NOISE_TRANSPORT_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
                         transports.lock().await.insert(conn_id.to_string(), transport);
 
                         // Acknowledge the handshake completion
@@ -3508,7 +3559,6 @@ impl Gateway {
         working_dir: Option<String>,
     ) {
         use crate::remote_exec::{NoiseSession, ToolCapability, ClientCapabilities};
-        use std::sync::OnceLock;
 
         // Parse capability strings into ToolCapability enums
         let mut cap_set = std::collections::HashSet::new();
@@ -3527,9 +3577,8 @@ impl Gateway {
             }
         }
 
-        // Retrieve the transport state from the handshake
-        static TRANSPORT_STATES: OnceLock<tokio::sync::Mutex<HashMap<String, snow::TransportState>>> = OnceLock::new();
-        let transports = TRANSPORT_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+        // Retrieve the transport state from the handshake (shared module-level map)
+        let transports = NOISE_TRANSPORT_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
         let transport = transports.lock().await.remove(conn_id);
 
         let Some(transport) = transport else {

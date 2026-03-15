@@ -149,7 +149,7 @@ pub struct AgentInstance {
     /// Optional workflow definition — if present, this agent acts as a DAG workflow
     /// dispatcher rather than a standard LLM-driven agent.
     #[serde(default)]
-    pub workflow: Option<crate::orchestration::WorkflowDefinition>,
+    pub workflow: Option<WorkflowDefinition>,
     /// Timeout in seconds for each LLM API call (default: 45)
     #[serde(default = "default_llm_timeout_secs")]
     pub llm_timeout_secs: u64,
@@ -709,6 +709,62 @@ fn default_default_permission() -> String {
     "deny".to_string()
 }
 
+// ---------------------------------------------------------------------------
+// Workflow DAG types (pure data, used by AgentInstance.workflow)
+// ---------------------------------------------------------------------------
+
+/// A declarative workflow definition (DAG of agent nodes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowDefinition {
+    /// Nodes in the workflow (each maps to an agent)
+    pub nodes: Vec<WorkflowNode>,
+    /// Edges connecting nodes (data flow + conditions)
+    #[serde(default)]
+    pub edges: Vec<WorkflowEdge>,
+    /// Node IDs that receive the initial input
+    pub entry_nodes: Vec<String>,
+    /// Node IDs whose outputs form the final result
+    #[serde(default)]
+    pub exit_nodes: Vec<String>,
+}
+
+/// A single node in the workflow graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowNode {
+    /// Unique identifier for this node within the workflow
+    pub id: String,
+    /// The agent ID to invoke for this node
+    pub agent_id: String,
+    /// Optional message template with `{input}` and `{output:node_id}` placeholders
+    #[serde(default)]
+    pub message_template: Option<String>,
+}
+
+/// An edge connecting two workflow nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowEdge {
+    /// Source node ID
+    pub from: String,
+    /// Target node ID
+    pub to: String,
+    /// Condition for traversing this edge
+    #[serde(default)]
+    pub condition: EdgeCondition,
+}
+
+/// Condition for following a workflow edge.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EdgeCondition {
+    /// Always follow this edge
+    #[default]
+    Always,
+    /// Follow if the source node's output contains the given keyword
+    Contains { keyword: String },
+    /// Follow if the source node's output matches the given regex pattern
+    Pattern { regex: String },
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -801,49 +857,3 @@ mod tests {
     }
 }
 
-// Conversion traits for interoperability with subcrate types
-
-impl From<ToolConfig> for rockbot_tools::ToolConfig {
-    fn from(config: ToolConfig) -> Self {
-        Self {
-            profile: config.profile,
-            deny: config.deny,
-            configs: config.configs,
-        }
-    }
-}
-
-impl From<SecurityConfig> for rockbot_security::SecurityConfig {
-    fn from(config: SecurityConfig) -> Self {
-        Self {
-            sandbox: rockbot_security::SandboxConfig {
-                mode: config.sandbox.mode,
-                scope: config.sandbox.scope,
-                image: config.sandbox.image,
-            },
-            capabilities: rockbot_security::CapabilityConfig {
-                filesystem: config.capabilities.filesystem.map(|fs| {
-                    rockbot_security::FilesystemCapabilities {
-                        read_paths: fs.read_paths,
-                        write_paths: fs.write_paths,
-                        forbidden_paths: fs.forbidden_paths,
-                    }
-                }),
-                network: config.capabilities.network.map(|net| {
-                    rockbot_security::NetworkCapabilities {
-                        allowed_domains: net.allowed_domains,
-                        blocked_domains: net.blocked_domains,
-                        max_request_size: net.max_request_size,
-                    }
-                }),
-                process: config.capabilities.process.map(|proc| {
-                    rockbot_security::ProcessCapabilities {
-                        allowed_commands: proc.allowed_commands,
-                        blocked_commands: proc.blocked_commands,
-                        max_execution_time: proc.max_execution_time,
-                    }
-                }),
-            },
-        }
-    }
-}

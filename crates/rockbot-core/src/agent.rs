@@ -2825,7 +2825,7 @@ The user wants me to explore the codebase. I should start by listing the directo
         &self,
         session_id: &str,
         user_message: &Message,
-        workflow: &crate::orchestration::WorkflowDefinition,
+        workflow: &crate::config::WorkflowDefinition,
         progress_tx: &Option<ProgressSender>,
         start_time: std::time::Instant,
         mut trajectory: Trajectory,

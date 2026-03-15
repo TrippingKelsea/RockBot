@@ -63,5 +63,6 @@ pub use gateway::GatewayInvoker;
 pub use guardrails::{Guardrail, GuardrailResult, GuardrailPipeline, PiiGuardrail, PromptInjectionGuardrail};
 pub use trajectory::{Trajectory, TrajectoryEvent, TrajectoryEntry};
 pub use telemetry::{TelemetryConfig, init_telemetry};
-pub use orchestration::{SwarmBlackboard, WorkflowDefinition, WorkflowNode, WorkflowEdge, EdgeCondition, WorkflowExecutor};
+pub use config::{WorkflowDefinition, WorkflowNode, WorkflowEdge, EdgeCondition};
+pub use orchestration::{SwarmBlackboard, WorkflowExecutor};
 pub use agent::HandoffSignal;

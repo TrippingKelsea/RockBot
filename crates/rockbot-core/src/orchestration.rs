@@ -9,8 +9,8 @@
 //!   edges encode data flow and conditional routing. Supports parallel fan-out
 //!   for independent nodes in the same topological layer.
 
+use crate::config::{WorkflowDefinition, WorkflowNode, WorkflowEdge, EdgeCondition};
 use rockbot_tools::{AgentInvoker, BlackboardAccessor};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -62,62 +62,6 @@ impl BlackboardAccessor for SwarmBlackboard {
         let data = self.data.read().await;
         data.get(swarm_id).cloned().unwrap_or_default()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Workflow DAG types
-// ---------------------------------------------------------------------------
-
-/// A declarative workflow definition (DAG of agent nodes).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowDefinition {
-    /// Nodes in the workflow (each maps to an agent)
-    pub nodes: Vec<WorkflowNode>,
-    /// Edges connecting nodes (data flow + conditions)
-    #[serde(default)]
-    pub edges: Vec<WorkflowEdge>,
-    /// Node IDs that receive the initial input
-    pub entry_nodes: Vec<String>,
-    /// Node IDs whose outputs form the final result
-    #[serde(default)]
-    pub exit_nodes: Vec<String>,
-}
-
-/// A single node in the workflow graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowNode {
-    /// Unique identifier for this node within the workflow
-    pub id: String,
-    /// The agent ID to invoke for this node
-    pub agent_id: String,
-    /// Optional message template with `{input}` and `{output:node_id}` placeholders
-    #[serde(default)]
-    pub message_template: Option<String>,
-}
-
-/// An edge connecting two workflow nodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowEdge {
-    /// Source node ID
-    pub from: String,
-    /// Target node ID
-    pub to: String,
-    /// Condition for traversing this edge
-    #[serde(default)]
-    pub condition: EdgeCondition,
-}
-
-/// Condition for following a workflow edge.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum EdgeCondition {
-    /// Always follow this edge
-    #[default]
-    Always,
-    /// Follow if the source node's output contains the given keyword
-    Contains { keyword: String },
-    /// Follow if the source node's output matches the given regex pattern
-    Pattern { regex: String },
 }
 
 // ---------------------------------------------------------------------------

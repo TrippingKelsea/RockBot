@@ -1,6 +1,6 @@
 [package]
 name = "rockbot-security"
-version = "0.1.2"
+version.workspace = true
 edition = "2021"
 description = "Security and sandboxing for RockBot"
 license = "MIT"

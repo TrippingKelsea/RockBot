@@ -161,7 +161,7 @@ fn render_agent_cards(frame: &mut Frame, area: Rect, state: &AppState, effect_st
 
 fn render_agent_details(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Agent Details");
 

@@ -2653,8 +2653,8 @@ impl App {
             KeyCode::Esc => {
                 self.state.input_mode = InputMode::Normal;
             }
-            // Shift+Enter inserts a newline (up to 10 lines)
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            // Shift+Enter or Alt+Enter inserts a newline (up to 10 lines)
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT) => {
                 let newline_count = self.state.input_buffer.chars().filter(|&c| c == '\n').count();
                 if newline_count < 9 {
                     self.state.input_buffer.insert(self.state.input_cursor, '\n');
@@ -2931,36 +2931,44 @@ impl App {
 
     /// Render the entire UI
     fn render(&mut self, frame: &mut Frame) {
-        // Layout: top row (sidebar + cards) | main content | status bar
-        // Sidebar height: 7 menu items + 2 borders = 9 rows
+        // Layout: sidebar (left) | content (right) with cards + detail | status bar (bottom)
         let outer = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(9), Constraint::Min(0), Constraint::Length(2)])
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
             .split(frame.area());
 
-        // Top row: sidebar (left) + page cards area (right)
-        let top_row = Layout::default()
+        // Main area: sidebar | content
+        let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(22), Constraint::Min(0)])
             .split(outer[0]);
 
-        // Sidebar in top-left
-        render_sidebar(frame, top_row[0], &self.state, &self.effect_state);
+        // Sidebar spans full height
+        render_sidebar(frame, columns[0], &self.state, &self.effect_state);
 
-        // Content: page cards in top-right, detail in main area
+        // Right side: cards row (5 rows) + detail area
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(5), Constraint::Min(0)])
+            .split(columns[1]);
+
+        let cards_area = right[0];
+        let detail_area = right[1];
+
+        // Content: page cards on top, detail below
         match self.state.menu_item {
-            MenuItem::Dashboard => render_dashboard(frame, top_row[1], outer[1], &self.state, &self.effect_state),
-            MenuItem::Credentials => render_credentials(frame, top_row[1], outer[1], &self.state, self.state.credentials_tab, &self.effect_state),
-            MenuItem::Agents => render_agents(frame, top_row[1], outer[1], &self.state, &self.effect_state),
-            MenuItem::Sessions => render_sessions(frame, top_row[1], outer[1], &self.state, &self.effect_state),
-            MenuItem::CronJobs => render_cron_jobs(frame, top_row[1], outer[1], &self.state, &self.effect_state),
-            MenuItem::Models => render_models(frame, top_row[1], outer[1], &self.state, &self.effect_state),
-            MenuItem::Settings => render_settings(frame, top_row[1], outer[1], &self.state, &self.effect_state),
+            MenuItem::Dashboard => render_dashboard(frame, cards_area, detail_area, &self.state, &self.effect_state),
+            MenuItem::Credentials => render_credentials(frame, cards_area, detail_area, &self.state, self.state.credentials_tab, &self.effect_state),
+            MenuItem::Agents => render_agents(frame, cards_area, detail_area, &self.state, &self.effect_state),
+            MenuItem::Sessions => render_sessions(frame, cards_area, detail_area, &self.state, &self.effect_state),
+            MenuItem::CronJobs => render_cron_jobs(frame, cards_area, detail_area, &self.state, &self.effect_state),
+            MenuItem::Models => render_models(frame, cards_area, detail_area, &self.state, &self.effect_state),
+            MenuItem::Settings => render_settings(frame, cards_area, detail_area, &self.state, &self.effect_state),
         }
 
         // Status bar
         let help_text = self.get_help_text();
-        render_status_bar(frame, outer[2], self.state.status_message.as_ref(), &help_text);
+        render_status_bar(frame, outer[1], self.state.status_message.as_ref(), &help_text);
 
         // Render modals on top
         self.render_modals(frame);
@@ -3063,7 +3071,7 @@ impl App {
             InputMode::PasswordInput { .. } => "Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::AddCredential(_) => "↑↓/Tab:Navigate │ ←→:Type │ Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::Confirm { .. } => "y:Yes │ n:No │ Esc:Cancel".to_string(),
-            InputMode::ChatInput => "Enter:Send │ Shift+Enter:Newline │ PgUp/Dn:Scroll │ Ctrl+R:Retry │ Esc:Close".to_string(),
+            InputMode::ChatInput => "Enter:Send │ Alt+Enter:Newline │ PgUp/Dn:Scroll │ Ctrl+R:Retry │ Esc:Close".to_string(),
             InputMode::EditCredential(_) => "↑↓/Tab:Navigate │ Enter:Submit │ Esc:Cancel".to_string(),
             InputMode::EditProvider(_) => "↑↓/Tab:Navigate │ ←→:Auth Type │ Enter:Save │ Esc:Cancel".to_string(),
             InputMode::AddAgent(_) | InputMode::EditAgent(_) => "↑↓/Tab:Navigate │ ←→:Cycle Model │ Ctrl+S:Save │ Esc:Cancel".to_string(),
@@ -3230,6 +3238,7 @@ fn update_credential_in_vault(
 pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
     use crossterm::{
         execute,
+        event::{PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags, KeyboardEnhancementFlags},
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     };
     use ratatui::backend::CrosstermBackend;
@@ -3239,6 +3248,11 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    // Try to enable keyboard enhancement for Shift+Enter detection
+    let has_keyboard_enhancement = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    ).is_ok();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -3322,6 +3336,9 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf) -> Result<()> {
     }
 
     // Restore terminal
+    if has_keyboard_enhancement {
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    }
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

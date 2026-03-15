@@ -40,7 +40,7 @@ pub fn render_models(frame: &mut Frame, cards_area: Rect, detail_area: Rect, sta
 
 fn render_no_providers(frame: &mut Frame, area: Rect) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .title("LLM Providers");
 
     let content = vec![
@@ -165,7 +165,7 @@ fn render_provider_cards(frame: &mut Frame, area: Rect, state: &AppState, effect
 
 fn render_provider_details(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Provider Details");
 

@@ -273,9 +273,11 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
     let auto_scroll = state.chat_auto_scroll();
 
     // Calculate input height accounting for both explicit newlines and visual line wrapping
-    let inner_width = area.width.saturating_sub(2).max(1) as usize; // subtract borders
+    // Subtract borders (2) + 1 for preemptive wrap so box grows before text hits the edge
+    let inner_width = area.width.saturating_sub(3).max(1) as usize;
     let visual_lines: usize = state.input_buffer.split('\n').map(|line| {
-        let char_count = line.len().max(1); // at least 1 line per segment
+        // +1 for the cursor character that is rendered inline
+        let char_count = (line.len() + 1).max(1);
         (char_count + inner_width - 1) / inner_width // ceiling division
     }).sum();
     let input_line_count = visual_lines.clamp(1, 10);
@@ -291,7 +293,7 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
         render_chat_messages(frame, chunks[0], state, messages, chat_loading, chat_scroll, auto_scroll);
     } else if state.sessions.is_empty() {
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(effects::inactive_border_style());
         let content = Paragraph::new(vec![
             Line::from(""),
@@ -305,7 +307,7 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
         frame.render_widget(content, chunks[0]);
     } else if let Some(err) = &state.sessions_error {
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(Style::default().fg(palette::ERROR));
         let content = Paragraph::new(Line::from(Span::styled(
             format!("Error: {err}"),
@@ -317,7 +319,7 @@ fn render_chat_area(frame: &mut Frame, area: Rect, state: &AppState, _effect_sta
     } else {
         // Session selected but no messages
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(effects::inactive_border_style());
         let content = Paragraph::new(vec![
             Line::from(""),
@@ -344,7 +346,7 @@ fn render_chat_messages(
     auto_scroll: bool,
 ) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER));
 
     let inner = block.inner(area);
@@ -483,7 +485,7 @@ fn render_chat_messages(
     // Re-render block with scroll indicator if needed
     if !scroll_indicator.is_empty() {
         let block_with_hint = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(Style::default().fg(palette::INACTIVE_BORDER))
             .title_bottom(Line::from(Span::styled(
                 scroll_indicator,
@@ -507,7 +509,7 @@ fn render_chat_input(frame: &mut Frame, area: Rect, state: &AppState, is_active:
     };
 
     let title = if is_active {
-        "Enter:Send │ Shift+Enter:Newline │ PgUp/Dn:Scroll │ Ctrl+R:Retry │ Esc:Cancel"
+        "Enter:Send │ Alt+Enter:Newline │ PgUp/Dn:Scroll │ Ctrl+R:Retry │ Esc:Cancel"
     } else {
         "Press 'c' to chat │ 'd' to archive"
     };

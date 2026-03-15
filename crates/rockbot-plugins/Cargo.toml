@@ -1,6 +1,6 @@
 [package]
 name = "rockbot-plugins"
-version = "0.1.2"
+version.workspace = true
 edition = "2021"
 description = "Plugin system for RockBot"
 license = "MIT"

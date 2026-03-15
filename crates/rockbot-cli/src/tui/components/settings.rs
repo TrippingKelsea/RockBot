@@ -105,7 +105,7 @@ fn render_settings_detail(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_general(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("General");
 
@@ -155,7 +155,7 @@ fn render_general(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_paths(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("Paths");
 
@@ -191,7 +191,7 @@ fn render_paths(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_about(frame: &mut Frame, area: Rect) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(palette::INACTIVE_BORDER))
         .title("About");
 

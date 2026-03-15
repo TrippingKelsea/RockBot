@@ -1,6 +1,6 @@
 [package]
 name = "rockbot-core"
-version = "0.1.2"
+version.workspace = true
 edition = "2021"
 description = "Core RockBot framework components"
 license = "MIT"

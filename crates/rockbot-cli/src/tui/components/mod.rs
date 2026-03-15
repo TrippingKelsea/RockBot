@@ -81,9 +81,8 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, message: Option<&(String
         None => (help_text.to_string(), Style::default().fg(Color::DarkGray)),
     };
     
-    let status = Paragraph::new(text)
-        .style(style)
-        .block(Block::default().borders(Borders::TOP));
+    let status = Paragraph::new(format!(" {text}"))
+        .style(style);
     
     frame.render_widget(status, area);
 }

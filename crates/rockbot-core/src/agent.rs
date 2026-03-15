@@ -711,8 +711,8 @@ impl Agent {
         // Generate LLM request
         let llm_request = self.build_llm_request(&mut context).await?;
 
-        // Call LLM with retry logic
-        let llm_response = self.call_llm_with_retry(llm_request).await?;
+        // Call LLM with streaming (for real-time text deltas) + retry logic
+        let llm_response = self.call_llm_streaming_with_retry(llm_request, &progress_tx).await?;
 
         // Process LLM response and handle tool calls
         let (mut response_message, tool_results, mut token_usage) = self.process_llm_response(
@@ -1891,6 +1891,140 @@ The user wants me to explore the codebase. I should start by listing the directo
         }))
     }
     
+    /// Call LLM with streaming + retry, forwarding text deltas via the progress channel.
+    /// Returns the assembled response, same as `call_llm_with_retry`.
+    async fn call_llm_streaming_with_retry(
+        &self,
+        request: ChatCompletionRequest,
+        progress_tx: &Option<ProgressSender>,
+    ) -> Result<ChatCompletionResponse> {
+        // If no progress channel, fall back to non-streaming
+        let Some(ptx) = progress_tx.as_ref() else {
+            return self.call_llm_with_retry(request).await;
+        };
+
+        let retry_config = RetryConfig::default();
+        let mut last_error_message = String::new();
+        let llm_timeout = Duration::from_secs(self.config.llm_timeout_secs);
+        let chunk_idle_timeout = Duration::from_secs(self.config.llm_timeout_secs * 2);
+
+        for attempt in 0..=retry_config.max_retries {
+            debug!("LLM streaming call attempt {} of {} (timeout: {}s)",
+                   attempt + 1, retry_config.max_retries + 1, self.config.llm_timeout_secs);
+
+            let stream_result = tokio::time::timeout(
+                llm_timeout,
+                self.llm_provider.stream_completion(request.clone()),
+            ).await;
+
+            let mut stream = match stream_result {
+                Err(_elapsed) => {
+                    last_error_message = format!("LLM streaming timed out after {}s", self.config.llm_timeout_secs);
+                    warn!("{} (attempt {})", last_error_message, attempt + 1);
+                    if attempt >= retry_config.max_retries { break; }
+                    let delay = self.calculate_retry_delay(&retry_config, attempt, &ErrorCategory::Network);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    continue;
+                }
+                Ok(Err(error)) => {
+                    last_error_message = error.to_string();
+                    let cat = self.classify_llm_error(&error);
+                    if attempt >= retry_config.max_retries || !self.should_retry_error(&cat) { break; }
+                    let delay = self.calculate_retry_delay(&retry_config, attempt, &cat);
+                    warn!("Retrying LLM streaming in {}ms due to: {}", delay, error);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    continue;
+                }
+                Ok(Ok(s)) => s,
+            };
+
+            let mut accumulated_text = String::new();
+            let mut accumulated_tool_calls: Vec<rockbot_llm::ToolCall> = Vec::new();
+            let mut response_id = String::new();
+            let mut finish_reason = "stop".to_string();
+
+            while let Ok(maybe_chunk) = tokio::time::timeout(chunk_idle_timeout, stream.next()).await {
+                let Some(chunk_result) = maybe_chunk else { break };
+                match chunk_result {
+                    Ok(chunk) => {
+                        if response_id.is_empty() {
+                            response_id.clone_from(&chunk.id);
+                        }
+                        for choice in &chunk.choices {
+                            if let Some(ref content) = choice.delta.content {
+                                accumulated_text.push_str(content);
+                                // Forward text delta to TUI in real-time
+                                let _ = ptx.send(AgentProgressEvent::TextDelta {
+                                    text: content.clone(),
+                                });
+                            }
+                            if let Some(ref tool_calls) = choice.delta.tool_calls {
+                                Self::merge_streaming_tool_calls(
+                                    &mut accumulated_tool_calls, tool_calls,
+                                );
+                            }
+                            if let Some(ref reason) = choice.finish_reason {
+                                finish_reason.clone_from(reason);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        last_error_message = format!("Stream error: {e}");
+                        break;
+                    }
+                }
+            }
+
+            // If we got data, assemble and return
+            if !response_id.is_empty() || !accumulated_text.is_empty() || !accumulated_tool_calls.is_empty() {
+                if attempt > 0 {
+                    info!("LLM streaming succeeded after {} retries", attempt);
+                }
+                let tool_calls_option = if accumulated_tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(accumulated_tool_calls)
+                };
+                return Ok(ChatCompletionResponse {
+                    id: if response_id.is_empty() { format!("stream-{}", uuid::Uuid::new_v4()) } else { response_id },
+                    object: "chat.completion".to_string(),
+                    created: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    model: request.model.clone(),
+                    choices: vec![rockbot_llm::Choice {
+                        index: 0,
+                        message: rockbot_llm::Message {
+                            role: rockbot_llm::MessageRole::Assistant,
+                            content: accumulated_text,
+                            images: vec![],
+                            tool_calls: tool_calls_option,
+                            tool_call_id: None,
+                        },
+                        finish_reason,
+                    }],
+                    usage: rockbot_llm::Usage {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        total_tokens: 0,
+                    },
+                });
+            }
+
+            // No data received — retry if possible
+            if attempt >= retry_config.max_retries { break; }
+            let delay = self.calculate_retry_delay(&retry_config, attempt, &ErrorCategory::Network);
+            warn!("LLM streaming produced no data, retrying in {}ms", delay);
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+
+        error!("LLM streaming failed after {} retries: {}", retry_config.max_retries, last_error_message);
+        Err(crate::error::RockBotError::Agent(AgentError::ModelError {
+            message: format!("LLM streaming failed after {} retries: {}", retry_config.max_retries, last_error_message),
+        }))
+    }
+
     /// Classify an LLM error for retry decisions
     #[allow(clippy::unused_self)]
     fn classify_llm_error(&self, error: &LlmError) -> ErrorCategory {
@@ -2165,7 +2299,7 @@ The user wants me to explore the codebase. I should start by listing the directo
 
                     // Re-prompt
                     let next_request = self.build_llm_request(context).await?;
-                    match self.call_llm_with_retry(next_request).await {
+                    match self.call_llm_streaming_with_retry(next_request, progress_tx).await {
                         Ok(response) => {
                             cumulative_token_usage.prompt_tokens += response.usage.prompt_tokens;
                             cumulative_token_usage.completion_tokens += response.usage.completion_tokens;
@@ -2379,7 +2513,7 @@ The user wants me to explore the codebase. I should start by listing the directo
 
                     // Continue to next LLM call with the warning injected
                     let next_llm_request = self.build_llm_request(context).await?;
-                    match self.call_llm_with_retry(next_llm_request).await {
+                    match self.call_llm_streaming_with_retry(next_llm_request, progress_tx).await {
                         Ok(response) => {
                             cumulative_token_usage.prompt_tokens += response.usage.prompt_tokens;
                             cumulative_token_usage.completion_tokens += response.usage.completion_tokens;
@@ -2429,7 +2563,7 @@ The user wants me to explore the codebase. I should start by listing the directo
             // Generate next LLM request
             let next_llm_request = self.build_llm_request(context).await?;
 
-            match self.call_llm_with_retry(next_llm_request).await {
+            match self.call_llm_streaming_with_retry(next_llm_request, progress_tx).await {
                 Ok(response) => {
                     cumulative_token_usage.prompt_tokens += response.usage.prompt_tokens;
                     cumulative_token_usage.completion_tokens += response.usage.completion_tokens;

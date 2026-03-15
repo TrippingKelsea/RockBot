@@ -220,14 +220,14 @@ async fn rotate_cert(
         .gateway
         .tls_cert
         .as_ref()
-        .context("No tls_cert configured — nothing to rotate")?
-        .clone();
+        .map(|p| expand_tilde(p))
+        .context("No tls_cert configured — nothing to rotate")?;
     let key_path = config
         .gateway
         .tls_key
         .as_ref()
-        .context("No tls_key configured — nothing to rotate")?
-        .clone();
+        .map(|p| expand_tilde(p))
+        .context("No tls_key configured — nothing to rotate")?;
 
     // Backup old files
     if backup {

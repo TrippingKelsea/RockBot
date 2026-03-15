@@ -199,6 +199,9 @@ pub struct Gateway {
     /// Embedded overseer for agent behavior monitoring
     #[cfg(feature = "overseer")]
     overseer: Option<Arc<rockbot_overseer::Overseer>>,
+    /// Stored error from overseer initialization failure (if configured but init failed)
+    #[cfg(feature = "overseer")]
+    overseer_init_error: Option<String>,
     /// Remote executor registry for Noise-encrypted tool dispatch
     #[cfg(feature = "remote-exec")]
     pub(crate) remote_exec_registry: Arc<rockbot_client::remote_exec::RemoteExecutorRegistry>,
@@ -566,28 +569,28 @@ impl Gateway {
 
         // Initialize overseer if configured and feature-enabled
         #[cfg(feature = "overseer")]
-        let overseer = if let Some(ref overseer_value) = config.overseer {
+        let (overseer, overseer_init_error) = if let Some(ref overseer_value) = config.overseer {
             match serde_json::from_value::<rockbot_overseer::OverseerConfig>(overseer_value.clone()) {
                 Ok(overseer_config) => {
                     match rockbot_overseer::Overseer::init(overseer_config).await {
                         Ok(o) => {
                             info!("Overseer initialized");
-                            Some(Arc::new(o))
+                            (Some(Arc::new(o)), None)
                         }
                         Err(e) => {
-                            error!("Failed to initialize overseer: {}", e);
-                            None
+                            error!("Failed to initialize overseer: {e}");
+                            (None, Some(format!("{e}")))
                         }
                     }
                 }
                 Err(e) => {
-                    error!("Invalid overseer config: {}", e);
-                    None
+                    error!("Invalid overseer config: {e}");
+                    (None, Some(format!("Invalid config: {e}")))
                 }
             }
         } else {
             debug!("Overseer not configured");
-            None
+            (None, None)
         };
 
         Ok(Self {
@@ -631,6 +634,8 @@ impl Gateway {
             },
             #[cfg(feature = "overseer")]
             overseer,
+            #[cfg(feature = "overseer")]
+            overseer_init_error,
             #[cfg(feature = "remote-exec")]
             remote_exec_registry: Arc::new(rockbot_client::remote_exec::RemoteExecutorRegistry::new()),
             #[cfg(feature = "remote-exec")]
@@ -3078,17 +3083,18 @@ impl Gateway {
         // Intercept /overseer commands before agent processing
         #[cfg(feature = "overseer")]
         if user_message.trim().starts_with("/overseer") {
-            let sub = user_message.trim()
-                .strip_prefix("/overseer")
-                .unwrap_or("")
-                .trim();
             let output = if let Some(ref overseer) = self.overseer {
                 match overseer.dispatch_command(&user_message) {
                     rockbot_overseer::CommandResult::Handled(out) => out,
                     rockbot_overseer::CommandResult::NotHandled => String::new(),
                 }
-            } else if sub == "init" {
-                "Overseer initialization requires adding `[overseer]` to your config file and restarting the gateway.".to_string()
+            } else if let Some(ref err) = self.overseer_init_error {
+                format!(
+                    "## Overseer\n\n\
+                     The overseer is configured but failed to initialize:\n\n\
+                     ```\n{err}\n```\n\n\
+                     Check the gateway logs for details and restart after fixing the issue."
+                )
             } else {
                 "## Overseer\n\n\
                  The overseer feature is compiled in but not configured.\n\n\
@@ -4091,17 +4097,16 @@ impl Gateway {
         // Intercept /overseer commands before agent processing
         #[cfg(feature = "overseer")]
         if message_request.message.trim().starts_with("/overseer") {
-            let sub = message_request.message.trim()
-                .strip_prefix("/overseer")
-                .unwrap_or("")
-                .trim();
             let output = if let Some(ref overseer) = self.overseer {
                 match overseer.dispatch_command(&message_request.message) {
                     rockbot_overseer::CommandResult::Handled(out) => Some(out),
                     rockbot_overseer::CommandResult::NotHandled => None,
                 }
-            } else if sub == "init" {
-                Some("Overseer initialization requires adding `[overseer]` to your config file and restarting the gateway.".to_string())
+            } else if let Some(ref err) = self.overseer_init_error {
+                Some(format!(
+                    "The overseer is configured but failed to initialize: {err}. \
+                     Check the gateway logs for details."
+                ))
             } else {
                 Some("The overseer feature is compiled in but not configured. \
                       Add an `[overseer]` section to your config file.".to_string())
@@ -4739,6 +4744,8 @@ impl Clone for Gateway {
             cron_scheduler: Arc::clone(&self.cron_scheduler),
             #[cfg(feature = "overseer")]
             overseer: self.overseer.clone(),
+            #[cfg(feature = "overseer")]
+            overseer_init_error: self.overseer_init_error.clone(),
             #[cfg(feature = "remote-exec")]
             remote_exec_registry: Arc::clone(&self.remote_exec_registry),
             #[cfg(feature = "remote-exec")]

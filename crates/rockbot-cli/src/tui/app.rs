@@ -3557,8 +3557,27 @@ async fn send_tool_response(
         "output": output,
         "execution_time_ms": elapsed.as_millis() as u64,
     });
-    let _ = sender.send(serde_json::to_string(&resp).unwrap_or_default()).await;
-    tracing::info!("Remote tool response sent: request={request_id}, success={success}, time={}ms", elapsed.as_millis());
+    let payload = serde_json::to_string(&resp).unwrap_or_default();
+
+    // Retry with backoff if WS is temporarily disconnected (e.g. during reconnect)
+    let mut attempts = 0u32;
+    loop {
+        match sender.send(payload.clone()).await {
+            Ok(()) => {
+                tracing::info!("Remote tool response sent: request={request_id}, success={success}, time={}ms", elapsed.as_millis());
+                return;
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts >= 10 {
+                    tracing::error!("Failed to send remote tool response after {attempts} attempts: {e} (request={request_id})");
+                    return;
+                }
+                tracing::warn!("WS disconnected, retrying remote tool response (attempt {attempts}/10, request={request_id})");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
 }
 
 /// Map a GatewayEvent from rockbot-client into TUI Messages.

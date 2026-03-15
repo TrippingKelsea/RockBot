@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 rockbot-client = { path = "../rockbot-client", optional = true }
 rockbot-config = { path = "../rockbot-config" }
+rockbot-tools-mcp = { path = "../rockbot-tools-mcp", optional = true }
 rockbot-session = { path = "../rockbot-session" }
 rockbot-llm = { path = "../rockbot-llm", default-features = false }
 rockbot-tools = { path = "../rockbot-tools" }
@@ -51,6 +52,7 @@ tracing-subscriber = { workspace = true, optional = true }
 [features]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tracing-subscriber"]
 remote-exec = ["dep:rockbot-client", "rockbot-client/remote-exec"]
+tools-mcp = ["dep:rockbot-tools-mcp"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

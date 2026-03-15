@@ -18,7 +18,7 @@ telegram = ["rockbot-gateway/telegram"]
 signal = ["rockbot-gateway/signal"]
 # Tool providers
 tools-credentials = ["rockbot-gateway/tools-credentials"]
-tools-mcp = ["rockbot-gateway/tools-mcp"]
+tools-mcp = ["rockbot-gateway/tools-mcp", "rockbot-agent/tools-mcp"]
 tools-markdown = ["rockbot-gateway/tools-markdown"]
 # Telemetry
 otel = ["rockbot-agent/otel", "rockbot-gateway/otel"]

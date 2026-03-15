@@ -41,6 +41,7 @@ pub mod sandbox;
 pub mod telemetry;
 pub mod tokenizer;
 pub mod orchestration;
+pub mod slash_commands;
 #[cfg(feature = "remote-exec")]
 pub mod remote_exec;
 

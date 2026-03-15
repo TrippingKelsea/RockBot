@@ -26,6 +26,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, warn};
 
+// Re-export snow types so downstream crates (rockbot-cli) can use them
+// without taking a direct dependency on the `snow` crate.
+pub use snow::{HandshakeState, Keypair};
+
 // ---------------------------------------------------------------------------
 // Capability categories
 // ---------------------------------------------------------------------------

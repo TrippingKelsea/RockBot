@@ -97,6 +97,10 @@ pub struct App {
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// Pending oneshot receiver — the WS task sends the channel here once connected
     ws_pending_rx: Option<tokio::sync::oneshot::Receiver<tokio::sync::mpsc::UnboundedSender<String>>>,
+    /// Local tool registry for remote tool execution (TUI executes tools on behalf of gateway)
+    #[cfg(feature = "remote-exec")]
+    #[allow(dead_code)]
+    local_tool_registry: Option<std::sync::Arc<rockbot_tools::ToolRegistry>>,
 }
 
 impl App {
@@ -111,6 +115,8 @@ impl App {
             vault: None,
             ws_tx: None,
             ws_pending_rx: None,
+            #[cfg(feature = "remote-exec")]
+            local_tool_registry: None,
         }
     }
 
@@ -224,7 +230,16 @@ impl App {
 
             // Create the outbound channel *now* that we know we are connected
             let (ws_send_tx, mut ws_send_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let _ = ws_ready_tx.send(ws_send_tx);
+            let _ = ws_ready_tx.send(ws_send_tx.clone());
+
+            // --- Initiate Noise Protocol handshake for remote tool execution ---
+            #[cfg(feature = "remote-exec")]
+            {
+                match initiate_noise_handshake(&mut ws_sink).await {
+                    Ok(()) => tracing::info!("Noise handshake step 1 sent"),
+                    Err(e) => tracing::warn!("Failed to initiate Noise handshake: {e}"),
+                }
+            }
 
             loop {
                 tokio::select! {
@@ -245,7 +260,7 @@ impl App {
                     inbound = ws_source.next() => {
                         match inbound {
                             Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                                handle_ws_response(&tx, &text);
+                                handle_ws_response(&tx, &ws_send_tx, &text).await;
                             }
                             Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
                                 tracing::info!("WebSocket closed by server");
@@ -3380,7 +3395,268 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: Str
 // =============================================================================
 
 /// Parse an incoming WebSocket message from the gateway and dispatch to the TUI state
-fn handle_ws_response(tx: &mpsc::UnboundedSender<Message>, text: &str) {
+/// Initiate Noise Protocol handshake — send step 1 (client -> server).
+#[cfg(feature = "remote-exec")]
+async fn initiate_noise_handshake<S>(ws_sink: &mut S) -> Result<()>
+where
+    S: futures_util::Sink<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMsg;
+
+    let client_key = rockbot_core::remote_exec::generate_keypair()
+        .map_err(|e| anyhow::anyhow!("Noise keypair generation failed: {e}"))?;
+    let mut initiator = rockbot_core::remote_exec::create_initiator(&client_key)
+        .map_err(|e| anyhow::anyhow!("Noise initiator creation failed: {e}"))?;
+
+    let mut buf = vec![0u8; 65535];
+    let len = initiator.write_message(&[], &mut buf)
+        .map_err(|e| anyhow::anyhow!("Noise step 1 write failed: {e}"))?;
+
+    let payload_b64 = base64_encode_simple(&buf[..len]);
+    let msg = serde_json::json!({
+        "type": "noise_handshake",
+        "payload": payload_b64,
+        "step": 1
+    });
+    ws_sink.send(WsMsg::Text(serde_json::to_string(&msg)?)).await?;
+
+    // Store the handshake state + key for step 3
+    {
+        let mut guard: tokio::sync::MutexGuard<'_, Option<(rockbot_core::remote_exec::HandshakeState, rockbot_core::remote_exec::Keypair)>> =
+            NOISE_HANDSHAKE_STATE.lock().await;
+        *guard = Some((initiator, client_key));
+    }
+
+    Ok(())
+}
+
+/// In-progress Noise handshake state (client side).
+#[cfg(feature = "remote-exec")]
+static NOISE_HANDSHAKE_STATE: tokio::sync::Mutex<Option<(rockbot_core::remote_exec::HandshakeState, rockbot_core::remote_exec::Keypair)>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// Whether the Noise session is established (remote exec active).
+#[cfg(feature = "remote-exec")]
+static NOISE_SESSION_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Simple base64 encoding for Noise payloads.
+#[cfg(feature = "remote-exec")]
+fn base64_encode_simple(input: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        output.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+        output.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
+        } else { output.push('='); }
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(triple & 0x3F) as usize] as char);
+        } else { output.push('='); }
+    }
+    output
+}
+
+/// Simple base64 decoding for Noise payloads.
+#[cfg(feature = "remote-exec")]
+fn base64_decode_simple(input: &str) -> Result<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let input = input.trim_end_matches('=');
+    let mut output = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0;
+    for c in input.bytes() {
+        let val = ALPHABET.iter().position(|&b| b == c)
+            .ok_or_else(|| anyhow::anyhow!("invalid base64 character"))? as u32;
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Ok(output)
+}
+
+/// Handle Noise handshake step 2 response from the server.
+#[cfg(feature = "remote-exec")]
+async fn handle_noise_step2(
+    ws_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    payload_b64: &str,
+) {
+    let payload = match base64_decode_simple(payload_b64) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Invalid base64 in Noise step 2: {e}");
+            return;
+        }
+    };
+
+    let mut state: tokio::sync::MutexGuard<'_, Option<(rockbot_core::remote_exec::HandshakeState, rockbot_core::remote_exec::Keypair)>> =
+        NOISE_HANDSHAKE_STATE.lock().await;
+    let Some((ref mut initiator, _)) = *state else {
+        tracing::warn!("Received Noise step 2 but no handshake in progress");
+        return;
+    };
+
+    let mut buf = vec![0u8; 65535];
+    if let Err(e) = initiator.read_message(&payload, &mut buf) {
+        tracing::warn!("Noise step 2 read failed: {e}");
+        state.take();
+        return;
+    }
+
+    // Write step 3 (client -> server)
+    let len = match initiator.write_message(&[], &mut buf) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("Noise step 3 write failed: {e}");
+            state.take();
+            return;
+        }
+    };
+
+    let payload_b64 = base64_encode_simple(&buf[..len]);
+    let msg = serde_json::json!({
+        "type": "noise_handshake",
+        "payload": payload_b64,
+        "step": 3
+    });
+    if let Err(e) = ws_tx.send(serde_json::to_string(&msg).unwrap_or_default()) {
+        tracing::warn!("Failed to send Noise step 3: {e}");
+        state.take();
+        return;
+    }
+
+    tracing::info!("Noise handshake step 3 sent — awaiting capabilities ack");
+
+    // Handshake should now be finished — send capabilities
+    if initiator.is_handshake_finished() {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let caps_msg = serde_json::json!({
+            "type": "remote_capabilities",
+            "capabilities": ["filesystem", "shell", "network"],
+            "client_type": "tui",
+            "working_dir": cwd,
+        });
+        let _ = ws_tx.send(serde_json::to_string(&caps_msg).unwrap_or_default());
+        tracing::info!("Sent TUI capabilities (filesystem, shell, network)");
+        NOISE_SESSION_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    state.take(); // Consume the handshake state
+}
+
+/// Execute a tool locally on behalf of the remote gateway.
+#[cfg(feature = "remote-exec")]
+async fn handle_remote_tool_request(
+    ws_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    json: &serde_json::Value,
+) {
+    let request_id = json.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let tool_name = json.get("tool_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let params = json.get("params").and_then(|v| v.as_str()).unwrap_or("{}").to_string();
+    let agent_id = json.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let session_id = json.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let workspace = json.get("workspace_path").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+
+    tracing::info!("Executing remote tool locally: {tool_name} (request={request_id})");
+    let start = std::time::Instant::now();
+
+    // Create a minimal tool registry for local execution
+    let tool_config = rockbot_tools::ToolConfig {
+        profile: "standard".to_string(),
+        deny: vec![],
+        configs: std::collections::HashMap::new(),
+    };
+    let registry = match rockbot_tools::ToolRegistry::new(tool_config).await {
+        Ok(r) => r,
+        Err(e) => {
+            send_tool_response(ws_tx, &request_id, false, &format!("Failed to create tool registry: {e}"), start.elapsed());
+            return;
+        }
+    };
+
+    // Build a permissive execution context for local tool execution
+    let workspace_path = std::path::PathBuf::from(&workspace);
+    let mut capabilities = rockbot_security::Capabilities::new();
+    capabilities.add(rockbot_security::Capability::FilesystemRead(workspace_path.clone()));
+    capabilities.add(rockbot_security::Capability::FilesystemWrite(workspace_path.clone()));
+    capabilities.add(rockbot_security::Capability::ProcessExecute);
+    // Allow read/write from root so tools can access absolute paths
+    capabilities.add(rockbot_security::Capability::FilesystemRead(std::path::PathBuf::from("/")));
+    capabilities.add(rockbot_security::Capability::FilesystemWrite(std::path::PathBuf::from("/")));
+
+    let context = rockbot_tools::ToolExecutionContext {
+        session_id,
+        agent_id,
+        workspace_path,
+        security_context: rockbot_security::SecurityContext {
+            session_id: "remote-exec".to_string(),
+            capabilities,
+            sandbox_enabled: false,
+            restrictions: rockbot_security::SecurityRestrictions::default(),
+        },
+        credential_accessor: None,
+        command_allowlist: vec![],
+        approval_callback: None,
+        agent_invoker: None,
+        delegation_depth: 0,
+        blackboard: None,
+        swarm_id: None,
+    };
+
+    match registry.execute_tool(&tool_name, &params, context).await {
+        Ok(result) => {
+            let output = match &result.result {
+                rockbot_tools::message::ToolResult::Text { content } => content.clone(),
+                rockbot_tools::message::ToolResult::Json { data } => serde_json::to_string(data).unwrap_or_default(),
+                rockbot_tools::message::ToolResult::Error { message, .. } => message.clone(),
+                rockbot_tools::message::ToolResult::File { path, .. } => format!("[File: {path}]"),
+                rockbot_tools::message::ToolResult::Handoff { .. } => "[Handoff — not applicable for remote exec]".to_string(),
+            };
+            send_tool_response(ws_tx, &request_id, result.success, &output, start.elapsed());
+        }
+        Err(e) => {
+            send_tool_response(ws_tx, &request_id, false, &format!("Tool execution error: {e}"), start.elapsed());
+        }
+    }
+}
+
+#[cfg(feature = "remote-exec")]
+fn send_tool_response(
+    ws_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    request_id: &str,
+    success: bool,
+    output: &str,
+    elapsed: std::time::Duration,
+) {
+    let resp = serde_json::json!({
+        "type": "remote_tool_response",
+        "request_id": request_id,
+        "success": success,
+        "output": output,
+        "execution_time_ms": elapsed.as_millis() as u64,
+    });
+    let _ = ws_tx.send(serde_json::to_string(&resp).unwrap_or_default());
+    tracing::info!("Remote tool response sent: request={request_id}, success={success}, time={}ms", elapsed.as_millis());
+}
+
+async fn handle_ws_response(
+    tx: &mpsc::UnboundedSender<Message>,
+    ws_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    text: &str,
+) {
+    let _ = &ws_tx; // Used by remote-exec feature
     let json: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => {
@@ -3510,6 +3786,33 @@ fn handle_ws_response(tx: &mpsc::UnboundedSender<Message>, text: &str) {
         "error" => {
             let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
             tracing::warn!("Gateway WebSocket error: {message}");
+        }
+        // --- Remote execution protocol messages ---
+        #[cfg(feature = "remote-exec")]
+        "noise_handshake" => {
+            let step = json.get("step").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            if step == 2 {
+                let payload = json.get("payload").and_then(|v| v.as_str()).unwrap_or("");
+                handle_noise_step2(ws_tx, payload).await;
+            }
+        }
+        #[cfg(feature = "remote-exec")]
+        "remote_capabilities_ack" => {
+            let accepted = json.get("accepted").and_then(|v| v.as_bool()).unwrap_or(false);
+            let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            if accepted {
+                tracing::info!("Remote execution registered: {message}");
+            } else {
+                tracing::warn!("Remote execution rejected: {message}");
+            }
+        }
+        #[cfg(feature = "remote-exec")]
+        "remote_tool_request" => {
+            let ws_tx_clone = ws_tx.clone();
+            let json_clone = json.clone();
+            tokio::spawn(async move {
+                handle_remote_tool_request(&ws_tx_clone, &json_clone).await;
+            });
         }
         other => {
             tracing::debug!("Unhandled WebSocket message type: {other}");

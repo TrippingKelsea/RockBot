@@ -243,6 +243,9 @@ pub struct Agent {
     blackboard: Option<Arc<dyn rockbot_tools::BlackboardAccessor>>,
     /// Swarm ID (from config) for blackboard scoping
     swarm_id: Option<String>,
+    /// Remote executor registry for dispatching tool calls to connected clients
+    #[cfg(feature = "remote-exec")]
+    remote_exec_registry: Option<Arc<crate::remote_exec::RemoteExecutorRegistry>>,
     /// Agent state
     state: Arc<RwLock<AgentState>>,
 }
@@ -520,6 +523,8 @@ impl Agent {
             episodic_store,
             blackboard: None,
             swarm_id,
+            #[cfg(feature = "remote-exec")]
+            remote_exec_registry: None,
             state: Arc::new(RwLock::new(AgentState {
                 active_contexts: HashMap::new(),
                 stats: AgentStats::default(),
@@ -545,6 +550,12 @@ impl Agent {
     /// Set the blackboard accessor for swarm coordination.
     pub fn set_blackboard(&mut self, blackboard: Arc<dyn rockbot_tools::BlackboardAccessor>) {
         self.blackboard = Some(blackboard);
+    }
+
+    /// Set the remote executor registry for dispatching tool calls to connected clients.
+    #[cfg(feature = "remote-exec")]
+    pub fn set_remote_exec_registry(&mut self, registry: Arc<crate::remote_exec::RemoteExecutorRegistry>) {
+        self.remote_exec_registry = Some(registry);
     }
 
     /// Process an incoming message and generate a response
@@ -2589,7 +2600,8 @@ The user wants me to explore the codebase. I should start by listing the directo
             .with_role(MessageRole::Assistant);
 
         info!(
-            "Completed tool execution loop: {} iterations, {} tool calls, {} prompt + {} completion = {} total tokens",
+            "Completed tool execution loop: agent={}, {} iterations, {} tool calls, {} prompt + {} completion = {} total tokens",
+            self.config.id,
             iteration_count, all_tool_results.len(),
             cumulative_token_usage.prompt_tokens,
             cumulative_token_usage.completion_tokens,
@@ -2989,6 +3001,82 @@ The user wants me to explore the codebase. I should start by listing the directo
 
                     let tool_start = std::time::Instant::now();
                     let tool_timeout = Duration::from_secs(self.config.tool_timeout_secs);
+
+                    // Try remote dispatch first if a capable client is connected
+                    #[cfg(feature = "remote-exec")]
+                    let remote_result = {
+                        if let Some(ref registry) = self.remote_exec_registry {
+                            if registry.find_executor(&tool_call.function.name).await.is_some() {
+                                info!(
+                                    "Dispatching tool '{}' to remote executor",
+                                    tool_call.function.name
+                                );
+                                registry.dispatch(
+                                    &tool_call.function.name,
+                                    &tool_call.function.arguments,
+                                    &self.config.id,
+                                    session_id,
+                                    &workspace.to_string_lossy(),
+                                    tool_timeout,
+                                ).await
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    #[cfg(feature = "remote-exec")]
+                    if let Some(remote_resp) = remote_result {
+                        let elapsed = tool_start.elapsed();
+                        info!(
+                            "Remote tool '{}' completed: success={}, time={}ms",
+                            tool_call.function.name,
+                            remote_resp.success,
+                            remote_resp.execution_time_ms,
+                        );
+
+                        crate::metrics::record_tool_call(
+                            &tool_call.function.name,
+                            remote_resp.success,
+                            elapsed,
+                        );
+
+                        // Fire PostToolCall hook
+                        let post_tool_event = HookEvent::PostToolCall {
+                            agent_id: self.config.id.clone(),
+                            session_id: session_id.to_string(),
+                            tool_name: tool_call.function.name.clone(),
+                            result: serde_json::json!({ "output": remote_resp.output }),
+                            success: remote_resp.success,
+                        };
+                        self.hook_registry.fire(&post_tool_event).await;
+
+                        let tool_message = Message::tool_result(
+                            tool_call.id.clone(),
+                            tool_call.function.name.clone(),
+                            remote_resp.output.clone(),
+                        ).with_session_id(session_id);
+
+                        tool_results.push(ToolExecutionResult {
+                            tool_name: tool_call.function.name.clone(),
+                            result: if remote_resp.success {
+                                ToolResult::Text { content: remote_resp.output }
+                            } else {
+                                ToolResult::Error {
+                                    message: remote_resp.output,
+                                    code: None,
+                                    details: None,
+                                }
+                            },
+                            success: remote_resp.success,
+                            execution_time_ms: elapsed.as_millis() as u64,
+                        });
+                        tool_messages.push(tool_message);
+                        continue;
+                    }
+
                     let tool_future = self.tool_registry.execute_tool(
                         &tool_call.function.name,
                         &tool_call.function.arguments,

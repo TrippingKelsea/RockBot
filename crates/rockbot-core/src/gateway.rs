@@ -157,13 +157,13 @@ pub struct Gateway {
     /// Gateway configuration
     config: GatewayConfig,
     /// Credentials configuration
-    credentials_config: CredentialsConfig,
+    pub(crate) credentials_config: CredentialsConfig,
     /// Path to the TOML config file (for persisting agent changes)
     config_path: Option<std::path::PathBuf>,
     /// Agent configurations from the config file (source of truth for declared agents)
     agents_config: Arc<RwLock<Vec<crate::config::AgentInstance>>>,
     /// Registered agents
-    agents: Arc<RwLock<HashMap<String, Arc<Agent>>>>,
+    pub(crate) agents: Arc<RwLock<HashMap<String, Arc<Agent>>>>,
     /// Pending agents (couldn't be created, e.g., missing API keys)
     pending_agents: Arc<RwLock<Vec<PendingAgent>>>,
     /// Agent factory for creating new agents
@@ -171,7 +171,7 @@ pub struct Gateway {
     /// Session manager
     session_manager: Arc<SessionManager>,
     /// Credential manager (optional, if credentials are enabled)
-    credential_manager: Option<Arc<CredentialManager>>,
+    pub(crate) credential_manager: Option<Arc<CredentialManager>>,
     /// LLM provider registry — single source of truth for provider state
     llm_registry: Arc<RwLock<Option<Arc<rockbot_llm::LlmProviderRegistry>>>>,
     /// Cached provider availability (provider_id -> is_configured). Refreshed on registry set.
@@ -193,7 +193,7 @@ pub struct Gateway {
     overseer: Option<Arc<rockbot_overseer::Overseer>>,
     /// Remote executor registry for Noise-encrypted tool dispatch
     #[cfg(feature = "remote-exec")]
-    remote_exec_registry: Arc<crate::remote_exec::RemoteExecutorRegistry>,
+    pub(crate) remote_exec_registry: Arc<crate::remote_exec::RemoteExecutorRegistry>,
     /// Noise Protocol static keypair (gateway side)
     #[cfg(feature = "remote-exec")]
     noise_keypair: Arc<snow::Keypair>,
@@ -641,7 +641,11 @@ impl Gateway {
     }
 
     /// Register an agent with the gateway
-    pub async fn register_agent(&self, agent: Arc<Agent>) {
+    pub async fn register_agent(&self, #[allow(unused_mut)] mut agent: Arc<Agent>) {
+        #[cfg(feature = "remote-exec")]
+        if let Some(a) = Arc::get_mut(&mut agent) {
+            a.set_remote_exec_registry(self.remote_exec_registry.clone());
+        }
         let agent_id = agent.id().to_string();
         let mut agents = self.agents.write().await;
         agents.insert(agent_id.clone(), agent);
@@ -665,6 +669,8 @@ impl Gateway {
     pub fn cron_scheduler(&self) -> &Arc<crate::cron::CronScheduler> {
         &self.cron_scheduler
     }
+
+    /// Get the gateway bind configuration (crate-visible for slash_commands).
 
     /// Start the cron scheduler background loop. Call this after agent registration
     /// so the executor can find agents to invoke.
@@ -810,6 +816,8 @@ impl Gateway {
                     if let Some(a) = Arc::get_mut(&mut agent) {
                         a.set_agent_invoker(self.agent_invoker());
                         a.set_blackboard(self.blackboard());
+                        #[cfg(feature = "remote-exec")]
+                        a.set_remote_exec_registry(self.remote_exec_registry.clone());
                     }
                     let mut agents = self.agents.write().await;
                     agents.insert(agent_id.clone(), agent);
@@ -2838,6 +2846,9 @@ impl Gateway {
             }
         }
 
+        // Capture identity before removing so we can include it in the log
+        let disconnect_host = self.client_hostname(&conn_id).await;
+
         // Cleanup
         {
             let mut conns = self.ws_connections.write().await;
@@ -2848,8 +2859,27 @@ impl Gateway {
             self.remote_exec_registry.remove(&conn_id).await;
         }
         writer_handle.abort();
-        info!("WebSocket disconnected: {} (remaining: {})", conn_id,
+        info!("WebSocket disconnected: {} [{}] (remaining: {})", conn_id, disconnect_host,
               self.ws_connections.read().await.len());
+    }
+
+    /// Return a human-readable identifier for a connected WebSocket client.
+    ///
+    /// Returns `"hostname"` or `"hostname(label)"` when the client has sent a
+    /// `client_identify` message, or the first 8 characters of the connection
+    /// ID as a fallback.
+    async fn client_hostname(&self, conn_id: &str) -> String {
+        self.ws_connections.read().await
+            .get(conn_id)
+            .and_then(|c| c.identity.as_ref())
+            .map(|id| {
+                if let Some(ref label) = id.label {
+                    format!("{}({})", id.hostname, label)
+                } else {
+                    id.hostname.clone()
+                }
+            })
+            .unwrap_or_else(|| conn_id[..8.min(conn_id.len())].to_string())
     }
 
     /// Process a single incoming WebSocket message
@@ -2986,7 +3016,7 @@ impl Gateway {
     /// providers that don't fully support streaming (e.g. some Bedrock models).
     async fn handle_ws_agent_message(
         &self,
-        _conn_id: &str,
+        conn_id: &str,
         outbound_tx: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
         agent_id: String,
         session_key: String,
@@ -2996,11 +3026,17 @@ impl Gateway {
         // Intercept /overseer commands before agent processing
         #[cfg(feature = "overseer")]
         if user_message.trim().starts_with("/overseer") {
+            let sub = user_message.trim()
+                .strip_prefix("/overseer")
+                .unwrap_or("")
+                .trim();
             let output = if let Some(ref overseer) = self.overseer {
                 match overseer.dispatch_command(&user_message) {
                     rockbot_overseer::CommandResult::Handled(out) => out,
                     rockbot_overseer::CommandResult::NotHandled => String::new(),
                 }
+            } else if sub == "init" {
+                "Overseer initialization requires adding `[overseer]` to your config file and restarting the gateway.".to_string()
             } else {
                 "## Overseer\n\n\
                  The overseer feature is compiled in but not configured.\n\n\
@@ -3031,6 +3067,21 @@ impl Gateway {
             }
         }
 
+        // Intercept gateway slash commands before agent processing
+        if let Some(output) = self.handle_slash_commands(&user_message).await {
+            let resp = WsResponseType::AgentResponseMsg {
+                session_key,
+                content: output,
+                tool_calls: vec![],
+                tokens_used: None,
+                processing_time_ms: None,
+            };
+            let _ = outbound_tx.send(WsMessage::Text(
+                serde_json::to_string(&resp).unwrap_or_default(),
+            ));
+            return;
+        }
+
         // Look up agent
         let agents = self.agents.read().await;
         let agent = match agents.get(&agent_id) {
@@ -3047,6 +3098,9 @@ impl Gateway {
             }
         };
         drop(agents);
+
+        let client_host = self.client_hostname(conn_id).await;
+        info!("Agent message from {client_host}: agent={agent_id}, session={session_key}");
 
         let session_id = format!("{agent_id}:{session_key}");
         let tx = outbound_tx.clone();
@@ -3765,10 +3819,12 @@ impl Gateway {
         let status = if let Some(ref factory) = self.agent_factory {
             match factory(config.clone()).await {
                 Ok(mut agent) => {
-                    // Inject agent invoker and blackboard
+                    // Inject agent invoker, blackboard, and remote exec registry
                     if let Some(a) = Arc::get_mut(&mut agent) {
                         a.set_agent_invoker(self.agent_invoker());
                         a.set_blackboard(self.blackboard());
+                        #[cfg(feature = "remote-exec")]
+                        a.set_remote_exec_registry(self.remote_exec_registry.clone());
                     }
                     self.agents.write().await.insert(req.id.clone(), agent);
                     "created"
@@ -3890,6 +3946,8 @@ impl Gateway {
                     if let Some(a) = Arc::get_mut(&mut new_agent) {
                         a.set_agent_invoker(self.agent_invoker());
                         a.set_blackboard(self.blackboard());
+                        #[cfg(feature = "remote-exec")]
+                        a.set_remote_exec_registry(self.remote_exec_registry.clone());
                     }
                     let mut agents = self.agents.write().await;
                     agents.insert(agent_id.clone(), new_agent);
@@ -3984,11 +4042,17 @@ impl Gateway {
         // Intercept /overseer commands before agent processing
         #[cfg(feature = "overseer")]
         if message_request.message.trim().starts_with("/overseer") {
+            let sub = message_request.message.trim()
+                .strip_prefix("/overseer")
+                .unwrap_or("")
+                .trim();
             let output = if let Some(ref overseer) = self.overseer {
                 match overseer.dispatch_command(&message_request.message) {
                     rockbot_overseer::CommandResult::Handled(out) => Some(out),
                     rockbot_overseer::CommandResult::NotHandled => None,
                 }
+            } else if sub == "init" {
+                Some("Overseer initialization requires adding `[overseer]` to your config file and restarting the gateway.".to_string())
             } else {
                 Some("The overseer feature is compiled in but not configured. \
                       Add an `[overseer]` section to your config file.".to_string())
@@ -4003,6 +4067,18 @@ impl Gateway {
                     )))
                     .unwrap());
             }
+        }
+
+        // Intercept gateway slash commands before agent processing
+        if let Some(output) = self.handle_slash_commands(&message_request.message).await {
+            let resp = serde_json::json!({ "response": output });
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(GatewayBody::Left(Full::new(
+                    serde_json::to_string(&resp).unwrap_or_default().into(),
+                )))
+                .unwrap());
         }
 
         // Process message
@@ -4174,7 +4250,7 @@ impl Gateway {
     }
     
     /// Get gateway health status
-    async fn get_health_status(&self) -> GatewayHealth {
+    pub(crate) async fn get_health_status(&self) -> GatewayHealth {
         let agents = self.agents.read().await;
         let connections = self.ws_connections.read().await;
         

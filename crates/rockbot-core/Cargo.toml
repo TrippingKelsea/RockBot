@@ -31,6 +31,7 @@ remote-exec = ["dep:snow"]
 workspace = true
 
 [dependencies]
+rockbot-config = { path = "../rockbot-config" }
 rockbot-webui = { path = "../rockbot-webui" }
 rockbot-tools = { path = "../rockbot-tools" }
 rockbot-memory = { path = "../rockbot-memory" }

@@ -8,6 +8,9 @@ impl Gateway {
     /// Dispatch a message to all slash-command handlers.
     pub async fn handle_slash_commands(&self, message: &str) -> Option<String> {
         let trimmed = message.trim();
+        if trimmed == "/help" || trimmed.starts_with("/help ") {
+            return Some(self.handle_help_command(trimmed));
+        }
         if let Some(out) = self.handle_gateway_command(trimmed).await {
             return Some(out);
         }
@@ -25,7 +28,35 @@ impl Gateway {
         if trimmed == "/noise" || trimmed.starts_with("/noise ") {
             return Some("Remote execution feature not enabled.".to_string());
         }
+        #[cfg(feature = "overseer")]
+        if trimmed == "/overseer" || trimmed.starts_with("/overseer ") {
+            if let Some(out) = self.handle_overseer_command(trimmed).await {
+                return Some(out);
+            }
+        }
         None
+    }
+
+    fn handle_help_command(&self, trimmed: &str) -> String {
+        let sub = trimmed.strip_prefix("/help").unwrap_or("").trim();
+        if !sub.is_empty() {
+            return format!("Unknown help topic: `{sub}`. Try `/help`.");
+        }
+        #[allow(unused_mut)]
+        let mut out = String::from(
+            "## RockBot Commands\n\n\
+             | Command | Description |\n\
+             |---------|-------------|\n\
+             | `/help` | This help |\n\
+             | `/gateway [status\\|agents\\|reload\\|help]` | Gateway management |\n\
+             | `/credentials [list\\|help]` | Credential management |\n\
+             | `/vault [status\\|help]` | Vault management |\n",
+        );
+        #[cfg(feature = "remote-exec")]
+        out.push_str("| `/noise [status\\|help]` | Remote execution sessions |\n");
+        #[cfg(feature = "overseer")]
+        out.push_str("| `/overseer [status\\|init\\|help]` | Overseer management |\n");
+        out
     }
 
     async fn handle_gateway_command(&self, trimmed: &str) -> Option<String> {
@@ -45,7 +76,17 @@ impl Gateway {
                     health.active_sessions, health.agents.len(), health.pending_agents,
                 )
             }
-            "reload" => "Config reload not yet implemented.".to_string(),
+            "reload" => {
+                match self.reload_agents().await {
+                    Ok((created, pending)) => {
+                        format!(
+                            "Config reloaded. {} agent(s) created, {} still pending.",
+                            created, pending
+                        )
+                    }
+                    Err(e) => format!("Reload failed: {e}"),
+                }
+            }
             "agents" => {
                 let agents = self.agents.read().await;
                 if agents.is_empty() {
@@ -70,7 +111,7 @@ impl Gateway {
             }
             "help" => "## /gateway\n\n| Command | Description |\n|---------|-------------|\n\
                         | `status` | Gateway status |\n| `agents` | List agents |\n\
-                        | `reload` | Reload config |\n| `help` | This help |\n".to_string(),
+                        | `reload` | Reload config & retry pending agents |\n| `help` | This help |\n".to_string(),
             other => format!("Unknown: `{other}`. Try `/gateway help`."),
         })
     }
@@ -156,5 +197,25 @@ impl Gateway {
                         | `status` | Active sessions |\n| `help` | This help |\n".to_string(),
             other => format!("Unknown: `{other}`. Try `/noise help`."),
         })
+    }
+
+    #[cfg(feature = "overseer")]
+    async fn handle_overseer_command(&self, trimmed: &str) -> Option<String> {
+        let sub = trimmed.strip_prefix("/overseer").unwrap_or("").trim();
+        match sub {
+            "init" if self.overseer().is_none() => {
+                Some(
+                    "## Overseer Setup\n\n\
+                     Add the following to your `rockbot.toml`:\n\n\
+                     ```toml\n\
+                     [overseer]\n\
+                     enabled = true\n\
+                     model_path = \"/path/to/model.gguf\"\n\
+                     ```\n\n\
+                     Then restart the gateway.".to_string()
+                )
+            }
+            _ => None, // Let the overseer module handle its own commands
+        }
     }
 }

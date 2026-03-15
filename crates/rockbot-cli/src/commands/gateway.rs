@@ -87,8 +87,8 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     gateway.set_config_path(config_path.clone());
     
     // Initialize other components
-    let tool_registry = Arc::new(ToolRegistry::new(config.tools.clone().into()).await?);
-    let security_manager = Arc::new(SecurityManager::new(config.security.clone().into()).await?);
+    let tool_registry = Arc::new(ToolRegistry::new(rockbot_core::gateway::convert_tool_config(config.tools.clone())).await?);
+    let security_manager = Arc::new(SecurityManager::new(rockbot_core::gateway::convert_security_config(config.security.clone())).await?);
     // Create LLM registry (Anthropic uses Claude Code OAuth automatically)
     let llm_registry = Arc::new(LlmProviderRegistry::new().await?);
     

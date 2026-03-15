@@ -3,21 +3,8 @@
 //! This crate provides the core functionality for the RockBot AI agent framework,
 //! including the gateway server, session management, and agent execution engine.
 //!
-//! # Modules
-//!
-//! - [`config`] - Configuration loading and validation
-//! - [`gateway`] - HTTP/WebSocket server
-//! - [`agent`] - Agent execution engine
-//! - [`session`] - Session persistence
-//! - [`message`] - Message types
-//! - [`credential_bridge`] - Credential injection for tools
-//! - [`skills`] - Skill discovery, loading, and context injection
-//! - [`cron`] - Scheduled job execution (SPEC Section 13)
-//! - [`web_ui`] - Embedded web dashboard
-//! - [`metrics`] - Observability metrics via the `metrics` crate facade
-//! - [`hooks`] - Hook/middleware system for agent lifecycle events
-//! - [`a2a`] - A2A (Agent-to-Agent) protocol implementation
-//! - [`guardrails`] - Guardrail pipeline for input/output content safety checks
+//! Configuration, message, and error types are provided by `rockbot-config` and
+//! re-exported here for backward compatibility.
 
 pub mod config;
 pub mod credential_bridge;
@@ -47,7 +34,8 @@ pub mod remote_exec;
 
 pub use config::{
     Config, GatewayConfig, AgentConfig, ProvidersConfig, McpServerEntry,
-    AnthropicProviderConfig, OpenAiProviderConfig, BedrockProviderConfig, OllamaProviderConfig
+    AnthropicProviderConfig, OpenAiProviderConfig, BedrockProviderConfig, OllamaProviderConfig,
+    WorkflowDefinition, WorkflowNode, WorkflowEdge, EdgeCondition,
 };
 pub use credential_bridge::VaultCredentialAccessor;
 pub use error::{RockBotError, Result};
@@ -63,6 +51,5 @@ pub use gateway::GatewayInvoker;
 pub use guardrails::{Guardrail, GuardrailResult, GuardrailPipeline, PiiGuardrail, PromptInjectionGuardrail};
 pub use trajectory::{Trajectory, TrajectoryEvent, TrajectoryEntry};
 pub use telemetry::{TelemetryConfig, init_telemetry};
-pub use config::{WorkflowDefinition, WorkflowNode, WorkflowEdge, EdgeCondition};
 pub use orchestration::{SwarmBlackboard, WorkflowExecutor};
 pub use agent::HandoffSignal;

@@ -1,0 +1,27 @@
+[package]
+name = "rockbot-config"
+version.workspace = true
+edition = "2021"
+description = "Configuration types, message types, and error definitions for RockBot"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+rockbot-credentials-schema = { path = "../rockbot-credentials-schema" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
+notify = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

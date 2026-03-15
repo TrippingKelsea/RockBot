@@ -1262,7 +1262,7 @@ impl Agent {
                     tool_calls: choice.message.tool_calls.clone(),
                     tool_call_id: None,
                 };
-                let assistant_msg = Message::from_llm_message(assistant_message, session_id, &self.config.id)?;
+                let assistant_msg = crate::message::from_llm_message(assistant_message, session_id, &self.config.id)?;
                 self.session_manager.add_message(session_id, assistant_msg.clone()).await?;
                 context.messages.push(assistant_msg);
             }
@@ -2264,7 +2264,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                             tool_calls: None,
                             tool_call_id: None,
                         };
-                        let assistant_msg = Message::from_llm_message(
+                        let assistant_msg = crate::message::from_llm_message(
                             assistant_message, session_id, &self.config.id
                         )?;
                         context.messages.push(assistant_msg);
@@ -2431,7 +2431,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                         tool_calls: choice.message.tool_calls.clone(),
                         tool_call_id: None,
                     };
-                    let assistant_msg = Message::from_llm_message(
+                    let assistant_msg = crate::message::from_llm_message(
                         assistant_message, session_id, &self.config.id
                     )?;
                     self.session_manager.add_message(session_id, assistant_msg.clone()).await?;
@@ -2483,7 +2483,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                             tool_calls: choice.message.tool_calls.clone(),
                             tool_call_id: None,
                         };
-                        let assistant_msg = Message::from_llm_message(assistant_message, session_id, &self.config.id)?;
+                        let assistant_msg = crate::message::from_llm_message(assistant_message, session_id, &self.config.id)?;
                         self.session_manager.add_message(session_id, assistant_msg.clone()).await?;
                         context.messages.push(assistant_msg);
                     }
@@ -2504,7 +2504,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                             tool_calls: choice.message.tool_calls.clone(),
                             tool_call_id: None,
                         };
-                        let assistant_msg = Message::from_llm_message(assistant_message, session_id, &self.config.id)?;
+                        let assistant_msg = crate::message::from_llm_message(assistant_message, session_id, &self.config.id)?;
                         self.session_manager.add_message(session_id, assistant_msg.clone()).await?;
                         context.messages.push(assistant_msg);
                     }
@@ -2552,7 +2552,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                     tool_calls: choice.message.tool_calls.clone(),
                     tool_call_id: None,
                 };
-                let assistant_msg = Message::from_llm_message(assistant_message, session_id, &self.config.id)?;
+                let assistant_msg = crate::message::from_llm_message(assistant_message, session_id, &self.config.id)?;
                 self.session_manager.add_message(session_id, assistant_msg.clone()).await?;
                 context.messages.push(assistant_msg);
             }
@@ -2719,7 +2719,7 @@ The user wants me to explore the codebase. I should start by listing the directo
             tool_calls: None,
             tool_call_id: None,
         };
-        let plan_msg = Message::from_llm_message(plan_assistant, session_id, &self.config.id)?;
+        let plan_msg = crate::message::from_llm_message(plan_assistant, session_id, &self.config.id)?;
         context.messages.push(plan_msg);
 
         info!("Planning phase produced {} char plan for session {}", clean_plan.len(), session_id);
@@ -2754,7 +2754,7 @@ The user wants me to explore the codebase. I should start by listing the directo
             tool_calls: None,
             tool_call_id: None,
         };
-        let assistant = Message::from_llm_message(assistant_msg, session_id, &self.config.id)?;
+        let assistant = crate::message::from_llm_message(assistant_msg, session_id, &self.config.id)?;
         context.messages.push(assistant);
 
         let reflection_prompt = Message::text(

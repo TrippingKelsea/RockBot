@@ -450,7 +450,7 @@ pub struct MemoryUsage {
 // Conversion helpers — these live here (not in config.rs) because they reference
 // rockbot_tools / rockbot_security types which config should not depend on.
 
-pub(crate) fn convert_tool_config(config: crate::config::ToolConfig) -> rockbot_tools::ToolConfig {
+pub fn convert_tool_config(config: crate::config::ToolConfig) -> rockbot_tools::ToolConfig {
     rockbot_tools::ToolConfig {
         profile: config.profile,
         deny: config.deny,
@@ -458,7 +458,7 @@ pub(crate) fn convert_tool_config(config: crate::config::ToolConfig) -> rockbot_
     }
 }
 
-pub(crate) fn convert_security_config(config: crate::config::SecurityConfig) -> rockbot_security::SecurityConfig {
+pub fn convert_security_config(config: crate::config::SecurityConfig) -> rockbot_security::SecurityConfig {
     rockbot_security::SecurityConfig {
         sandbox: rockbot_security::SandboxConfig {
             mode: config.sandbox.mode,

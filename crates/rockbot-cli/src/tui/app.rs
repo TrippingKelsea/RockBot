@@ -3045,7 +3045,7 @@ impl App {
         match &self.state.input_mode {
             InputMode::Normal => {
                 if self.state.sidebar_focus {
-                    "q:Quit │ ↑↓/jk:Navigate │ Enter:Select │ Tab:→Content │ 1-7:Quick".to_string()
+                    "Ctrl+Q:Quit │ ↑↓/jk:Navigate │ Enter:Select │ Tab:→Content │ 1-7:Quick".to_string()
                 } else {
                     match self.state.menu_item {
                         MenuItem::Dashboard => {

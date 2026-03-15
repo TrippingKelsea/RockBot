@@ -16,7 +16,7 @@ use super::components::{
     render_add_credential_modal, render_confirm_modal, render_dashboard,
     render_agents, render_credentials, render_edit_credential_modal, render_edit_provider_modal,
     render_edit_agent_modal,
-    render_models, render_password_modal, render_sessions, render_settings, render_sidebar,
+    render_cron_jobs, render_models, render_password_modal, render_sessions, render_settings, render_sidebar,
     render_status_bar, render_view_session_modal,
     render_view_endpoint_modal, render_view_provider_modal,
     render_view_model_list_modal, render_edit_permission_modal,
@@ -150,6 +150,7 @@ impl App {
         self.spawn_agents_load();
         self.spawn_vault_check();
         self.spawn_providers_load();
+        self.spawn_cron_jobs_load();
         self.spawn_credential_schemas_load();
         self.spawn_sessions_load();
         self.spawn_ws_connect();
@@ -293,6 +294,67 @@ impl App {
                 }
                 Err(e) => {
                     let _ = tx.send(Message::AgentsError(e.to_string()));
+                }
+            }
+        });
+    }
+
+    /// Spawn a task to load cron jobs from gateway
+    fn spawn_cron_jobs_load(&mut self) {
+        let tx = self.state.tx.clone();
+        self.state.cron_loading = true;
+        tokio::spawn(async move {
+            match load_cron_jobs_from_gateway().await {
+                Ok(jobs) => {
+                    let _ = tx.send(Message::CronJobsLoaded(jobs));
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::CronJobError(e.to_string()));
+                }
+            }
+        });
+    }
+
+    fn spawn_cron_job_toggle(&self, job_id: &str, enabled: bool) {
+        let tx = self.state.tx.clone();
+        let job_id = job_id.to_string();
+        tokio::spawn(async move {
+            match toggle_cron_job(&job_id, enabled).await {
+                Ok(()) => {
+                    let _ = tx.send(Message::CronJobToggled(job_id, enabled));
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::CronJobError(format!("Toggle failed: {e}")));
+                }
+            }
+        });
+    }
+
+    fn spawn_cron_job_delete(&self, job_id: &str) {
+        let tx = self.state.tx.clone();
+        let job_id = job_id.to_string();
+        tokio::spawn(async move {
+            match delete_cron_job(&job_id).await {
+                Ok(()) => {
+                    let _ = tx.send(Message::CronJobDeleted(job_id));
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::CronJobError(format!("Delete failed: {e}")));
+                }
+            }
+        });
+    }
+
+    fn spawn_cron_job_trigger(&self, job_id: &str) {
+        let tx = self.state.tx.clone();
+        let job_id = job_id.to_string();
+        tokio::spawn(async move {
+            match trigger_cron_job(&job_id).await {
+                Ok(()) => {
+                    let _ = tx.send(Message::SetStatus("Cron job triggered".to_string(), false));
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::CronJobError(format!("Trigger failed: {e}")));
                 }
             }
         });
@@ -566,6 +628,15 @@ impl App {
                             chat.scroll = chat.scroll.saturating_sub(1);
                         }
                     }
+                    MenuItem::CronJobs => {
+                        if !self.state.cron_jobs.is_empty() {
+                            self.state.selected_cron_job = if self.state.selected_cron_job == 0 {
+                                self.state.cron_jobs.len() - 1
+                            } else {
+                                self.state.selected_cron_job - 1
+                            };
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -583,6 +654,11 @@ impl App {
                             if chat.scroll >= chat.max_scroll.get() {
                                 chat.auto_scroll = true;
                             }
+                        }
+                    }
+                    MenuItem::CronJobs => {
+                        if !self.state.cron_jobs.is_empty() {
+                            self.state.selected_cron_job = (self.state.selected_cron_job + 1) % self.state.cron_jobs.len();
                         }
                     }
                     _ => {}
@@ -667,8 +743,9 @@ impl App {
             KeyCode::Char('2') => self.state.menu_item = MenuItem::Credentials,
             KeyCode::Char('3') => self.state.menu_item = MenuItem::Agents,
             KeyCode::Char('4') => self.state.menu_item = MenuItem::Sessions,
-            KeyCode::Char('5') => self.state.menu_item = MenuItem::Models,
-            KeyCode::Char('6') => self.state.menu_item = MenuItem::Settings,
+            KeyCode::Char('5') => self.state.menu_item = MenuItem::CronJobs,
+            KeyCode::Char('6') => self.state.menu_item = MenuItem::Models,
+            KeyCode::Char('7') => self.state.menu_item = MenuItem::Settings,
 
             // Page-specific actions
             KeyCode::Char('a') if !self.state.sidebar_focus => {
@@ -796,6 +873,14 @@ impl App {
                     };
                 }
             }
+            MenuItem::CronJobs => {
+                if let Some(job) = self.state.cron_jobs.get(self.state.selected_cron_job) {
+                    self.state.input_mode = InputMode::Confirm {
+                        message: format!("Delete cron job '{}'?", job.name),
+                        action: ConfirmAction::DeleteCronJob(job.id.clone()),
+                    };
+                }
+            }
             _ => {}
         }
     }
@@ -815,6 +900,10 @@ impl App {
             MenuItem::Sessions if !self.state.sidebar_focus => {
                 self.state.status_message = Some(("Reloading sessions...".to_string(), false));
                 self.spawn_sessions_load();
+            }
+            MenuItem::CronJobs if !self.state.sidebar_focus => {
+                self.state.status_message = Some(("Reloading cron jobs...".to_string(), false));
+                self.spawn_cron_jobs_load();
             }
             _ => {
                 // General refresh
@@ -1064,6 +1153,13 @@ impl App {
                     self.state.input_mode = InputMode::EditAgent(edit_state);
                 }
             }
+            MenuItem::CronJobs => {
+                if let Some(job) = self.state.cron_jobs.get(self.state.selected_cron_job) {
+                    let job_id = job.id.clone();
+                    let new_enabled = !job.enabled;
+                    self.spawn_cron_job_toggle(&job_id, new_enabled);
+                }
+            }
             MenuItem::Models => {
                 // Edit model provider config — use schema if available
                 let idx = self.state.selected_provider;
@@ -1229,6 +1325,13 @@ impl App {
             if let Some(provider) = self.state.providers.get(idx) {
                 self.state.status_message = Some((format!("Testing {} connection...", provider.name), false));
                 self.spawn_model_test_via_gateway(&provider.id, &provider.name);
+            }
+        } else if self.state.menu_item == MenuItem::CronJobs {
+            if let Some(job) = self.state.cron_jobs.get(self.state.selected_cron_job) {
+                let job_id = job.id.clone();
+                let job_name = job.name.clone();
+                self.state.status_message = Some((format!("Triggering '{job_name}'..."), false));
+                self.spawn_cron_job_trigger(&job_id);
             }
         }
     }
@@ -2332,6 +2435,9 @@ impl App {
                         }
                         self.state.status_message = Some((format!("Disabled agent: {id}"), false));
                     }
+                    ConfirmAction::DeleteCronJob(job_id) => {
+                        self.spawn_cron_job_delete(&job_id);
+                    }
                     ConfirmAction::DiscardContextFile(browser_state) => {
                         self.state.input_mode = InputMode::ViewContextFiles(browser_state);
                         return Ok(());
@@ -2826,10 +2932,10 @@ impl App {
     /// Render the entire UI
     fn render(&mut self, frame: &mut Frame) {
         // Layout: top row (sidebar + cards) | main content | status bar
-        // Sidebar height: 6 menu items + 2 borders = 8 rows
+        // Sidebar height: 7 menu items + 2 borders = 9 rows
         let outer = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(8), Constraint::Min(0), Constraint::Length(2)])
+            .constraints([Constraint::Length(9), Constraint::Min(0), Constraint::Length(2)])
             .split(frame.area());
 
         // Top row: sidebar (left) + page cards area (right)
@@ -2847,6 +2953,7 @@ impl App {
             MenuItem::Credentials => render_credentials(frame, top_row[1], outer[1], &self.state, self.state.credentials_tab, &self.effect_state),
             MenuItem::Agents => render_agents(frame, top_row[1], outer[1], &self.state, &self.effect_state),
             MenuItem::Sessions => render_sessions(frame, top_row[1], outer[1], &self.state, &self.effect_state),
+            MenuItem::CronJobs => render_cron_jobs(frame, top_row[1], outer[1], &self.state, &self.effect_state),
             MenuItem::Models => render_models(frame, top_row[1], outer[1], &self.state, &self.effect_state),
             MenuItem::Settings => render_settings(frame, top_row[1], outer[1], &self.state, &self.effect_state),
         }
@@ -2920,7 +3027,7 @@ impl App {
         match &self.state.input_mode {
             InputMode::Normal => {
                 if self.state.sidebar_focus {
-                    "q:Quit │ ↑↓/jk:Navigate │ Enter:Select │ Tab:→Content │ 1-6:Quick".to_string()
+                    "q:Quit │ ↑↓/jk:Navigate │ Enter:Select │ Tab:→Content │ 1-7:Quick".to_string()
                 } else {
                     match self.state.menu_item {
                         MenuItem::Dashboard => {
@@ -2940,6 +3047,9 @@ impl App {
                         }
                         MenuItem::Sessions => {
                             "←→:Select │ n:New │ c:Chat │ k:Kill │ Esc:←".to_string()
+                        }
+                        MenuItem::CronJobs => {
+                            "←→:Filter │ ↑↓:Select │ e:Enable/Disable │ d:Delete │ t:Trigger │ r:Refresh".to_string()
                         }
                         MenuItem::Models => {
                             "←→:Select │ Enter:Models │ e:Edit │ t:Test │ Esc:←".to_string()
@@ -3361,7 +3471,7 @@ fn handle_ws_response(tx: &mpsc::UnboundedSender<Message>, text: &str) {
     }
 }
 
-use super::state::{AgentInfo, AgentStatus, AuthMethodInfo, CredentialFieldInfo, CredentialSchemaInfo, GatewayStatus, ModelProvider, ModelProviderModel, VaultStatus};
+use super::state::{AgentInfo, AgentStatus, AuthMethodInfo, CredentialFieldInfo, CredentialSchemaInfo, CronJobInfo, GatewayStatus, ModelProvider, ModelProviderModel, VaultStatus};
 
 async fn check_gateway_status() -> Result<GatewayStatus> {
     use tokio::time::timeout;
@@ -3614,6 +3724,117 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
 
 /// Send a chat message via the gateway
 /// Truncate a tool result string for display
+/// Load cron jobs from the gateway API
+async fn load_cron_jobs_from_gateway() -> Result<Vec<CronJobInfo>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+
+    let resp = client.get("http://127.0.0.1:18080/api/cron/jobs").send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Gateway returned {}", resp.status());
+    }
+
+    let items: Vec<serde_json::Value> = resp.json().await?;
+    let mut jobs = Vec::new();
+
+    for entry in &items {
+        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if id.is_empty() { continue; }
+
+        let schedule_val = entry.get("schedule");
+        let schedule_str = match schedule_val.and_then(|s| s.get("type")).and_then(|t| t.as_str()) {
+            Some("cron") => schedule_val.and_then(|s| s.get("expression")).and_then(|e| e.as_str())
+                .unwrap_or("?").to_string(),
+            Some("every") => {
+                let ms = schedule_val.and_then(|s| s.get("interval_ms")).and_then(|v| v.as_u64()).unwrap_or(0);
+                if ms >= 3_600_000 { format!("every {}h", ms / 3_600_000) }
+                else if ms >= 60_000 { format!("every {}m", ms / 60_000) }
+                else { format!("every {}s", ms / 1000) }
+            }
+            Some("at") => {
+                let at_ms = schedule_val.and_then(|s| s.get("at_ms")).and_then(|v| v.as_u64()).unwrap_or(0);
+                format!("once @{at_ms}")
+            }
+            _ => "unknown".to_string(),
+        };
+
+        let state_val = entry.get("state");
+        let last_run = state_val.and_then(|s| s.get("last_run_at_ms")).and_then(|v| v.as_u64())
+            .map(|ms| {
+                chrono::DateTime::from_timestamp_millis(ms as i64)
+                    .map(|dt| dt.format("%H:%M:%S").to_string())
+                    .unwrap_or_else(|| format!("{ms}"))
+            });
+        let last_status = state_val.and_then(|s| s.get("last_run_status")).and_then(|v| v.as_str()).map(String::from);
+        let next_run = state_val.and_then(|s| s.get("next_run_at_ms")).and_then(|v| v.as_u64())
+            .map(|ms| {
+                chrono::DateTime::from_timestamp_millis(ms as i64)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| format!("{ms}"))
+            });
+
+        jobs.push(CronJobInfo {
+            id,
+            name: entry.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            enabled: entry.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+            agent_id: entry.get("agent_id").and_then(|v| v.as_str()).map(String::from),
+            schedule: schedule_str,
+            last_run,
+            last_status,
+            next_run,
+        });
+    }
+
+    Ok(jobs)
+}
+
+async fn toggle_cron_job(job_id: &str, enabled: bool) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+
+    let resp = client
+        .put(format!("http://127.0.0.1:18080/api/cron/jobs/{job_id}"))
+        .json(&serde_json::json!({ "enabled": enabled }))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Gateway returned {}", resp.status());
+    }
+    Ok(())
+}
+
+async fn delete_cron_job(job_id: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+
+    let resp = client
+        .delete(format!("http://127.0.0.1:18080/api/cron/jobs/{job_id}"))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Gateway returned {}", resp.status());
+    }
+    Ok(())
+}
+
+async fn trigger_cron_job(job_id: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+
+    let resp = client
+        .post(format!("http://127.0.0.1:18080/api/cron/jobs/{job_id}/trigger"))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Gateway returned {}", resp.status());
+    }
+    Ok(())
+}
+
 fn truncate_tool_result(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()

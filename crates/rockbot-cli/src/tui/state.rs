@@ -94,6 +94,12 @@ pub enum Message {
     },
     SessionMessagesLoaded(String, Vec<ChatMessage>), // (session_key, messages)
 
+    // Cron jobs
+    CronJobsLoaded(Vec<CronJobInfo>),
+    CronJobToggled(String, bool),  // (job_id, new_enabled_state)
+    CronJobDeleted(String),        // job_id
+    CronJobError(String),          // error message
+
     // Context files
     ContextFilesLoaded(String, Vec<ContextFileInfo>),   // (agent_id, files)
     ContextFileLoaded(String, String, String),           // (agent_id, filename, content)
@@ -119,6 +125,7 @@ pub enum MenuItem {
     Credentials,
     Agents,
     Sessions,
+    CronJobs,
     Models,
     Settings,
 }
@@ -130,6 +137,7 @@ impl MenuItem {
             Self::Credentials,
             Self::Agents,
             Self::Sessions,
+            Self::CronJobs,
             Self::Models,
             Self::Settings,
         ]
@@ -141,6 +149,7 @@ impl MenuItem {
             Self::Credentials => "Credentials",
             Self::Agents => "Agents",
             Self::Sessions => "Sessions",
+            Self::CronJobs => "Cron Jobs",
             Self::Models => "Models",
             Self::Settings => "Settings",
         }
@@ -152,6 +161,7 @@ impl MenuItem {
             Self::Credentials => "🔐",
             Self::Agents => "🤖",
             Self::Sessions => "💬",
+            Self::CronJobs => "🕐",
             Self::Models => "🧠",
             Self::Settings => "⚙️",
         }
@@ -163,18 +173,20 @@ impl MenuItem {
             Self::Credentials => 1,
             Self::Agents => 2,
             Self::Sessions => 3,
-            Self::Models => 4,
-            Self::Settings => 5,
+            Self::CronJobs => 4,
+            Self::Models => 5,
+            Self::Settings => 6,
         }
     }
     
     pub fn from_index(idx: usize) -> Self {
-        match idx % 6 {
+        match idx % 7 {
             0 => Self::Dashboard,
             1 => Self::Credentials,
             2 => Self::Agents,
             3 => Self::Sessions,
-            4 => Self::Models,
+            4 => Self::CronJobs,
+            5 => Self::Models,
             _ => Self::Settings,
         }
     }
@@ -223,6 +235,19 @@ impl AgentStatus {
             Self::Disabled => "Disabled",
         }
     }
+}
+
+/// Cron job information for the TUI
+#[derive(Debug, Clone)]
+pub struct CronJobInfo {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub agent_id: Option<String>,
+    pub schedule: String,
+    pub last_run: Option<String>,
+    pub last_status: Option<String>,
+    pub next_run: Option<String>,
 }
 
 /// Session information
@@ -569,6 +594,12 @@ pub struct AppState {
     pub providers: Vec<ModelProvider>,
     pub selected_provider: usize,
 
+    // Cron jobs
+    pub cron_jobs: Vec<CronJobInfo>,
+    pub cron_loading: bool,
+    pub selected_cron_job: usize,
+    pub selected_cron_card: usize,
+
     // Dashboard card selection (Gateway=0, Agents=1, Sessions=2, Vault=3)
     pub selected_dashboard_card: usize,
     // Settings card selection (General=0, Paths=1, About=2)
@@ -645,6 +676,7 @@ pub enum ConfirmAction {
     DeleteAgent(String),    // agent id
     KillSession(String),    // session key
     DisableAgent(String),   // agent id (different from delete - actually disables in config)
+    DeleteCronJob(String),  // cron job id
     DiscardContextFile(ViewContextFilesState), // return to file browser state
 }
 
@@ -2088,6 +2120,10 @@ impl AppState {
             
             providers: Vec::new(),
             selected_provider: 0,
+            cron_jobs: Vec::new(),
+            cron_loading: false,
+            selected_cron_job: 0,
+            selected_cron_card: 0,
             selected_dashboard_card: 0,
             selected_settings_card: 0,
             credential_schemas: Vec::new(),
@@ -2310,6 +2346,26 @@ impl AppState {
                 }
             }
             Message::ContextFileError(err) => {
+                self.status_message = Some((err, true));
+            }
+
+            Message::CronJobsLoaded(jobs) => {
+                self.cron_jobs = jobs;
+                self.cron_loading = false;
+            }
+            Message::CronJobToggled(job_id, enabled) => {
+                if let Some(job) = self.cron_jobs.iter_mut().find(|j| j.id == job_id) {
+                    job.enabled = enabled;
+                }
+                let label = if enabled { "enabled" } else { "disabled" };
+                self.status_message = Some((format!("Cron job {label}"), false));
+            }
+            Message::CronJobDeleted(job_id) => {
+                self.cron_jobs.retain(|j| j.id != job_id);
+                self.status_message = Some(("Cron job deleted".to_string(), false));
+            }
+            Message::CronJobError(err) => {
+                self.cron_loading = false;
                 self.status_message = Some((err, true));
             }
 
@@ -2536,6 +2592,9 @@ impl AppState {
                     };
                 }
             }
+            MenuItem::CronJobs => {
+                self.selected_cron_card = if self.selected_cron_card == 0 { 2 } else { self.selected_cron_card - 1 };
+            }
             MenuItem::Models => {
                 let count = self.model_provider_count();
                 self.selected_provider = if self.selected_provider == 0 {
@@ -2569,6 +2628,9 @@ impl AppState {
                 if !self.sessions.is_empty() {
                     self.selected_session = (self.selected_session + 1) % self.sessions.len();
                 }
+            }
+            MenuItem::CronJobs => {
+                self.selected_cron_card = (self.selected_cron_card + 1) % 3;
             }
             MenuItem::Models => {
                 let count = self.model_provider_count();

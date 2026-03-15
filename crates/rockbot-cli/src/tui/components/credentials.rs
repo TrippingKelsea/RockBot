@@ -153,7 +153,7 @@ fn render_vault_init(frame: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .title("Initialize Vault");
 
     let paragraph = Paragraph::new(content)
@@ -174,7 +174,7 @@ fn render_vault_locked(frame: &mut Frame, area: Rect) {
     ];
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .title("Unlock Vault");
 
     let paragraph = Paragraph::new(content)

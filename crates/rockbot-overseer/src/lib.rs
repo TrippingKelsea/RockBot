@@ -47,6 +47,11 @@ pub struct OverseerConfig {
     /// GGUF filename within the repo (e.g., "qwen2.5-1.5b-instruct-q4_k_m.gguf").
     #[serde(default = "default_model_filename")]
     pub model_filename: String,
+    /// HuggingFace repo ID for the tokenizer (e.g., "Qwen/Qwen2.5-1.5B-Instruct").
+    /// If empty, derived automatically from `model_id` by stripping quantization
+    /// suffixes like `-GGUF`. Set this explicitly if auto-detection fails.
+    #[serde(default)]
+    pub tokenizer_repo: String,
     /// Local path to a pre-downloaded GGUF model file.
     /// If set, `model_id` and `model_filename` are ignored.
     #[serde(default)]
@@ -105,6 +110,7 @@ impl Default for OverseerConfig {
         Self {
             model_id: default_model_id(),
             model_filename: default_model_filename(),
+            tokenizer_repo: String::new(),
             model_path: PathBuf::new(),
             tokenizer_path: PathBuf::new(),
             max_tokens: default_max_tokens(),
@@ -142,9 +148,15 @@ impl Overseer {
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
                 .join("rockbot")
                 .join("overseer");
+            let tokenizer_repo = if config.tokenizer_repo.is_empty() {
+                None
+            } else {
+                Some(config.tokenizer_repo.as_str())
+            };
             InferenceEngine::download_model(
                 &config.model_id,
                 &config.model_filename,
+                tokenizer_repo,
                 &cache_dir,
             )
             .await?

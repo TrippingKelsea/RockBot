@@ -130,12 +130,36 @@ impl InferenceEngine {
         })
     }
 
+    /// Known quantization suffixes on HuggingFace repo names.
+    /// GGUF/GGML/AWQ/GPTQ repos typically don't ship `tokenizer.json`;
+    /// the tokenizer lives in the base model repo.
+    const QUANT_SUFFIXES: &'static [&'static str] = &[
+        "-GGUF", "-gguf", "-GGML", "-ggml",
+        "-AWQ", "-awq", "-GPTQ", "-gptq",
+        "-EXL2", "-exl2",
+    ];
+
+    /// Derive the base (non-quantized) repo ID by stripping known suffixes.
+    fn base_repo_id(repo_id: &str) -> Option<&str> {
+        Self::QUANT_SUFFIXES
+            .iter()
+            .find_map(|suffix| repo_id.strip_suffix(suffix))
+    }
+
     /// Download a model from HuggingFace Hub if not already cached.
     ///
     /// Returns `(model_path, tokenizer_path)`.
+    ///
+    /// GGUF repos (e.g. `Qwen/Qwen2.5-1.5B-Instruct-GGUF`) typically don't
+    /// include `tokenizer.json`. The tokenizer is resolved in order:
+    ///
+    /// 1. Explicit `tokenizer_repo` if provided
+    /// 2. The model repo itself (works for non-quantized repos)
+    /// 3. Base repo derived by stripping quantization suffixes (`-GGUF`, `-AWQ`, etc.)
     pub async fn download_model(
         repo_id: &str,
         model_filename: &str,
+        tokenizer_repo: Option<&str>,
         _cache_dir: &Path,
     ) -> Result<(PathBuf, PathBuf), InferenceError> {
         let api = hf_hub::api::tokio::Api::new()
@@ -149,10 +173,35 @@ impl InferenceEngine {
             .await
             .map_err(|e| InferenceError::Download(format!("model: {e}")))?;
 
-        let tokenizer_path = repo
-            .get("tokenizer.json")
-            .await
-            .map_err(|e| InferenceError::Download(format!("tokenizer: {e}")))?;
+        // Resolve tokenizer: explicit repo > model repo > base repo
+        let tokenizer_path = if let Some(tok_repo) = tokenizer_repo {
+            info!("Fetching tokenizer from configured repo {tok_repo}...");
+            api.model(tok_repo.to_string())
+                .get("tokenizer.json")
+                .await
+                .map_err(|e| InferenceError::Download(format!(
+                    "tokenizer from {tok_repo}: {e}"
+                )))?
+        } else {
+            match repo.get("tokenizer.json").await {
+                Ok(path) => path,
+                Err(_) => {
+                    let base = Self::base_repo_id(repo_id).ok_or_else(|| {
+                        InferenceError::Download(format!(
+                            "tokenizer not found in {repo_id} and could not derive base repo. \
+                             Set `tokenizer_repo` in [overseer] config to specify it explicitly."
+                        ))
+                    })?;
+                    info!("Tokenizer not in {repo_id}, trying base repo {base}...");
+                    api.model(base.to_string())
+                        .get("tokenizer.json")
+                        .await
+                        .map_err(|e| InferenceError::Download(format!(
+                            "tokenizer from {base}: {e}"
+                        )))?
+                }
+            }
+        };
 
         Ok((model_path, tokenizer_path))
     }

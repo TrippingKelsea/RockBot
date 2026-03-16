@@ -71,6 +71,7 @@ fn open_pki(pki_dir: PathBuf) -> Result<PkiManager> {
 
 async fn run_ca(command: &CaCertCommands, config_path: &PathBuf) -> Result<()> {
     match command {
+        CaCertCommands::Publish => cmd_publish(config_path).await,
         CaCertCommands::Generate {
             days,
             pki_dir,
@@ -149,6 +150,128 @@ async fn run_ca(command: &CaCertCommands, config_path: &PathBuf) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Publish CA cert to S3
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "bedrock-deploy")]
+async fn cmd_publish(config_path: &Path) -> Result<()> {
+    let config = load_config(&config_path.to_path_buf()).await?;
+
+    let deploy_value = config
+        .deploy
+        .context("No [deploy] section in config. Add one with at least `bucket = \"...\"`")?;
+
+    let deploy_config: rockbot_deploy::DeployConfig =
+        serde_json::from_value(deploy_value).context("Invalid [deploy] configuration")?;
+
+    // Read CA cert
+    let pki_dir = resolve_pki_dir_from_config(config_path).await?;
+    let ca_cert_path = pki_dir.join("ca.crt");
+    let ca_pem = tokio::fs::read_to_string(&ca_cert_path)
+        .await
+        .with_context(|| format!("CA cert not found at {}", ca_cert_path.display()))?;
+
+    // Handle AWS credential import interactively
+    let vault_path = config.credentials.vault_path;
+    if rockbot_credentials::CredentialVault::exists(&vault_path) {
+        if let Ok(cred_mgr) = rockbot_credentials::CredentialManager::new(&vault_path) {
+            let cred_mgr = std::sync::Arc::new(cred_mgr);
+            let importer = rockbot_deploy::AwsCredentialImporter::new(cred_mgr.clone());
+            let client_uuid = uuid::Uuid::new_v4().to_string();
+
+            match importer.import_or_prompt(&client_uuid).await {
+                Ok(rockbot_deploy::credentials::ImportResult::Imported) => {
+                    println!("Imported AWS credentials into vault (aws/default)");
+                }
+                Ok(rockbot_deploy::credentials::ImportResult::AlreadyPresent) => {
+                    println!("AWS credentials already in vault");
+                }
+                Ok(rockbot_deploy::credentials::ImportResult::Conflict {
+                    discovered,
+                    existing_endpoint_name,
+                }) => {
+                    println!(
+                        "Found different AWS keys in environment vs vault ({existing_endpoint_name})."
+                    );
+                    println!(
+                        "Store discovered keys as '{client_uuid}-aws-default' for optional use? [y/N]"
+                    );
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if input.trim().eq_ignore_ascii_case("y") {
+                        importer
+                            .store_namespaced(&client_uuid, &discovered)
+                            .await
+                            .context("Failed to store namespaced credentials")?;
+                        println!("Stored under aws/{client_uuid}-default");
+                    }
+                }
+                Ok(rockbot_deploy::credentials::ImportResult::NoKeysFound) => {
+                    println!("No AWS credentials found in environment; using SDK default chain");
+                }
+                Err(e) => {
+                    println!("Warning: credential import failed: {e}");
+                }
+            }
+        }
+    }
+
+    // Create distributor and provision
+    let distributor = rockbot_deploy::CaDistributor::new(deploy_config.clone())
+        .await
+        .context("Failed to create S3 CA distributor")?;
+
+    distributor
+        .provision(&ca_pem)
+        .await
+        .context("S3 provisioning failed")?;
+
+    println!("CA certificate published to: {}", distributor.ca_cert_url());
+
+    // DNS provisioning
+    let mut dns = rockbot_deploy::DnsProvisioner::new(deploy_config.clone())
+        .await
+        .context("Failed to create DNS provisioner")?;
+
+    dns.ensure_hosted_zone()
+        .await
+        .context("Failed to ensure hosted zone")?;
+
+    let cluster_uuid = uuid::Uuid::new_v4().to_string();
+    let s3_endpoint = format!(
+        "{}.s3.{}.amazonaws.com",
+        deploy_config.bucket, deploy_config.region
+    );
+
+    dns.register_cluster(
+        &cluster_uuid,
+        deploy_config.cluster_name.as_deref(),
+        &s3_endpoint,
+    )
+    .await
+    .context("DNS registration failed")?;
+
+    println!(
+        "DNS records registered in zone '{}'",
+        deploy_config.dns_zone
+    );
+    if let Some(name) = &deploy_config.cluster_name {
+        println!("  {name}.{}", deploy_config.dns_zone);
+    }
+    println!("  {cluster_uuid}.{}", deploy_config.dns_zone);
+
+    Ok(())
+}
+
+#[cfg(not(feature = "bedrock-deploy"))]
+async fn cmd_publish(_config_path: &Path) -> Result<()> {
+    anyhow::bail!(
+        "The 'bedrock-deploy' feature is not compiled in.\n\
+         Rebuild with: cargo build --features bedrock-deploy"
+    )
 }
 
 // ---------------------------------------------------------------------------

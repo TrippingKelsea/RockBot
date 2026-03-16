@@ -75,7 +75,10 @@ pub enum Commands {
     },
 
     /// Health and diagnostics
-    Doctor,
+    Doctor {
+        #[command(subcommand)]
+        command: Option<DoctorCommands>,
+    },
 
     /// Interactive TUI dashboard
     Tui {
@@ -238,6 +241,8 @@ pub enum CaCertCommands {
         #[arg(long)]
         backup: bool,
     },
+    /// Publish CA cert to S3 and register DNS records
+    Publish,
 }
 
 /// Client certificate commands
@@ -536,6 +541,33 @@ pub enum PermissionsCommands {
     },
 }
 
+/// Doctor subcommands (AI-powered when `doctor-ai` feature is enabled)
+#[derive(Subcommand)]
+pub enum DoctorCommands {
+    /// Run full health check (default when no subcommand given)
+    Check,
+    /// Diagnose a specific config error with AI explanation
+    #[cfg(feature = "doctor-ai")]
+    Diagnose {
+        /// Path to config file (defaults to standard location)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+    /// Check config for deprecated/renamed fields across versions
+    #[cfg(feature = "doctor-ai")]
+    Migrate {
+        /// Path to config file (defaults to standard location)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+    /// Download/update the doctor AI model
+    #[cfg(feature = "doctor-ai")]
+    Download,
+    /// Show doctor AI status (model loaded, version, etc.)
+    #[cfg(feature = "doctor-ai")]
+    Status,
+}
+
 /// Migration commands
 #[derive(Subcommand)]
 pub enum MigrateCommands {
@@ -636,7 +668,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             commands::credentials::run(command, &config_path).await
         }
         Commands::Cert { command } => commands::cert::run(command, &config_path).await,
-        Commands::Doctor => commands::doctor::run(&config_path).await,
+        Commands::Doctor { command } => commands::doctor::run(command, &config_path).await,
         Commands::Tui { gateway } => {
             // Load config to get vault path
             let config = load_config(&config_path).await?;
@@ -660,15 +692,93 @@ pub fn get_default_config_path() -> PathBuf {
         .join("rockbot.toml")
 }
 
-/// Load configuration from file
+/// Load configuration from file.
+///
+/// When the `doctor-ai` feature is enabled and config parsing fails, the doctor
+/// AI will attempt to diagnose the error and print a helpful explanation before
+/// returning the error.
 pub async fn load_config(path: &PathBuf) -> Result<Config> {
     if !path.exists() {
         anyhow::bail!("Configuration file not found: {}", path.display());
     }
 
-    let config = Config::from_file(path).await?;
-    info!("Loaded configuration from {}", path.display());
-    Ok(config)
+    match Config::from_file(path).await {
+        Ok(config) => {
+            info!("Loaded configuration from {}", path.display());
+            Ok(config)
+        }
+        Err(e) => {
+            #[cfg(feature = "doctor-ai")]
+            {
+                doctor_intercept(path, &e).await;
+            }
+            Err(e.into())
+        }
+    }
+}
+
+/// When config loading fails, attempt to diagnose with the doctor AI.
+#[cfg(feature = "doctor-ai")]
+async fn doctor_intercept(path: &PathBuf, error: &dyn std::fmt::Display) {
+    use rockbot_doctor::DoctorAi;
+    use tracing::warn;
+
+    let raw_toml = match tokio::fs::read_to_string(path).await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let doctor_config = commands::doctor::try_parse_doctor_config_from_raw(&raw_toml);
+
+    match DoctorAi::init(doctor_config).await {
+        Ok(mut doctor) => {
+            let error_str = error.to_string();
+            let diagnosis = doctor.diagnose_parse_error(&raw_toml, &error_str).await;
+
+            eprintln!("\n--- Doctor AI Diagnosis ---");
+            eprintln!("  Error Type: {}", diagnosis.kind.label());
+            if let Some(ref field) = diagnosis.field_path {
+                eprintln!("  Field:      {field}");
+            }
+            if let Some(line) = diagnosis.line {
+                eprintln!("  Line:       {line}");
+            }
+            if !diagnosis.explanation.is_empty() {
+                eprintln!("  Explanation: {}", diagnosis.explanation);
+            }
+
+            if let Some(fix) = doctor.suggest_fix(&raw_toml, &diagnosis).await {
+                eprintln!("  Suggested:   {}", fix.describe());
+
+                if doctor.auto_fix_enabled() {
+                    eprintln!("  Applying auto-fix...");
+                    match rockbot_doctor::repair::apply_fix(&raw_toml, &fix) {
+                        Ok(patched) => match patched.parse::<toml::Value>() {
+                            Ok(_) => {
+                                if tokio::fs::write(path, &patched).await.is_ok() {
+                                    eprintln!("  Config repaired and verified. Please restart.");
+                                    doctor.record_successful_fix(&diagnosis, &fix);
+                                }
+                            }
+                            Err(verify_err) => {
+                                eprintln!("  Fix verification failed: {verify_err}");
+                                eprintln!("  Original config preserved.");
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("  Auto-fix failed: {e}");
+                        }
+                    }
+                } else {
+                    eprintln!("  Tip: set [doctor] auto_fix = true to auto-repair on failure");
+                }
+            }
+            eprintln!("---------------------------\n");
+        }
+        Err(e) => {
+            warn!("Doctor AI could not initialize: {e}");
+        }
+    }
 }
 
 /// Remove log files older than `max_age_days` from the given directory.

@@ -243,6 +243,10 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     // Start the cron scheduler background loop
     gateway.start_cron_scheduler().await;
 
+    // Publish CA cert to S3 if deploy is configured
+    #[cfg(feature = "bedrock-deploy")]
+    gateway.publish_ca_to_s3().await;
+
     // Set up signal handling
     let gateway_clone = gateway.clone();
     tokio::spawn(async move {

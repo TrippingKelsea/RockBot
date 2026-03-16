@@ -11,6 +11,29 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 ## [Unreleased]
 
 ### Added
+- **Butler agent** (`rockbot-butler`): Embedded queer sassy companion agent
+  - Local GGUF model chat via shared `SeedModelConfig`
+  - `/butler status`, `/butler mood`, `/butler help` slash commands
+  - Gateway intercept (feature-gated `butler`, in `enhanced` profile)
+  - Butler chat as permanent main TUI view on Dashboard
+- **Card chain navigation**: Replaces sidebar with horizontal card strip
+  - Multi-level drill-down (Agents → agent list, Sessions → session list)
+  - Breadcrumb trail for nested navigation
+  - `h/l/j/k/Enter/Esc` key navigation when focused
+- **Vault agent storage**: Move agent configs from TOML to redb vault
+  - `AGENTS` table in rockbot-store with CRUD operations
+  - Auto-migrate from `[[agents.list]]` on first gateway startup
+  - Vault-first loading with TOML fallback
+- **Configurable keybindings**: Data-driven TUI key dispatch
+  - `KeybindingConfig` with per-mode bindings (normal, chat, card_chain)
+  - Vault-stored JSON config with 5s hot-reload polling
+  - All ~30 TUI actions mapped through `TuiAction` enum
+- **Seed model config**: Shared `[seed_model]` TOML section
+  - Single GGUF model definition for Butler, Doctor, and Overseer
+  - Defaults to Qwen2.5-1.5B-Instruct
+- **Doctor TUI**: Standalone chat with Doctor AI model
+  - `rockbot doctor tui` subcommand (no gateway required)
+  - DoctorAi `chat()` method for free-form conversation
 - **Feature profiles**: Meta feature flags for common build configurations
   - `conservative` (default): stable production features
   - `enhanced`: conservative + overseer, doctor-ai, vault-replication

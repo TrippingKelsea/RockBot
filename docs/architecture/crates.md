@@ -33,6 +33,7 @@ rockbot/
 │   ├── rockbot-pki/              # PKI: CA, client certs, CRL, enrollment
 │   ├── rockbot-overseer/         # Embedded local-model oversight
 │   ├── rockbot-doctor/           # AI-powered config diagnostics and auto-repair
+│   ├── rockbot-butler/           # Embedded queer sassy helper agent (opt-in)
 │   ├── rockbot-deploy/           # S3 CA distribution + Route53 DNS (opt-in)
 │   └── rockbot-plugins/          # Plugin system (scaffold)
 ```
@@ -67,6 +68,9 @@ rockbot-pki               → rcgen, x509-parser, rustls, ring, chrono
 
 rockbot-doctor            → rockbot-overseer, rockbot-config
                              [deps: toml, toml_edit; feature: doctor-ai]
+
+rockbot-butler            → rockbot-overseer, rockbot-config
+                             [feature: butler; in enhanced profile]
 
 rockbot-deploy            → rockbot-pki, rockbot-config, rockbot-credentials
                              [optional: aws-config, aws-sdk-s3, aws-sdk-route53;
@@ -211,7 +215,13 @@ cargo build --profile release-small --no-default-features -F anthropic
 - `prompts.rs` — Prompt templates for GGUF model inference
 - `learned.rs` — Self-learning fix store (JSONL), SHA-256 fingerprinting, few-shot recall
 
+### rockbot-butler
+- `lib.rs` — `Butler` struct, `ButlerConfig`, `ButlerSession`, chat(), init()
+- `commands.rs` — `/butler` slash command dispatch (status, mood, help)
+- Uses shared `SeedModelConfig` for GGUF model coordinates
+- Feature-gated: `butler` in enhanced profile
+
 ### rockbot-config
-- `config.rs` — `Config`, `GatewayConfig`, `AgentInstance`, feature types
+- `config.rs` — `Config`, `GatewayConfig`, `AgentInstance`, `SeedModelConfig`, feature types
 - `message.rs` — `Message`, `MessageContent`, `ContentPart`
 - `error.rs` — `ConfigError` sub-enum

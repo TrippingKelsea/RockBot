@@ -417,6 +417,66 @@ cargo build --release --features "conservative,otel"
 
 ---
 
+## Butler Agent (`rockbot-butler`)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Butler crate | ✅ | Local GGUF model companion agent |
+| Personality system (SOUL prompt) | ✅ | Queer, sassy, warm |
+| /butler slash commands | ✅ | status, mood, help |
+| Gateway slash command intercept | ✅ | Feature-gated `butler` |
+| Butler chat in TUI | ✅ | Permanent main view on Dashboard |
+| Chat history (ButlerSession) | ✅ | In-memory per TUI session |
+| Model routing to gateway agents | 📋 | Classification logic stub |
+
+## Card Chain Navigation
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| CardChain data model | ✅ | Multi-level card stack with drill-down |
+| Card chain renderer | ✅ | Horizontal strip with breadcrumbs |
+| Card chain key navigation | ✅ | h/l/j/k/Enter/Esc in card_chain mode |
+| Agent/Session sub-cards | ✅ | Dynamic builder from AppState |
+| Tab toggles card chain focus | ✅ | Shared with sidebar_focus |
+
+## Vault Agent Storage
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| AGENTS table in redb | ✅ | rockbot-store |
+| Agent CRUD via vault | ✅ | store_agent/load_agent/list_agents/delete_agent |
+| Auto-migrate from TOML | ✅ | On gateway startup |
+| Vault-first agent loading | ✅ | Falls back to TOML |
+| Migration detection in doctor | ✅ | agents.list → vault:agents |
+
+## Configurable Keybindings
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| KeybindingConfig types | ✅ | TuiAction, KeySpec, KeyBinding |
+| Action-based key dispatch | ✅ | Replaces hardcoded match arms |
+| Vault-stored keybindings | ✅ | JSON in KV store |
+| Hot-reload from vault | ✅ | 5s polling with hash comparison |
+| Per-mode bindings | ✅ | normal, chat, card_chain |
+
+## Seed Model Config
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| SeedModelConfig struct | ✅ | Shared GGUF model coordinates |
+| Used by Butler/Doctor/Overseer | ✅ | Default Qwen2.5-1.5B |
+| Configurable via `[seed_model]` | ✅ | TOML section |
+
+## Doctor TUI
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| DoctorAi chat() method | ✅ | Free-form conversation |
+| Standalone doctor TUI | ✅ | `rockbot doctor tui` subcommand |
+| No gateway required | ✅ | Direct local model chat |
+
+---
+
 ## Gap Analysis Summary
 
 ### Critical Path Items

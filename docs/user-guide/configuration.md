@@ -70,7 +70,11 @@ heartbeat_interval = "5m"                   # Agent heartbeat interval
 max_context_tokens = 128000                 # Max context window (tokens)
 ```
 
-### `[[agents.list]]`
+### `[[agents.list]]` (deprecated)
+
+> **Deprecated:** Agent configs should be stored in the vault instead. On first
+> gateway startup with non-empty `agents.list`, entries are auto-migrated to the
+> vault. After migration, this section can be removed from the TOML config.
 
 Each agent is defined as an entry in the `agents.list` array:
 
@@ -305,6 +309,23 @@ animations = true       # Enable animated transitions and effects (default: true
 |-------|------|---------|-------------|
 | `floating_bar` | bool | `true` | Render the top navigation bar as a floating overlay above page content |
 | `animations` | bool | `true` | Enable tachyonfx-powered transitions (modal open/close, page transitions, glow) |
+
+## `[seed_model]`
+
+Shared local GGUF model definition used by Butler, Doctor, and Overseer.
+
+```toml
+[seed_model]
+model_id = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+model_filename = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+tokenizer_repo = "Qwen/Qwen2.5-1.5B-Instruct"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model_id` | string | `"Qwen/Qwen2.5-1.5B-Instruct-GGUF"` | HuggingFace model repo ID |
+| `model_filename` | string | `"qwen2.5-1.5b-instruct-q4_k_m.gguf"` | GGUF filename within the repo |
+| `tokenizer_repo` | string | `"Qwen/Qwen2.5-1.5B-Instruct"` | HuggingFace repo ID for the tokenizer |
 
 ---
 

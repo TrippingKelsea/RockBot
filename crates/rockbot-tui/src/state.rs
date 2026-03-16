@@ -1125,6 +1125,19 @@ pub enum InputMode {
     EditContextFile(EditContextFileState),
     /// Context menu (page-specific actions, opened with '?')
     ContextMenu(ContextMenuState),
+    /// Card detail overlay (Alt+Enter on a card slot)
+    CardDetail(CardDetailState),
+}
+
+/// State for a card detail overlay modal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardDetailState {
+    /// Which mode (MenuItem) the card belongs to.
+    pub mode: MenuItem,
+    /// Which slot index (1+) was activated.
+    pub slot_index: usize,
+    /// Scroll offset within the detail content.
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

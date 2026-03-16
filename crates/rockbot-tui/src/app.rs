@@ -619,6 +619,10 @@ impl App {
                 let menu_state = menu_state.clone();
                 self.handle_context_menu(key, menu_state)
             }
+            InputMode::CardDetail(detail) => {
+                let detail = detail.clone();
+                self.handle_card_detail(key, detail)
+            }
         }
     }
 
@@ -761,7 +765,16 @@ impl App {
                 self.state.menu_index = new_mode.index();
             }
             CardActivate => {
-                // Open card detail overlay (implemented in Part 5)
+                // Open card detail overlay for the active slot (slot 1+)
+                if self.state.slot_bar.active_slot > 0 {
+                    self.state.input_mode = InputMode::CardDetail(
+                        crate::state::CardDetailState {
+                            mode: self.state.menu_item,
+                            slot_index: self.state.slot_bar.active_slot,
+                            scroll: 0,
+                        },
+                    );
+                }
             }
             JumpToSection(n) => {
                 let item = match n {
@@ -946,6 +959,34 @@ impl App {
             }
             _ => {
                 self.state.input_mode = InputMode::ContextMenu(menu);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_card_detail(
+        &mut self,
+        key: KeyEvent,
+        mut detail: crate::state::CardDetailState,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.input_mode = InputMode::Normal;
+            }
+            // Alt+Enter also closes
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.state.input_mode = InputMode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                detail.scroll = detail.scroll.saturating_sub(1);
+                self.state.input_mode = InputMode::CardDetail(detail);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                detail.scroll = detail.scroll.saturating_add(1);
+                self.state.input_mode = InputMode::CardDetail(detail);
+            }
+            _ => {
+                self.state.input_mode = InputMode::CardDetail(detail);
             }
         }
         Ok(())
@@ -3646,6 +3687,9 @@ impl App {
                 let area = frame.area();
                 super::components::context_menu::render_context_menu(frame, area, menu_state);
             }
+            InputMode::CardDetail(detail) => {
+                self.render_card_detail_modal(frame, detail);
+            }
             _ => {}
         }
 
@@ -3720,6 +3764,110 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
+    /// Render a card detail overlay modal (80% centered).
+    fn render_card_detail_modal(&self, frame: &mut Frame, detail: &crate::state::CardDetailState) {
+        use ratatui::widgets::{Clear, Wrap};
+        use super::components::centered_rect;
+
+        let area = centered_rect(80, 80, frame.area());
+        frame.render_widget(Clear, area);
+
+        let slot = self.state.slot_bar.slots.get(detail.slot_index);
+        let title = slot
+            .map(|s| s.label.as_str())
+            .unwrap_or("Detail");
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(Span::styled(
+                format!(" {title} "),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        // Build content lines based on mode + slot
+        let lines = self.build_card_detail_content(detail);
+
+        let paragraph = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((detail.scroll as u16, 0));
+        frame.render_widget(paragraph, inner);
+    }
+
+    /// Build content for the card detail overlay.
+    fn build_card_detail_content(&self, detail: &crate::state::CardDetailState) -> Vec<Line<'_>> {
+        let mut lines = Vec::new();
+        match detail.mode {
+            MenuItem::Dashboard => {
+                let slot = self.state.slot_bar.slots.get(detail.slot_index);
+                let label = slot.map(|s| s.label.as_str()).unwrap_or("");
+                match label {
+                    "Gateway" => {
+                        lines.push(Line::from(Span::styled(
+                            format!("Status: {}", if self.state.gateway.connected { "Online" } else { "Offline" }),
+                            Style::default().fg(if self.state.gateway.connected { Color::Green } else { Color::Red }),
+                        )));
+                        if let Some(v) = &self.state.gateway.version {
+                            lines.push(Line::from(format!("Version: {v}")));
+                        }
+                        if let Some(up) = self.state.gateway.uptime_secs {
+                            lines.push(Line::from(format!("Uptime: {}s", up)));
+                        }
+                        lines.push(Line::from(format!("Active sessions: {}", self.state.gateway.active_sessions)));
+                    }
+                    "Agents" => {
+                        for agent in &self.state.agents {
+                            let status_color = match agent.status {
+                                crate::state::AgentStatus::Active => Color::Green,
+                                crate::state::AgentStatus::Pending => Color::Yellow,
+                                crate::state::AgentStatus::Error => Color::Red,
+                                crate::state::AgentStatus::Disabled => Color::DarkGray,
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled(format!("{:16}", agent.id), Style::default().fg(Color::White)),
+                                Span::styled(format!(" {:?}", agent.status), Style::default().fg(status_color)),
+                            ]));
+                        }
+                    }
+                    _ => {
+                        lines.push(Line::from("No additional details available."));
+                    }
+                }
+            }
+            MenuItem::Agents => {
+                if let Some(agent) = self.state.agents.get(detail.slot_index.saturating_sub(1)) {
+                    lines.push(Line::from(format!("Agent: {}", agent.id)));
+                    lines.push(Line::from(format!("Model: {}", agent.model.as_deref().unwrap_or("default"))));
+                    lines.push(Line::from(format!("Status: {:?}", agent.status)));
+                    lines.push(Line::from(format!("Sessions: {}", agent.session_count)));
+                    if let Some(ws) = &agent.workspace {
+                        lines.push(Line::from(format!("Workspace: {ws}")));
+                    }
+                }
+            }
+            MenuItem::Sessions => {
+                if let Some(session) = self.state.sessions.get(detail.slot_index.saturating_sub(1)) {
+                    lines.push(Line::from(format!("Session: {}", session.key)));
+                    lines.push(Line::from(format!("Agent: {}", session.agent_id)));
+                    lines.push(Line::from(format!("Messages: {}", session.message_count)));
+                }
+            }
+            _ => {
+                lines.push(Line::from("Detail view for this mode."));
+            }
+        }
+        if lines.is_empty() {
+            lines.push(Line::from("No details available."));
+        }
+        lines
+    }
+
     fn get_help_text(&self) -> String {
         match &self.state.input_mode {
             InputMode::Normal => {
@@ -3787,6 +3935,7 @@ impl App {
             InputMode::ViewContextFiles(_) => "↑↓:Select │ Enter:Edit │ Esc:Close".to_string(),
             InputMode::EditContextFile(_) => "Ctrl+S:Save │ ↑↓←→:Move │ Esc:Back".to_string(),
             InputMode::ContextMenu(_) => "↑↓/jk:Navigate │ Enter:Select │ Esc:Close".to_string(),
+            InputMode::CardDetail(_) => "↑↓:Scroll │ Esc/Alt+Enter:Close".to_string(),
         }
     }
 }

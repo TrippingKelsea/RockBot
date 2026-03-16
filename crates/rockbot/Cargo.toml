@@ -12,7 +12,12 @@ name = "rockbot"
 path = "src/main.rs"
 
 [features]
-default = ["bedrock", "discord", "telegram", "signal", "tools-credentials", "tools-mcp", "tools-markdown"]
+default = ["conservative"]
+# Meta profiles
+conservative = ["bedrock", "telegram", "signal", "tools-credentials", "tools-mcp", "tools-markdown"]
+enhanced = ["conservative", "overseer", "doctor-ai", "vault-replication"]
+experimental = ["enhanced", "otel", "bedrock-deploy"]
+enshitify = ["discord"]
 # LLM providers
 anthropic = ["rockbot-cli/anthropic", "rockbot-core/anthropic", "rockbot-llm/anthropic"]
 openai = ["rockbot-cli/openai", "rockbot-core/openai", "rockbot-llm/openai"]

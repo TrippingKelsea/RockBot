@@ -390,6 +390,33 @@ inference stack to run a small local model for config analysis.
 
 ---
 
+## Feature Profiles
+
+Meta feature flags for the binary crate (`rockbot`). Each profile is additive.
+
+| Profile | Includes | Use Case |
+|---------|----------|----------|
+| `conservative` (default) | bedrock, telegram, signal, tools-credentials, tools-mcp, tools-markdown | Production — stable, minimal dependencies |
+| `enhanced` | conservative + overseer, doctor-ai, vault-replication | Production+ — AI oversight, config diagnostics, HA vault |
+| `experimental` | enhanced + otel, bedrock-deploy | Development/staging — telemetry, cloud provisioning |
+| `enshitify` | discord | Discord channel support |
+
+```bash
+# Default build (conservative)
+cargo build --release
+
+# Enhanced build
+cargo build --release --features enhanced --no-default-features
+
+# Experimental (everything)
+cargo build --release --features experimental --no-default-features
+
+# Cherry-pick: conservative + one extra
+cargo build --release --features "conservative,otel"
+```
+
+---
+
 ## Gap Analysis Summary
 
 ### Critical Path Items

@@ -129,20 +129,37 @@ features are compiled.
 | `http-insecure` | no | Allow plain HTTP/WS (TLS is default) |
 | `vault-replication` | no | OpenRaft-based vault replication across nodes |
 
+### Meta Profiles
+
+Additive feature profiles for common build configurations:
+
+| Profile | Includes | Description |
+|---------|----------|-------------|
+| `conservative` | default features | Stable production build |
+| `enhanced` | conservative + overseer, doctor-ai, vault-replication | Production with AI oversight and HA |
+| `experimental` | enhanced + otel, bedrock-deploy | Full feature set for dev/staging |
+| `enshitify` | discord | Discord channel support |
+
 ### Build Examples
 
 ```bash
-# Default (Bedrock + all channels + all tools)
+# Default (conservative: Bedrock + all channels + all tools)
 cargo build --release
+
+# Enhanced profile (adds overseer, doctor-ai, vault-replication)
+cargo build --release --features enhanced --no-default-features
+
+# Experimental profile (everything)
+cargo build --release --features experimental --no-default-features
+
+# Conservative + cherry-pick extras
+cargo build --release --features "conservative,otel"
 
 # Anthropic-only, no channels
 cargo build --release --no-default-features -F anthropic
 
-# Everything
+# Everything à la carte
 cargo build --release -F all-providers,all-channels,all-tools,remote-exec,overseer,otel
-
-# Remote development setup
-cargo build --release -F remote-exec
 
 # Minimal size
 cargo build --profile release-small --no-default-features -F anthropic

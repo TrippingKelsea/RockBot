@@ -11,6 +11,11 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 ## [Unreleased]
 
 ### Added
+- **Feature profiles**: Meta feature flags for common build configurations
+  - `conservative` (default): stable production features
+  - `enhanced`: conservative + overseer, doctor-ai, vault-replication
+  - `experimental`: enhanced + otel, bedrock-deploy
+  - `enshitify`: discord
 - **TUI modernization**: Full visual overhaul of the terminal UI
   - Rounded borders (`BorderType::Rounded`) on all blocks and modals
   - Native `Scrollbar` widgets on sessions chat, credentials endpoints, and model list modals

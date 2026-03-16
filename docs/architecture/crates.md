@@ -1,6 +1,6 @@
 # Crate Structure
 
-RockBot is a Cargo workspace with 20 crates organized by responsibility.
+RockBot is a Cargo workspace with 29 crates organized by responsibility.
 
 ## Workspace Layout
 
@@ -27,10 +27,13 @@ rockbot/
 │   ├── rockbot-channels-signal/  # Signal (placeholder)
 │   ├── rockbot-memory/           # Memory and search system
 │   ├── rockbot-security/         # Capability system and sandboxing
-│   ├── rockbot-credentials/      # Encrypted credential vault
+│   ├── rockbot-store/            # Unified embedded storage (redb + optional OpenRaft)
+│   ├── rockbot-credentials/      # Encrypted credential vault (backed by rockbot-store)
 │   ├── rockbot-credentials-schema/# Shared credential schema types
 │   ├── rockbot-pki/              # PKI: CA, client certs, CRL, enrollment
 │   ├── rockbot-overseer/         # Embedded local-model oversight
+│   ├── rockbot-doctor/           # AI-powered config diagnostics and auto-repair
+│   ├── rockbot-deploy/           # S3 CA distribution + Route53 DNS (opt-in)
 │   └── rockbot-plugins/          # Plugin system (scaffold)
 ```
 
@@ -46,7 +49,8 @@ rockbot-webui             (leaf: pure static HTML)
 rockbot-session           → rockbot-config
 rockbot-security          → (standalone)
 rockbot-memory            → (standalone)
-rockbot-credentials       → rockbot-security
+rockbot-store             → (standalone: redb, chacha20; optional: openraft)
+rockbot-credentials       → rockbot-store, rockbot-security
 
 rockbot-llm               → rockbot-credentials-schema
 rockbot-tools             → rockbot-security, rockbot-credentials-schema
@@ -61,11 +65,19 @@ rockbot-client            → rockbot-config
 
 rockbot-pki               → rcgen, x509-parser, rustls, ring, chrono
 
+rockbot-doctor            → rockbot-overseer, rockbot-config
+                             [deps: toml, toml_edit; feature: doctor-ai]
+
+rockbot-deploy            → rockbot-pki, rockbot-config, rockbot-credentials
+                             [optional: aws-config, aws-sdk-s3, aws-sdk-route53;
+                              feature: bedrock]
+
 rockbot-gateway           → rockbot-config, rockbot-session, rockbot-agent,
                              rockbot-webui, rockbot-client, rockbot-llm,
                              rockbot-tools, rockbot-channels, rockbot-credentials,
                              rockbot-pki
-                             [optional: channel/tool provider crates, overseer]
+                             [optional: channel/tool provider crates, overseer,
+                              rockbot-deploy]
 
 rockbot-core              → facade: re-exports all of the above
 rockbot-cli               → rockbot-core, rockbot-client, rockbot-pki
@@ -111,8 +123,11 @@ features are compiled.
 |---------|---------|-------------|
 | `remote-exec` | no | Noise Protocol encrypted remote tool dispatch |
 | `overseer` | no | Embedded local-model agent oversight |
+| `doctor-ai` | no | AI-powered config diagnostics and auto-repair |
 | `otel` | no | OpenTelemetry trace/metric export |
+| `bedrock-deploy` | no | S3 CA distribution + Route53 DNS provisioning |
 | `http-insecure` | no | Allow plain HTTP/WS (TLS is default) |
+| `vault-replication` | no | OpenRaft-based vault replication across nodes |
 
 ### Build Examples
 
@@ -164,6 +179,20 @@ cargo build --profile release-small --no-default-features -F anthropic
 - `ca.rs` — CA generation, client cert signing, CSR signing/generation, CRL
 - `index.rs` — `PkiIndex`, `CertEntry`, `CertRole`, `CertStatus`, `EnrollmentToken`
 - `manager.rs` — `PkiManager` orchestrator, enrollment tokens
+
+### rockbot-store
+- `lib.rs` — `Store` struct wrapping redb: `put`/`get`/`delete`/`list`/`range` + KV convenience methods
+- `encrypted_backend.rs` — `redb::StorageBackend` impl with ChaCha20 stream encryption
+- `tables.rs` — All 10 table definitions (endpoints, credentials, permissions, KV, sessions, cron, routing, PKI)
+- `sync.rs` — Per-table `SyncPolicy` (Eager, Eventual, LocalOnly)
+- `raft/` — OpenRaft integration (feature-gated: `replication`): log store, state machine, network
+
+### rockbot-doctor
+- `diagnosis.rs` — AI-driven config error analysis, human-readable explanations
+- `repair.rs` — Automatic TOML config repair with `toml_edit` (structure-preserving)
+- `migration.rs` — Detection and rewriting of deprecated/renamed config fields
+- `prompts.rs` — Prompt templates for GGUF model inference
+- `learned.rs` — Self-learning fix store (JSONL), SHA-256 fingerprinting, few-shot recall
 
 ### rockbot-config
 - `config.rs` — `Config`, `GatewayConfig`, `AgentInstance`, feature types

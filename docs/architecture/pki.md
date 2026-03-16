@@ -358,6 +358,60 @@ assert_eq!(exts.groups, vec!["engineering", "us-west-2"]);
 The certificate itself becomes the single source of truth for identity and
 authorization — no external directory lookups at connection time.
 
+## S3 CA Distribution + Route53 DNS
+
+The `rockbot-deploy` crate (behind `bedrock-deploy` feature) provides cloud-based
+CA certificate distribution, removing the need for a running gateway to share the
+CA cert for mTLS trust verification.
+
+### Architecture
+
+```
+rockbot cert ca publish
+        │
+        ▼
+┌─────────────────┐     ┌──────────────────┐
+│   CaDistributor │     │  DnsProvisioner   │
+│   (aws-sdk-s3)  │     │ (aws-sdk-route53) │
+└────────┬────────┘     └────────┬─────────┘
+         │                       │
+         ▼                       ▼
+  s3://{bucket}/pki/ca.crt   {uuid}.rockbot.internal → S3 endpoint
+                             {name}.rockbot.internal → S3 endpoint
+```
+
+### Flow
+
+1. **Bucket provisioning** — `CaDistributor::ensure_bucket()` creates the S3 bucket
+   if it doesn't exist (handles the us-east-1 `LocationConstraint` quirk)
+2. **Public policy** — optionally applies `s3:GetObject` for `Principal: *`
+   (best-effort; account-level Block Public Access may prevent it)
+3. **CA upload** — `PutObject` with `application/x-pem-file` content type
+4. **DNS registration** — creates a private Route53 hosted zone for
+   `rockbot.internal` and UPSERT CNAME records pointing to the S3 bucket
+
+### Credential Auto-Import
+
+`AwsCredentialImporter` discovers AWS keys from:
+1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+2. Shared credentials file (`~/.aws/credentials`, default profile)
+
+If the vault has no AWS credentials, they're auto-imported into the KV store
+(`aws/default`). If keys differ, a conflict is logged (gateway) or prompted
+interactively (CLI).
+
+### Configuration
+
+```toml
+[deploy]
+bucket = "my-rockbot-ca"
+region = "us-east-1"
+dns_zone = "rockbot.internal"
+cluster_name = "prod-east"
+```
+
+See [configuration.md](../user-guide/configuration.md#deploy) for all fields.
+
 ## Vault Replication
 
 For multi-node deployments, the PKI vault (index, CRL, credentials) can be

@@ -21,6 +21,8 @@ automatically while the gateway is running.
 [credentials]    # Encrypted vault settings
 [providers]      # LLM provider configuration
 [overseer]       # Embedded oversight model (optional)
+[deploy]         # S3 CA distribution + Route53 DNS (optional, requires bedrock-deploy feature)
+[tui]            # TUI display preferences
 ```
 
 ---
@@ -224,6 +226,61 @@ tokenizer_repo = "Qwen/Qwen2.5-0.5B-Instruct"
 
 ---
 
+## `[doctor]`
+
+Requires the `doctor-ai` feature flag. Controls the embedded AI model used by
+`rockbot doctor` to diagnose and repair config errors at startup or on demand.
+
+```toml
+[doctor]
+model_id       = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"   # HuggingFace repo for auto-download
+model_filename = "qwen2.5-1.5b-instruct-q4_k_m.gguf"  # Filename within the repo
+tokenizer_repo = ""                                     # HF repo for tokenizer (defaults to model_id)
+model_path     = ""                                     # Absolute path to local GGUF file (overrides download)
+tokenizer_path = ""                                     # Absolute path to local tokenizer.json (overrides download)
+max_tokens     = 512                                    # Max tokens generated per diagnosis (default: 512)
+temperature    = 0.05                                   # Sampling temperature (default: 0.05)
+top_p          = 0.9                                    # Top-p nucleus sampling (default: 0.9)
+repeat_penalty = 1.1                                    # Repetition penalty (default: 1.1)
+seed           = 42                                     # RNG seed for reproducible output (default: 42)
+auto_fix       = false                                  # Automatically apply repairs without prompting (default: false)
+```
+
+When `model_path` is set it takes precedence over `model_id`/`model_filename`.
+Similarly, `tokenizer_path` overrides `tokenizer_repo`. Set `auto_fix = true`
+to let the doctor apply TOML repairs in-place; leave it `false` (default) to
+review proposed changes before applying.
+
+---
+
+## `[deploy]`
+
+Requires the `bedrock-deploy` feature flag. Configures S3-based CA certificate
+distribution and Route53 DNS auto-provisioning.
+
+```toml
+[deploy]
+bucket = "my-rockbot-ca"              # S3 bucket name (required)
+region = "us-east-1"                  # AWS region (default: "us-east-1")
+ca_cert_key = "pki/ca.crt"           # S3 object key (default: "pki/ca.crt")
+public = false                        # Apply public-read bucket policy (default: false)
+endpoint_url = "http://localhost:4566" # S3 endpoint override (e.g. LocalStack)
+auto_create_bucket = true             # Auto-create bucket if missing (default: true)
+upload_on_startup = true              # Upload CA cert on gateway start (default: true)
+dns_zone = "rockbot.internal"         # Route53 hosted zone domain (default: "rockbot.internal")
+cluster_name = "prod-east"            # Human-friendly cluster name for DNS (optional)
+```
+
+The CA certificate is uploaded to S3 and a CNAME record is created in Route53
+pointing to the bucket. This allows clients to fetch the CA cert for mTLS trust
+verification without needing a running gateway.
+
+Build with: `cargo build --features bedrock-deploy`
+
+CLI command: `rockbot cert ca publish` — provisions S3 + DNS interactively.
+
+---
+
 ## Environment Variable Expansion
 
 ```toml
@@ -235,6 +292,21 @@ password_env_var = "${VAULT_ENV:ROCKBOT_VAULT_PASSWORD}"
 ```
 
 Syntax: `${VAR}` (required) or `${VAR:default}` (with fallback).
+
+## `[tui]`
+
+```toml
+[tui]
+floating_bar = true     # Show top bar as floating overlay (default: true)
+animations = true       # Enable animated transitions and effects (default: true)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `floating_bar` | bool | `true` | Render the top navigation bar as a floating overlay above page content |
+| `animations` | bool | `true` | Enable tachyonfx-powered transitions (modal open/close, page transitions, glow) |
+
+---
 
 ## CLI Commands
 

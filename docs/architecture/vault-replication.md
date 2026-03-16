@@ -1,6 +1,6 @@
 # Vault Replication over Noise Protocol
 
-> **Status:** Draft
+> **Status:** Draft (storage layer implemented, replication protocol in progress)
 > **Last updated:** 2026-03-15
 
 ## Overview
@@ -226,7 +226,22 @@ This mirrors Nebula's approach: the network layer (Noise) handles
 authentication, and the certificate extensions handle authorization, with no
 external directory service needed.
 
-## Implementation Roadmap
+## Implementation Status
+
+### Storage Layer (Implemented)
+
+The `rockbot-store` crate provides the unified storage backend:
+
+- **redb** — Embedded key-value database (pure Rust, stable format)
+- **ChaCha20 encryption** — Block-level storage encryption via `redb::StorageBackend`
+- **10 table definitions** — All persistent state unified in one database
+- **Per-table sync policies** — `Eager` (replicate), `Eventual` (on-demand), `LocalOnly`
+- **OpenRaft integration** (behind `replication` feature):
+  - `RedbLogStore` — Raft log backed by redb tables
+  - `RedbStateMachine` — Applies Raft entries as table mutations
+  - `NoiseNetwork` — Stub `RaftNetwork` implementation for Noise protocol transport
+
+### Remaining Roadmap
 
 ### Phase 1: Foundation
 - [ ] Persist Noise static keypair to PKI directory
@@ -234,22 +249,22 @@ external directory service needed.
 - [ ] `known_peers.json` for static key pinning
 - [ ] Upgrade remote tool execution to use encrypted payloads
 
-### Phase 2: PKI Replication
-- [ ] `VaultSyncManager` struct with version vectors
-- [ ] `vault_hello` / `vault_delta_request` / `vault_delta_response` messages
-- [ ] PKI index replication (primary → replica)
+### Phase 2: Raft Cluster Bootstrap
+- [x] OpenRaft type config and trait implementations (log store, state machine)
+- [ ] Wire `NoiseNetwork` to actual Noise sessions over WebSocket
+- [ ] Cluster membership management (add/remove nodes)
+- [ ] Leader election and log replication end-to-end
+
+### Phase 3: PKI Replication
+- [ ] PKI index replication via Raft entries (primary → replicas)
 - [ ] CRL push on revocation
 - [ ] CSR signing proxy (replica → primary → replica)
 
-### Phase 3: Credential Replication
+### Phase 4: Credential + Config Replication
 - [ ] Per-node credential encryption (Noise static key + salt derivation)
-- [ ] Credential delta sync with Lamport timestamps
-- [ ] Group-based credential scoping (only sync what the peer is authorized for)
-
-### Phase 4: Configuration Replication
-- [ ] Agent config push from primary
-- [ ] Routing rule sync
-- [ ] Hot-reload on config receipt
+- [ ] Sync policy enforcement (only `Eager` tables enter Raft log)
+- [ ] On-demand sync for `Eventual` tables (sessions)
+- [ ] Agent config push and hot-reload on receipt
 
 ### Phase 5: Hardening
 - [ ] Formal Noise IK integration (replace XX after bootstrap)

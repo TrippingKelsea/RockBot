@@ -11,11 +11,56 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 ## [Unreleased]
 
 ### Added
+- **TUI modernization**: Full visual overhaul of the terminal UI
+  - Rounded borders (`BorderType::Rounded`) on all blocks and modals
+  - Native `Scrollbar` widgets on sessions chat, credentials endpoints, and model list modals
+  - tachyonfx integration: modal coalesce/dissolve effects, page fade transitions, background dimming
+  - Floating top bar: sidebar + card strip overlay content (behind `[tui] floating_bar` config)
+  - Context menu: press `?` on any page for page-specific actions (add, edit, delete, refresh, etc.)
+  - `Constraint::Fill(1)` + `Flex::Start` layout for card strips
+  - New `[tui]` config section with `floating_bar` and `animations` toggles
+- **rockbot-deploy**: New crate for S3 CA certificate distribution and Route53 DNS auto-provisioning
+  - `CaDistributor`: S3 bucket creation, public policy, CA cert upload
+  - `DnsProvisioner`: Private hosted zone management, CNAME record upsert
+  - `AwsCredentialImporter`: Auto-discover and import AWS keys into vault
+  - `DeployConfig`: Full configuration with defaults (bucket, region, dns_zone, etc.)
+  - Compile-time + runtime S3 endpoint override for LocalStack/custom endpoints
+  - Feature-gated: `bedrock-deploy` (opt-in, not in defaults)
+  - CLI: `rockbot cert ca publish` — interactive S3 + DNS provisioning
+  - Gateway: auto-publishes CA cert on startup when `upload_on_startup = true`
+- **rockbot-store**: New crate providing unified embedded storage via redb
+  - ChaCha20 block-level encryption via `redb::StorageBackend`
+  - 10 table definitions for all persistent state (endpoints, credentials, permissions, KV, sessions, cron, routing, PKI)
+  - Per-table sync policies (Eager, Eventual, LocalOnly)
+  - OpenRaft integration behind `replication` feature (log store, state machine, network stubs)
+  - Generic KV store with namespaced keys (`namespace\0key`)
+- **vault-redb-migration**: `rockbot-credentials` now uses redb (via `rockbot-store`) instead of flat JSON files
+  - Automatic migration: legacy `endpoints.json`/`credentials.json` imported on first open, renamed to `.json.migrated`
+  - KV store methods on `CredentialVault`: `kv_put`, `kv_get`, `kv_delete`, `kv_list`
+  - Permission persistence: `store_permission`, `delete_permission`, `list_permissions`
+  - KV async wrappers on `CredentialManager`
+- **doctor-self-learning**: Doctor AI now remembers verified fixes across sessions
+  - `LearnedStore` backed by JSONL at `{data_local_dir}/rockbot/doctor/learned.jsonl`
+  - SHA-256 fingerprinting of error+field for instant fix recall
+  - Few-shot prompt injection: recent successful fixes as examples for the model
+  - Verification loop: fixes are validated by re-parsing TOML before committing
+  - `[learned]` label in migration output for fixes from the learned store
+- **doctor-ai**: New `rockbot-doctor` crate with embedded GGUF model for AI-powered
+  config diagnostics and auto-repair (feature-gated behind `doctor-ai`)
+  - `diagnosis.rs` — AI-generated human-readable explanations for config errors
+  - `repair.rs` — Structure-preserving TOML auto-repair via `toml_edit`
+  - `migration.rs` — Detection and rewriting of deprecated/renamed config fields
+  - `prompts.rs` — Prompt templates for local GGUF model inference
+  - Startup interception: doctor runs automatically when config fails to load
+  - Reuses `rockbot-overseer` candle/GGUF inference infrastructure
+  - `[doctor]` config section (see `docs/user-guide/configuration.md`)
 - **PkiConfig**: Extracted TLS/PKI settings into shared `PkiConfig` struct, reusable by gateway, client, and agent consumers (backward-compatible via `#[serde(flatten)]`)
 - **x.509 extensions**: Nebula-inspired custom certificate extensions for roles and groups (OIDs `1.3.6.1.4.1.59584.1.{1,2}`), embedded in issued certificates and parseable at connection time
 - **Vault replication design doc**: Draft architecture for replicating PKI state and credentials over Noise protocol links (`docs/architecture/vault-replication.md`)
+- **Post-build test harness**: strace-based performance and security validation in `tests/post-build/` (CI-integrated)
 
 ### Changed
+- Lazy Tokio runtime: `--help`/`--version` skip async runtime initialization
 - `GatewayConfig` TLS fields moved to nested `pki: PkiConfig` (TOML format unchanged due to flatten)
 - `generate_client()`, `sign_csr()`, and `generate_client_cert()` now accept `roles` and `groups` parameters
 - `CertEntry` gains `roles` and `groups` fields (defaulting to empty, backward-compatible with existing `index.json`)

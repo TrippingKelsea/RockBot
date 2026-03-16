@@ -78,6 +78,10 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Age encryption | 🚧 | Stubbed |
 | SSH key unlock | 🚧 | Stubbed |
 | Auto-unlock via env var | ✅ | `ROCKBOT_VAULT_PASSWORD` |
+| redb storage backend | ✅ | Replaced flat JSON files; auto-migration of legacy data |
+| Generic KV store | ✅ | Namespaced key-value storage in vault |
+| ChaCha20 storage encryption | ✅ | Block-level encryption via `redb::StorageBackend` |
+| OpenRaft replication | 🚧 | Feature-gated (`replication`); log store + state machine implemented, network stubs |
 
 ### Endpoint Types
 
@@ -99,7 +103,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | AllowHIL2FA | 📋 | YubiKey integration |
 | Deny | ✅ | |
 | Glob pattern matching | ✅ | `saggyclaw://api/**` |
-| Persistent rules | 📋 | Currently in-memory only |
+| Persistent rules | ✅ | Stored in redb PERMISSIONS table |
 
 ### Audit Logging
 
@@ -204,6 +208,26 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Client-side cert loading (TUI/agent) | 📋 | TUI currently accepts self-signed |
 | OCSP stapling | 📋 | |
 | Automatic cert renewal | 📋 | |
+| S3 CA distribution | ✅ | `rockbot cert ca publish`, `bedrock-deploy` feature |
+| Route53 DNS auto-provisioning | ✅ | Private hosted zone, CNAME records |
+| AWS credential auto-import | ✅ | Env/shared-credentials discovery, vault storage |
+
+---
+
+## S3 Deploy (`rockbot-deploy`)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| S3 bucket auto-creation | ✅ | `auto_create_bucket` config, us-east-1 quirk handled |
+| CA cert upload to S3 | ✅ | `application/x-pem-file` content type |
+| Public bucket policy | ✅ | Best-effort, warns on Block Public Access |
+| Route53 private hosted zone | ✅ | Auto-created if missing, idempotent |
+| CNAME registration (cluster) | ✅ | UUID + optional friendly name |
+| CNAME registration (client) | ✅ | Per-client UUID records |
+| Custom S3 endpoint | ✅ | Compile-time + runtime override, path-style |
+| AWS credential auto-import | ✅ | Env vars, shared credentials file, vault KV |
+| Gateway startup provisioning | ✅ | `upload_on_startup` config flag |
+| CLI interactive publish | ✅ | `rockbot cert ca publish` with conflict resolution |
 
 ---
 
@@ -274,6 +298,16 @@ This document tracks feature implementation status and helps identify gaps betwe
 | `doctor` | 🚧 | |
 | `migrate` | 📋 | |
 
+### Post-Build Testing
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| strace-based perf tests | ✅ | No Tokio runtime on help paths, syscall budget, startup time |
+| strace-based security tests | ✅ | No network, no sensitive reads, no child execs on info paths |
+| Binary size budget | ✅ | Release binary under 150MB |
+| Binary permissions check | ✅ | No world-writable bit |
+| CI integration | ✅ | Runs after build in CI pipeline |
+
 ### TUI (Terminal UI)
 
 | Feature | Status | Notes |
@@ -288,6 +322,13 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Vault unlock modal | ✅ | Auto-unlock for keyfile |
 | Real data binding | ✅ | Gateway API calls wired |
 | Gateway API calls | ✅ | |
+| Rounded borders | ✅ | `BorderType::Rounded` on all blocks |
+| Scrollbar widgets | ✅ | Sessions chat, credentials endpoints, model list |
+| tachyonfx effects | ✅ | Modal coalesce/dissolve, page fade, background dim |
+| Floating top bar | ✅ | `[tui] floating_bar = true` (default), content scrolls behind |
+| Context menu | ✅ | `?` key opens page-specific action menu |
+| Flex layout | ✅ | `Constraint::Fill(1)` + `Flex::Start` card strips |
+| TUI config (`[tui]`) | ✅ | `floating_bar`, `animations` toggles |
 
 ---
 
@@ -319,6 +360,24 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 ---
 
+## Config Diagnostics (`rockbot-doctor`)
+
+Requires the `doctor-ai` feature flag. Reuses `rockbot-overseer`'s candle/GGUF
+inference stack to run a small local model for config analysis.
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| AI config error diagnosis | ✅ | Human-readable explanation of TOML parse/validation errors |
+| Auto-repair of TOML config | ✅ | Structure-preserving edits via `toml_edit` |
+| Migration detection | ✅ | Detects and rewrites deprecated/renamed fields |
+| Startup interception | ✅ | Runs automatically on config load failure |
+| `rockbot doctor` CLI command | 🚧 | Command exists; AI path wired, repair confirmation UI pending |
+| Self-learning fix recall | ✅ | SHA-256 fingerprinted fixes stored in JSONL, instant recall on repeat errors |
+| Few-shot prompt injection | ✅ | Recent successful fixes used as examples for the model |
+| Fix verification loop | ✅ | Patched TOML re-parsed before committing; reverts on failure |
+
+---
+
 ## Plugins (`rockbot-plugins`)
 
 | Feature | Status | Notes |
@@ -347,12 +406,10 @@ This document tracks feature implementation status and helps identify gaps betwe
 2. Signal channel integration
 3. WASM plugin system
 4. Sandbox implementation (container and process)
-5. Persistent permission rules
-6. Session export (JSON/Markdown)
+5. Session export (JSON/Markdown)
 
 ### Technical Debt
 
 1. OAuth2 automated flow not implemented (token storage works, but acquisition is manual)
 2. Age encryption and SSH key unlock are stubbed in the vault
-3. Permission rules are in-memory and do not survive gateway restarts
-4. Test coverage gaps in some modules
+3. Test coverage gaps in some modules

@@ -81,6 +81,58 @@ The `-g` flag accepts bare `host:port` — no need to specify `https://`.
 Navigate to `https://localhost:18080` in your browser. Accept the
 self-signed certificate when prompted.
 
+## Mutual TLS (mTLS)
+
+For production deployments, use the built-in PKI instead of self-signed
+certificates. This ensures only authorized clients can connect.
+
+### Set Up the CA and Certificates
+
+```bash
+# Initialize a Certificate Authority (valid 10 years)
+rockbot cert ca generate --days 3650
+
+# Generate a gateway certificate
+rockbot cert client generate --name gateway --role gateway \
+  --san localhost --san 127.0.0.1 --days 365
+
+# Install into rockbot.toml (sets tls_cert, tls_key, tls_ca, require_client_cert)
+rockbot cert install --name gateway
+
+# Generate a TUI client certificate
+rockbot cert client generate --name my-tui --role tui --days 365
+```
+
+### Enroll a Remote Client
+
+If you need to provision a client on a different machine:
+
+```bash
+# On the CA host: create a one-time enrollment token
+rockbot cert enroll create --role agent --uses 1 --expires 24h
+# Output: Token: <uuid>
+
+# On the remote client: enroll with the gateway
+rockbot cert enroll submit \
+  --gateway https://gateway-host:18080 \
+  --psk <token> --name remote-agent --role agent
+
+# Install into the client's config
+rockbot cert install --name remote-agent
+```
+
+### View and Manage Certificates
+
+```bash
+rockbot cert client list           # list all issued certs
+rockbot cert client info --name X  # details for one cert
+rockbot cert client revoke --name X  # revoke (regenerates CRL)
+rockbot cert client rotate --name X --days 365 --backup  # rotate
+rockbot cert ca info               # CA details
+```
+
+See `docs/architecture/pki.md` for the full PKI reference.
+
 ## Remote Tool Execution
 
 Build with the `remote-exec` feature to let the gateway dispatch tool calls
@@ -138,8 +190,15 @@ ss -tlnp | grep 18080
 
 **TLS certificate issues:**
 ```bash
-# Regenerate certificate
+# Regenerate self-signed certificate (quick bootstrap)
 rockbot config init --force
+
+# Or inspect and verify existing certs
+rockbot cert info --cert ~/.config/rockbot/pki/certs/gateway.crt
+rockbot cert verify --cert gateway.crt --key gateway.key --ca ca.crt
+
+# Rotate an expiring certificate
+rockbot cert client rotate --name gateway --san localhost --days 365 --backup
 ```
 
 **Vault won't unlock:**

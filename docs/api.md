@@ -79,6 +79,36 @@ When TLS is configured (default), use `https://` and `wss://` schemes.
 | POST | `/api/cron/jobs/:id/trigger` | Trigger job immediately |
 | GET | `/api/cron/clients` | List connected clients for dispatch |
 
+### Certificates (PKI)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/cert/ca` | Get the CA certificate PEM (public) |
+| POST | `/api/cert/sign` | Sign a CSR with PSK authentication (enrollment) |
+
+**`POST /api/cert/sign`** request body:
+
+```json
+{
+  "csr": "-----BEGIN CERTIFICATE REQUEST-----\n...",
+  "psk": "enrollment-token-string",
+  "name": "my-agent",
+  "role": "agent"
+}
+```
+
+Response (200):
+
+```json
+{
+  "certificate": "-----BEGIN CERTIFICATE-----\n...",
+  "ca_certificate": "-----BEGIN CERTIFICATE-----\n..."
+}
+```
+
+Requires `enrollment_psk` to be set in gateway config, or an enrollment
+token created via `rockbot cert enroll create`.
+
 ### A2A (Agent-to-Agent)
 
 | Method | Endpoint | Description |

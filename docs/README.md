@@ -9,6 +9,7 @@
 
 - [Overview](architecture/overview.md) — High-level architecture and data flow
 - [Crate Structure](architecture/crates.md) — Workspace layout, dependency graph, feature flags
+- [PKI and mTLS](architecture/pki.md) — Certificate authority, mutual TLS, enrollment
 
 ## Reference
 

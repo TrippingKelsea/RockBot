@@ -135,17 +135,30 @@ Session updated with new messages
 ### TLS and Connection Security
 
 By default, the gateway serves HTTPS/WSS. `rockbot config init` generates
-a self-signed certificate. Clients connecting via `wss://` accept
-self-signed certs automatically. Plain HTTP requires building with the
-`http-insecure` feature flag.
+a self-signed certificate for quick bootstrap. For production use, the
+built-in PKI system (`rockbot-pki`) provides a full certificate authority:
+
+- **CA management** — `rockbot cert ca generate` creates a local CA
+- **Client certificates** — issued per role (gateway, agent, tui)
+- **Mutual TLS** — when `tls_ca` is configured, the gateway verifies client
+  certificates using `WebPkiClientVerifier`; `require_client_cert = true`
+  enforces mandatory mTLS
+- **Remote enrollment** — `POST /api/cert/sign` with a pre-shared key lets
+  new clients obtain certificates without direct CA access
+- **Revocation** — `rockbot cert client revoke` updates the CRL
+
+See [PKI and mTLS](pki.md) for full details.
+
+Plain HTTP requires building with the `http-insecure` feature flag.
 
 ## Persistence
 
 | Path | Purpose |
 |------|---------|
 | `~/.config/rockbot/rockbot.toml` | Configuration |
-| `~/.config/rockbot/gateway.crt` | TLS certificate |
-| `~/.config/rockbot/gateway.key` | TLS private key |
+| `~/.config/rockbot/gateway.crt` | TLS certificate (legacy self-signed) |
+| `~/.config/rockbot/gateway.key` | TLS private key (legacy self-signed) |
+| `~/.config/rockbot/pki/` | PKI directory (CA, certs, keys, index, CRL) |
 | `~/.config/rockbot/agents/{id}/` | Per-agent context files |
 | `~/.config/rockbot/data/sessions.db` | Session history (SQLite) |
 | `~/.config/rockbot/data/cron.db` | Cron jobs (SQLite) |

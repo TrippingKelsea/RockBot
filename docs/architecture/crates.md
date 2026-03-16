@@ -1,6 +1,6 @@
 # Crate Structure
 
-RockBot is a Cargo workspace with 19 crates organized by responsibility.
+RockBot is a Cargo workspace with 20 crates organized by responsibility.
 
 ## Workspace Layout
 
@@ -29,6 +29,7 @@ rockbot/
 │   ├── rockbot-security/         # Capability system and sandboxing
 │   ├── rockbot-credentials/      # Encrypted credential vault
 │   ├── rockbot-credentials-schema/# Shared credential schema types
+│   ├── rockbot-pki/              # PKI: CA, client certs, CRL, enrollment
 │   ├── rockbot-overseer/         # Embedded local-model oversight
 │   └── rockbot-plugins/          # Plugin system (scaffold)
 ```
@@ -58,13 +59,16 @@ rockbot-agent             → rockbot-config, rockbot-session, rockbot-llm,
 rockbot-client            → rockbot-config
                              [optional: snow for remote-exec]
 
+rockbot-pki               → rcgen, x509-parser, rustls, ring, chrono
+
 rockbot-gateway           → rockbot-config, rockbot-session, rockbot-agent,
                              rockbot-webui, rockbot-client, rockbot-llm,
-                             rockbot-tools, rockbot-channels, rockbot-credentials
+                             rockbot-tools, rockbot-channels, rockbot-credentials,
+                             rockbot-pki
                              [optional: channel/tool provider crates, overseer]
 
 rockbot-core              → facade: re-exports all of the above
-rockbot-cli               → rockbot-core, rockbot-client
+rockbot-cli               → rockbot-core, rockbot-client, rockbot-pki
 rockbot                   → rockbot-cli, rockbot-core
 ```
 
@@ -154,6 +158,12 @@ cargo build --profile release-small --no-default-features -F anthropic
 - `client.rs` — `GatewayClient` WS connection with protocol probing
 - `acp.rs` — Agent Client Protocol (JSON-RPC over stdio)
 - `remote_exec.rs` — Noise Protocol remote tool execution
+
+### rockbot-pki
+- `backend.rs` — `KeyBackend` trait, `FileBackend`, `KeyHandle`
+- `ca.rs` — CA generation, client cert signing, CSR signing/generation, CRL
+- `index.rs` — `PkiIndex`, `CertEntry`, `CertRole`, `CertStatus`, `EnrollmentToken`
+- `manager.rs` — `PkiManager` orchestrator, enrollment tokens
 
 ### rockbot-config
 - `config.rs` — `Config`, `GatewayConfig`, `AgentInstance`, feature types

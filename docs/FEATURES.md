@@ -21,8 +21,9 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Agent listing | ✅ | `GET /api/agents` |
 | Agent messaging | ✅ | `POST /api/agents/{id}/message` |
 | Agent CRUD (create/update/delete) | ✅ | `POST/PUT/DELETE /api/agents` |
-| WebSocket support | 📋 | Placeholder only, handler not implemented |
-| TLS/HTTPS | 📋 | Via reverse proxy for now |
+| WebSocket support | ✅ | Full duplex streaming, health checks, remote exec |
+| TLS/HTTPS | ✅ | Self-signed bootstrap or PKI-managed certs |
+| Mutual TLS (mTLS) | ✅ | Optional or mandatory client cert verification |
 | Rate limiting | 📋 | |
 | Authentication | 📋 | `require_api_key` field exists, not enforced |
 
@@ -184,6 +185,28 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 ---
 
+## PKI and mTLS (`rockbot-pki`)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| CA generation (self-signed) | ✅ | `rockbot cert ca generate` |
+| Client certificate issuance | ✅ | Gateway, Agent, TUI roles with EKU |
+| CSR signing | ✅ | Local and remote (via gateway API) |
+| Certificate revocation + CRL | ✅ | `rockbot cert client revoke` |
+| Certificate rotation | ✅ | Revoke + reissue |
+| PKI index (JSON registry) | ✅ | `index.json` tracks all certs |
+| Enrollment tokens | ✅ | One-time/limited-use, optional expiry |
+| Gateway mTLS enforcement | ✅ | `WebPkiClientVerifier`, mandatory or optional |
+| PSK enrollment endpoint | ✅ | `POST /api/cert/sign` |
+| Config patching (`cert install`) | ✅ | Writes TLS paths into `rockbot.toml` |
+| `KeyBackend` trait | ✅ | `FileBackend` implemented |
+| Hardware key backends (PKCS#11, YubiKey) | 📋 | Trait stubbed, `KeyHandle::Hardware` variant |
+| Client-side cert loading (TUI/agent) | 📋 | TUI currently accepts self-signed |
+| OCSP stapling | 📋 | |
+| Automatic cert renewal | 📋 | |
+
+---
+
 ## Security (`rockbot-security`)
 
 | Feature | Status | Notes |
@@ -233,6 +256,13 @@ This document tracks feature implementation status and helps identify gaps betwe
 | `tool list` | ✅ | |
 | `tool info` | ✅ | |
 | `tool test` | 🚧 | |
+| `cert ca generate/info/rotate` | ✅ | CA lifecycle |
+| `cert client generate/list/info/revoke/rotate` | ✅ | Client cert management |
+| `cert sign` | ✅ | Offline CSR signing |
+| `cert install` | ✅ | Patch config with cert paths |
+| `cert verify` | ✅ | Cert/key match + chain |
+| `cert info` | ✅ | PEM inspection |
+| `cert enroll create/list/revoke/submit` | ✅ | Remote enrollment |
 | `credentials status` | ✅ | |
 | `credentials list` | ✅ | |
 | `credentials add` | ✅ | |

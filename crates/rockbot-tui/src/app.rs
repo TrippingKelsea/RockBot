@@ -137,6 +137,8 @@ fn build_command_registry() -> rockbot_chat::ChatCommandRegistry {
     rockbot_credentials::chat_commands::register_chat_commands(&mut reg);
     // rockbot-core re-exports its own cron commands
     rockbot_core::chat_commands::register_chat_commands(&mut reg);
+    rockbot_editor::register_chat_commands(&mut reg);
+    rockbot_shell::register_chat_commands(&mut reg);
     #[cfg(feature = "doctor-ai")]
     rockbot_doctor::chat_commands::register_chat_commands(&mut reg);
     #[cfg(feature = "butler")]
@@ -3324,6 +3326,19 @@ impl App {
                     // Fall through to normal chat send
                 }
             }
+        }
+
+        // Check for $@agent-id routing syntax
+        if let Some((agent_id, routed_msg)) = rockbot_chat::parse_agent_route(&message) {
+            if let Some(chat) = self.state.active_chat_mut() {
+                chat.messages
+                    .push(ChatMessage::user(format!("@{agent_id}: {routed_msg}")));
+                chat.loading = true;
+                chat.auto_scroll = true;
+            }
+            self.spawn_chat_request(routed_msg.to_string());
+            self.state.clear_input();
+            return;
         }
 
         if let Some(chat) = self.state.active_chat_mut() {

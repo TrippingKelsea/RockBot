@@ -1,0 +1,12 @@
+[package]
+name = "rockbot-shell"
+version.workspace = true
+edition = "2021"
+description = "Shell command execution for RockBot TUI"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+rockbot-chat = { path = "../rockbot-chat" }

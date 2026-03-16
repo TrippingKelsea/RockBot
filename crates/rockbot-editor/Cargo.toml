@@ -1,0 +1,12 @@
+[package]
+name = "rockbot-editor"
+version.workspace = true
+edition = "2021"
+description = "Embedded editor for RockBot TUI"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+rockbot-chat = { path = "../rockbot-chat" }

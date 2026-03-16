@@ -25,6 +25,9 @@ members = [
     "crates/rockbot-client",
     "crates/rockbot-gateway",
     "crates/rockbot-pki",
+    "crates/rockbot-doctor",
+    "crates/rockbot-store",
+    "crates/rockbot-deploy",
 ]
 resolver = "2"
 
@@ -120,6 +123,11 @@ time = "0.3"
 # Noise Protocol for encrypted remote execution
 snow = "0.9"
 
+# AWS SDKs (optional, behind feature flags)
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-sdk-route53 = "1"
+
 opentelemetry = "0.27"
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
@@ -169,7 +177,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # Package metadata for all crates
 [workspace.package]
-version = "0.2.20"
+version = "0.2.21"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

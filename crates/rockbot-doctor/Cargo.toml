@@ -1,0 +1,32 @@
+[package]
+name = "rockbot-doctor"
+version.workspace = true
+edition = "2021"
+description = "AI-powered configuration diagnostics for RockBot"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Inference engine (reuses overseer's candle/GGUF infrastructure)
+rockbot-overseer = { path = "../rockbot-overseer" }
+rockbot-config = { path = "../rockbot-config" }
+
+# TOML surgery (preserves comments/formatting)
+toml = { workspace = true }
+toml_edit = { workspace = true }
+
+# Workspace dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+sha2 = "0.10"
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

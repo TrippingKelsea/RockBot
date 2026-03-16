@@ -1,0 +1,284 @@
+//! Unified embedded storage layer for RockBot.
+//!
+//! Wraps [redb](https://docs.rs/redb) with optional ChaCha20 encryption
+//! and (behind the `replication` feature) OpenRaft-based multi-node
+//! replication.
+
+pub mod encrypted_backend;
+pub mod sync;
+pub mod tables;
+
+#[cfg(feature = "replication")]
+pub mod raft;
+
+pub use redb::TableDefinition;
+
+use encrypted_backend::EncryptedBackend;
+use redb::{Database, ReadableTable};
+use std::path::Path;
+
+/// The unified embedded store.
+///
+/// Open with [`Store::open`] (plaintext) or [`Store::open_encrypted`]
+/// (ChaCha20-encrypted file).
+pub struct Store {
+    db: Database,
+}
+
+impl Store {
+    /// Open a plaintext redb database at `path`.
+    pub fn open(path: &Path) -> anyhow::Result<Self> {
+        let db = Database::create(path)?;
+        Ok(Self { db })
+    }
+
+    /// Open an encrypted redb database at `path` using the given 32-byte key.
+    pub fn open_encrypted(path: &Path, key: [u8; 32]) -> anyhow::Result<Self> {
+        let backend = EncryptedBackend::open(path, key)?;
+        let db = Database::builder().create_with_backend(backend)?;
+        Ok(Self { db })
+    }
+
+    // -------------------------------------------------------------------------
+    // Generic &str / &[u8] table methods
+    // -------------------------------------------------------------------------
+
+    /// Insert or update `key` → `value` in `table`.
+    pub fn put(
+        &self,
+        table: TableDefinition<'static, &str, &[u8]>,
+        key: &str,
+        value: &[u8],
+    ) -> anyhow::Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut t = write_txn.open_table(table)?;
+            t.insert(key, value)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve the value for `key` from `table`, returning `None` if absent.
+    pub fn get(
+        &self,
+        table: TableDefinition<'static, &str, &[u8]>,
+        key: &str,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        let read_txn = self.db.begin_read()?;
+        let t = read_txn.open_table(table)?;
+        match t.get(key)? {
+            Some(guard) => Ok(Some(guard.value().to_vec())),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete `key` from `table`. Returns `true` if the key existed.
+    pub fn delete(
+        &self,
+        table: TableDefinition<'static, &str, &[u8]>,
+        key: &str,
+    ) -> anyhow::Result<bool> {
+        let write_txn = self.db.begin_write()?;
+        let existed = {
+            let mut t = write_txn.open_table(table)?;
+            let removed = t.remove(key)?;
+            let found = removed.is_some();
+            drop(removed);
+            found
+        };
+        write_txn.commit()?;
+        Ok(existed)
+    }
+
+    /// Return all key/value pairs in `table` in sorted order.
+    pub fn list(
+        &self,
+        table: TableDefinition<'static, &str, &[u8]>,
+    ) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+        let read_txn = self.db.begin_read()?;
+        let t = read_txn.open_table(table)?;
+        let mut out = Vec::new();
+        for result in t.iter()? {
+            let (k, v) = result?;
+            out.push((k.value().to_owned(), v.value().to_vec()));
+        }
+        Ok(out)
+    }
+
+    /// Return key/value pairs in `table` whose keys fall in `[start, end)`.
+    pub fn range(
+        &self,
+        table: TableDefinition<'static, &str, &[u8]>,
+        start: &str,
+        end: &str,
+    ) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+        let read_txn = self.db.begin_read()?;
+        let t = read_txn.open_table(table)?;
+        let mut out = Vec::new();
+        for result in t.range(start..end)? {
+            let (k, v) = result?;
+            out.push((k.value().to_owned(), v.value().to_vec()));
+        }
+        Ok(out)
+    }
+
+    // -------------------------------------------------------------------------
+    // String-value table methods (e.g. VAULT_META)
+    // -------------------------------------------------------------------------
+
+    /// Insert or update `key` → `value` (both `&str`) in `table`.
+    pub fn put_str(
+        &self,
+        table: TableDefinition<'static, &str, &str>,
+        key: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut t = write_txn.open_table(table)?;
+            t.insert(key, value)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve the string value for `key` from `table`.
+    pub fn get_str(
+        &self,
+        table: TableDefinition<'static, &str, &str>,
+        key: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let read_txn = self.db.begin_read()?;
+        let t = read_txn.open_table(table)?;
+        match t.get(key)? {
+            Some(guard) => Ok(Some(guard.value().to_owned())),
+            None => Ok(None),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // KV convenience methods (namespace\0key composite key in KV_STORE)
+    // -------------------------------------------------------------------------
+
+    /// Store a value under a composite `namespace\0key` in `KV_STORE`.
+    pub fn kv_put(&self, namespace: &str, key: &str, value: &[u8]) -> anyhow::Result<()> {
+        let composite = format!("{namespace}\0{key}");
+        self.put(tables::KV_STORE, &composite, value)
+    }
+
+    /// Retrieve a value by `namespace` + `key` from `KV_STORE`.
+    pub fn kv_get(&self, namespace: &str, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        let composite = format!("{namespace}\0{key}");
+        self.get(tables::KV_STORE, &composite)
+    }
+
+    /// Delete a value by `namespace` + `key` from `KV_STORE`.
+    pub fn kv_delete(&self, namespace: &str, key: &str) -> anyhow::Result<bool> {
+        let composite = format!("{namespace}\0{key}");
+        self.delete(tables::KV_STORE, &composite)
+    }
+
+    /// List all keys in `KV_STORE` under `namespace`.
+    pub fn kv_list(&self, namespace: &str) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+        let prefix = format!("{namespace}\0");
+        let prefix_end = format!("{namespace}\x01"); // one byte past '\0' scan
+        let mut pairs = self.range(tables::KV_STORE, &prefix, &prefix_end)?;
+        // Strip the namespace prefix from returned keys.
+        for (k, _) in &mut pairs {
+            if let Some(bare) = k.strip_prefix(&prefix) {
+                *k = bare.to_owned();
+            }
+        }
+        Ok(pairs)
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use tempfile::tempdir;
+
+    fn open_store() -> (Store, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.redb");
+        let store = Store::open(&path).unwrap();
+        (store, dir)
+    }
+
+    #[test]
+    fn put_get_delete() {
+        let (store, _dir) = open_store();
+        store.put(tables::CREDENTIALS, "foo", b"bar").unwrap();
+        let v = store.get(tables::CREDENTIALS, "foo").unwrap();
+        assert_eq!(v.as_deref(), Some(b"bar".as_ref()));
+
+        let existed = store.delete(tables::CREDENTIALS, "foo").unwrap();
+        assert!(existed);
+
+        let v2 = store.get(tables::CREDENTIALS, "foo").unwrap();
+        assert!(v2.is_none());
+    }
+
+    #[test]
+    fn list_and_range() {
+        let (store, _dir) = open_store();
+        store.put(tables::ENDPOINTS, "a", b"1").unwrap();
+        store.put(tables::ENDPOINTS, "b", b"2").unwrap();
+        store.put(tables::ENDPOINTS, "c", b"3").unwrap();
+
+        let all = store.list(tables::ENDPOINTS).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let sub = store.range(tables::ENDPOINTS, "a", "c").unwrap();
+        // "a" and "b" (exclusive end)
+        assert_eq!(sub.len(), 2);
+    }
+
+    #[test]
+    fn put_str_get_str() {
+        let (store, _dir) = open_store();
+        store.put_str(tables::VAULT_META, "version", "1").unwrap();
+        let v = store.get_str(tables::VAULT_META, "version").unwrap();
+        assert_eq!(v.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn kv_namespace_isolation() {
+        let (store, _dir) = open_store();
+        store.kv_put("ns1", "key", b"val1").unwrap();
+        store.kv_put("ns2", "key", b"val2").unwrap();
+
+        let v1 = store.kv_get("ns1", "key").unwrap();
+        let v2 = store.kv_get("ns2", "key").unwrap();
+        assert_eq!(v1.as_deref(), Some(b"val1".as_ref()));
+        assert_eq!(v2.as_deref(), Some(b"val2".as_ref()));
+
+        let list = store.kv_list("ns1").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "key");
+    }
+
+    #[test]
+    fn encrypted_open_and_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("enc.redb");
+        let key = [0xABu8; 32];
+        {
+            let store = Store::open_encrypted(&path, key).unwrap();
+            store
+                .put(tables::CREDENTIALS, "secret", b"password")
+                .unwrap();
+        }
+        // Re-open with same key.
+        let store2 = Store::open_encrypted(&path, key).unwrap();
+        let v = store2.get(tables::CREDENTIALS, "secret").unwrap();
+        assert_eq!(v.as_deref(), Some(b"password".as_ref()));
+    }
+}

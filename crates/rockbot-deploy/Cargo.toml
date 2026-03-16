@@ -1,0 +1,34 @@
+[package]
+name = "rockbot-deploy"
+version.workspace = true
+edition = "2021"
+description = "S3 CA distribution and Route53 DNS provisioning for RockBot"
+license = "MIT"
+
+[features]
+bedrock = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-sdk-route53"]
+
+[lints]
+workspace = true
+
+[dependencies]
+rockbot-pki = { path = "../rockbot-pki" }
+rockbot-config = { path = "../rockbot-config" }
+rockbot-credentials = { path = "../rockbot-credentials" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
+
+# AWS SDKs (optional, gated by `bedrock` feature)
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-sdk-route53 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

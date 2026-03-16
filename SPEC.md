@@ -1154,39 +1154,66 @@ RockBot implements defense-in-depth security with a core principle: **credential
 ### 14.6 Credential Vault Architecture
 
 The credential vault provides secure storage for API keys, tokens, passwords, and certificates.
+All persistent state is stored in a single redb database (`vault.db`), with metadata in a
+separate JSON file for backwards compatibility.
 
 #### Storage Structure
 
 ```
 ~/.local/share/rockbot/credentials/
-├── vault.json           # Encrypted vault metadata
-├── endpoints/           # Endpoint configurations (encrypted)
-│   └── {uuid}.json
-├── credentials/         # Encrypted credential blobs
-│   └── {uuid}.enc
-├── permissions.json     # Permission rules
-└── audit.log           # Hash-chained audit trail
+├── meta.json            # Vault metadata (salt, version, unlock method)
+├── vault.db             # redb database (all tables below)
+└── audit.log            # Hash-chained audit trail (append-only JSONL)
 ```
+
+Legacy `endpoints.json` and `credentials.json` files are automatically migrated
+into `vault.db` on first open and renamed to `.json.migrated`.
+
+#### Database Tables
+
+| Table | Key | Value | Sync Policy |
+|-------|-----|-------|-------------|
+| `vault_meta` | `&str` | `&str` | Eager (replicate all) |
+| `endpoints` | UUID string | JSON-encoded `Endpoint` | Eager |
+| `credentials` | UUID string | JSON-encoded `Credential` | Eager |
+| `permissions` | UUID string | JSON-encoded `Permission` | Eager |
+| `kv_store` | `"namespace\0key"` | arbitrary bytes | Eager |
+| `sessions` | session ID | JSON-encoded session | On-demand |
+| `session_messages` | composite key | JSON-encoded message | On-demand |
+| `cron_jobs` | job ID | JSON-encoded job | Local only |
+| `route_bindings` | binding ID | JSON-encoded binding | Local only |
+| `pki_index` | cert serial | JSON-encoded `CertEntry` | Eager |
+
+#### Generic KV Store
+
+The `kv_store` table provides namespaced key-value storage for arbitrary data.
+Keys are composite `"namespace\0key"` strings, enabling efficient range scans
+per namespace. Available via `CredentialVault::kv_put/kv_get/kv_delete/kv_list`.
 
 #### Encryption Scheme
 
 | Layer | Algorithm | Purpose |
 |-------|-----------|---------|
 | **Key Derivation** | Argon2id | Password → Master Key |
-| **Symmetric Encryption** | AES-256-GCM | Credential encryption |
+| **Credential Encryption** | AES-256-GCM | Per-credential encryption (nonce + ciphertext) |
+| **Storage Encryption** | ChaCha20 (stream cipher) | Block-level database encryption via `redb::StorageBackend` |
 | **Hash Chain** | SHA-256 | Audit log integrity |
 
-```typescript
-interface EncryptedCredential {
-  id: string;              // UUID
-  endpointId: string;      // Parent endpoint UUID
-  type: CredentialType;    // bearer_token, api_key, oauth2, etc.
-  nonce: string;           // 12-byte nonce (hex)
-  ciphertext: string;      // Encrypted secret (base64)
-  createdAt: string;       // ISO timestamp
-  expiresAt?: string;      // Optional expiration
-}
-```
+When storage encryption is enabled (`Store::open_encrypted`), the entire redb
+database file is transparently encrypted using ChaCha20 with a nonce derived
+from each block's file offset. This is length-preserving (no tag overhead).
+
+#### Replication (feature-gated: `vault-replication`)
+
+Behind the `replication` feature flag, `rockbot-store` integrates OpenRaft for
+multi-node consensus. The Raft log and state machine are backed by redb tables.
+
+| Component | Implementation |
+|-----------|---------------|
+| Log storage | `RedbLogStore` — redb tables for Raft log entries and metadata |
+| State machine | `RedbStateMachine` — applies Raft entries as table mutations |
+| Network | `NoiseNetwork` — OpenRaft `RaftNetwork` over existing Noise protocol links |
+| Sync policy | Per-table (`Eager`, `Eventual`, `LocalOnly`) — only `Eager` tables enter the Raft log |
 
 #### Master Key Derivation
 

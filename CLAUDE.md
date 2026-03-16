@@ -85,6 +85,28 @@ git push origin v0.2.16-release
 - No dependency cycles between crates
 - New crates must opt into workspace lints: `[lints] workspace = true`
 
+## Post-Build Testing Standards
+
+Post-build performance and security tests live in `tests/post-build/` and run
+against the compiled release binary (not via `cargo test`).
+
+### When to add post-build tests
+
+- **Performance**: Any change to startup paths, CLI entry points, or runtime
+  initialization should include a strace-based regression test verifying no
+  unnecessary syscalls (thread creation, epoll, network I/O) on cold paths.
+- **Security**: Any change that handles secrets, keys, credentials, or network
+  connections should include a strace-based test verifying those operations
+  don't occur on information-only paths (--help, --version, doctor help).
+
+### Writing tests
+
+- Scripts go in `tests/post-build/`, named `perf_*.sh` or `sec_*.sh`
+- Source `lib.sh` for shared assertion helpers
+- Use `require_strace` to skip gracefully on platforms without strace
+- Tests must be idempotent and side-effect free (read-only against the binary)
+- Calibrate numeric thresholds after first run; document the baseline in comments
+
 ## Project Layout
 
 - Binary: `crates/rockbot/`

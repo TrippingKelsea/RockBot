@@ -61,6 +61,22 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  post-build-tests:
+    name: Post-build tests (perf + security)
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install strace
+        run: sudo apt-get install -y strace
+      - name: Build release binary
+        run: cargo build --release
+      - name: Run post-build tests
+        run: bash tests/post-build/run.sh
+
   msrv:
     name: MSRV (1.75)
     runs-on: ubuntu-latest

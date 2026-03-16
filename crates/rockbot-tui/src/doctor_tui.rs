@@ -202,7 +202,7 @@ pub async fn run_doctor_tui(config_path: &PathBuf) -> Result<()> {
     // Load doctor config from the config file (best-effort).
     let doctor_config = if config_path.exists() {
         if let Ok(raw) = tokio::fs::read_to_string(config_path).await {
-            crate::commands::doctor::try_parse_doctor_config_from_raw(&raw)
+            try_parse_doctor_config_from_raw(&raw)
         } else {
             rockbot_doctor::DoctorConfig::default()
         }
@@ -327,4 +327,18 @@ async fn run_event_loop(
     }
 
     Ok(())
+}
+
+/// Parse the `[doctor]` section from a raw TOML config string.
+fn try_parse_doctor_config_from_raw(raw_toml: &str) -> rockbot_doctor::DoctorConfig {
+    if let Ok(value) = raw_toml.parse::<toml::Value>() {
+        if let Some(doctor_section) = value.get("doctor") {
+            if let Ok(json) = serde_json::to_string(doctor_section) {
+                if let Ok(config) = serde_json::from_str::<rockbot_doctor::DoctorConfig>(&json) {
+                    return config;
+                }
+            }
+        }
+    }
+    rockbot_doctor::DoctorConfig::default()
 }

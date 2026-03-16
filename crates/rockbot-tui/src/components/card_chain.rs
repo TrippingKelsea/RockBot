@@ -12,7 +12,7 @@ use crate::effects::{self, EffectState};
 use crate::state::{AppState, SlotKind};
 
 const CARD_WIDTH: u16 = 14;
-const CARD_HEIGHT: u16 = 3;
+const CARD_HEIGHT: u16 = 5;
 
 /// Total height of the slot bar.
 pub fn slot_bar_height() -> u16 {

@@ -3434,22 +3434,27 @@ impl App {
         let full_area = frame.area();
         let bar_height = super::components::card_chain::slot_bar_height();
 
-        // Layout: slot bar strip (top) + main area (fill) + status (1 row)
+        // Layout: slot bar (top) + status strip (1) + main area (fill) + status bar (1)
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(bar_height),
+                Constraint::Length(1),
                 Constraint::Fill(1),
                 Constraint::Length(1),
             ])
             .split(full_area);
 
         let chain_area = rows[0];
-        let main_area = rows[1];
-        let status_area = rows[2];
+        let strip_area = rows[1];
+        let main_area = rows[2];
+        let status_area = rows[3];
 
         // Render slotted card bar
         render_slot_bar(frame, chain_area, &self.state, &self.effect_state);
+
+        // Render status strip (contextual info between cards and content)
+        self.render_card_status_strip(frame, strip_area);
 
         // Main content area: show page content based on current mode
         let active_section = self.state.slot_bar.current_mode();
@@ -3653,6 +3658,66 @@ impl App {
             self.effect_state
                 .render_modal_close(frame.buffer_mut(), full_area, elapsed);
         }
+    }
+
+    /// Render the contextual status strip between the card bar and main content.
+    fn render_card_status_strip(&self, frame: &mut Frame, area: Rect) {
+        let bg = Color::Rgb(20, 20, 40);
+        let strip_style = Style::default().fg(Color::DarkGray).bg(bg);
+
+        let text = match self.state.menu_item {
+            MenuItem::Dashboard => {
+                let status = if self.state.gateway.connected {
+                    "online"
+                } else {
+                    "offline"
+                };
+                let agents = self.state.agents.len();
+                let sessions = self.state.sessions.len();
+                format!(" \u{25b8} Gateway {status} \u{00b7} {agents} agents \u{00b7} {sessions} sessions")
+            }
+            MenuItem::Agents => {
+                if let Some(agent) = self.state.agents.get(self.state.selected_agent) {
+                    let model = agent.model.as_deref().unwrap_or("default");
+                    format!(" \u{25b8} {} \u{00b7} {} \u{00b7} {:?}", agent.id, model, agent.status)
+                } else {
+                    " \u{25b8} No agents configured".to_string()
+                }
+            }
+            MenuItem::Sessions => {
+                if let Some(session) = self.state.sessions.get(self.state.selected_session) {
+                    format!(
+                        " \u{25b8} {} \u{00b7} {} messages",
+                        session.key, session.message_count
+                    )
+                } else {
+                    " \u{25b8} No active sessions".to_string()
+                }
+            }
+            MenuItem::Credentials => {
+                let tab = self.credentials_tab().label();
+                let count = match self.state.credentials_tab {
+                    0 => self.state.endpoints.len(),
+                    1 => self.state.credential_schemas.len(),
+                    2 => self.state.permissions.len(),
+                    _ => 0,
+                };
+                format!(" \u{25b8} {tab} \u{00b7} {count} items")
+            }
+            MenuItem::CronJobs => {
+                let total = self.state.cron_jobs.len();
+                let enabled = self.state.cron_jobs.iter().filter(|j| j.enabled).count();
+                format!(" \u{25b8} {enabled}/{total} jobs enabled")
+            }
+            MenuItem::Models => {
+                let count = self.state.providers.len();
+                format!(" \u{25b8} {count} providers")
+            }
+            MenuItem::Settings => " \u{25b8} Settings".to_string(),
+        };
+
+        let paragraph = Paragraph::new(text).style(strip_style);
+        frame.render_widget(paragraph, area);
     }
 
     fn get_help_text(&self) -> String {

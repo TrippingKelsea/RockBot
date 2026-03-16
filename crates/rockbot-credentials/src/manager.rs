@@ -665,7 +665,7 @@ impl CredentialManager {
     /// List all endpoints
     pub async fn list_endpoints(&self) -> Vec<Endpoint> {
         let vault = self.vault.read().await;
-        vault.list_endpoints().into_iter().cloned().collect()
+        vault.list_endpoints()
     }
 
     /// Resolve a credential from a path string
@@ -763,6 +763,32 @@ impl CredentialManager {
 
         let mut vault = self.vault.write().await;
         vault.delete_endpoint(endpoint_id)
+    }
+
+    // === KV Store Methods ===
+
+    /// Store arbitrary data in the generic KV store.
+    pub async fn kv_put(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
+        let vault = self.vault.read().await;
+        vault.kv_put(namespace, key, value)
+    }
+
+    /// Retrieve data from the generic KV store.
+    pub async fn kv_get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        let vault = self.vault.read().await;
+        vault.kv_get(namespace, key)
+    }
+
+    /// Delete data from the generic KV store.
+    pub async fn kv_delete(&self, namespace: &str, key: &str) -> Result<()> {
+        let vault = self.vault.read().await;
+        vault.kv_delete(namespace, key)
+    }
+
+    /// List all keys in a KV store namespace.
+    pub async fn kv_list(&self, namespace: &str) -> Vec<String> {
+        let vault = self.vault.read().await;
+        vault.kv_list(namespace)
     }
 }
 

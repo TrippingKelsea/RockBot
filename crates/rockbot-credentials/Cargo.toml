@@ -5,6 +5,10 @@ edition = "2021"
 description = "Secure credential storage for RockBot agents"
 license = "MIT"
 
+[features]
+default = []
+vault-replication = ["rockbot-store/replication"]
+
 [lints]
 workspace = true
 
@@ -39,6 +43,12 @@ zeroize = { version = "1.7", features = ["derive"] }
 
 # Encoding
 base64 = "0.22"
+
+# Unified storage backend
+rockbot-store = { path = "../rockbot-store" }
+
+# Logging
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

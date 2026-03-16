@@ -5,14 +5,13 @@
 //!
 //! # Storage Format
 //!
-//! Credentials and endpoints are stored in JSON files:
+//! Credentials, endpoints, and permissions are stored in a redb database:
+//! - `$XDG_DATA_HOME/rockbot/credentials/vault.db` - All vault data
 //! - `$XDG_DATA_HOME/rockbot/credentials/meta.json` - Vault metadata (salt, version)
-//! - `$XDG_DATA_HOME/rockbot/credentials/endpoints.json` - Endpoint configurations
-//! - `$XDG_DATA_HOME/rockbot/credentials/credentials.json` - Encrypted credential data
+//! - `$XDG_DATA_HOME/rockbot/credentials/audit.log` - Append-only audit trail
 
-use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter};
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -24,6 +23,9 @@ use crate::crypto::{
 };
 use crate::error::{CredentialError, Result};
 use crate::types::{hex_decode, hex_encode, Credential, CredentialType, Endpoint, EndpointType};
+
+use rockbot_store::tables;
+use rockbot_store::Store;
 
 /// Wraps a master key with an Age public key.
 /// Returns base64-encoded ciphertext.
@@ -120,14 +122,6 @@ fn wrap_key_with_ssh(key_bytes: &[u8], public_key_path: &Path) -> Result<String>
     let pubkey_content = fs::read_to_string(public_key_path)?;
     let pubkey = PublicKey::from_openssh(&pubkey_content)
         .map_err(|e| CredentialError::ValidationFailed(format!("Invalid SSH public key: {e}")))?;
-
-    // For SSH keys, we use a hybrid approach:
-    // 1. Hash the public key to get a unique identifier
-    // 2. Use AES-GCM with a key derived from (public key hash + nonce)
-    // 3. The "wrapped" key can only be unwrapped by proving possession of the private key
-    //
-    // Note: This is a simplified approach. True SSH encryption would use
-    // RSA-OAEP or ECDH depending on key type.
 
     let pubkey_bytes = pubkey
         .to_bytes()
@@ -276,6 +270,10 @@ const VAULT_VERSION: u32 = 1;
 const VERIFICATION_PLAINTEXT: &[u8] = b"rockbot-vault-v1";
 
 /// Credential vault for encrypted credential storage.
+///
+/// Uses redb (via `rockbot-store`) for persistent storage of endpoints,
+/// credentials, and permissions. Metadata is kept in a separate JSON file
+/// for backwards compatibility with the unlock flow.
 pub struct CredentialVault {
     /// Directory containing vault files.
     data_dir: PathBuf,
@@ -283,32 +281,34 @@ pub struct CredentialVault {
     meta: Option<VaultMeta>,
     /// Master key for encryption/decryption.
     master_key: Option<MasterKey>,
-    /// Cached endpoints (loaded from file).
-    endpoints: HashMap<Uuid, Endpoint>,
-    /// Cached credentials (loaded from file, encrypted_data still encrypted).
-    credentials: HashMap<Uuid, Credential>,
+    /// Redb-backed store for endpoints, credentials, permissions, and KV data.
+    store: Store,
 }
 
 impl CredentialVault {
     /// Opens an existing credential vault at the specified directory.
     /// Returns an error if the vault hasn't been initialized.
+    ///
+    /// If legacy JSON files (`endpoints.json`, `credentials.json`) exist,
+    /// they are automatically migrated into the redb database.
     pub fn open<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
+
+        let store = Store::open(&data_dir.join("vault.db"))
+            .map_err(|e| CredentialError::Internal(format!("Failed to open store: {e}")))?;
 
         let mut vault = Self {
             data_dir,
             meta: None,
             master_key: None,
-            endpoints: HashMap::new(),
-            credentials: HashMap::new(),
+            store,
         };
 
         // Load metadata (required)
         vault.load_meta()?;
 
-        // Load existing data
-        vault.load_endpoints()?;
-        vault.load_credentials()?;
+        // Migrate legacy JSON files if they exist
+        vault.migrate_legacy_json()?;
 
         Ok(vault)
     }
@@ -387,7 +387,7 @@ impl CredentialVault {
         // Generate random master key
         let master_key = MasterKey::generate();
 
-        // Wrap master key with Age (placeholder - needs age crate)
+        // Wrap master key with Age
         let wrapped_key = wrap_key_with_age(master_key.as_bytes(), age_public_key)?;
 
         let unlock = UnlockMethod::Age {
@@ -444,12 +444,14 @@ impl CredentialVault {
             verification_nonce: hex_encode(&verification_nonce),
         };
 
+        let store = Store::open(&data_dir.join("vault.db"))
+            .map_err(|e| CredentialError::Internal(format!("Failed to open store: {e}")))?;
+
         let vault = Self {
             data_dir,
             meta: Some(meta),
             master_key: Some(master_key),
-            endpoints: HashMap::new(),
-            credentials: HashMap::new(),
+            store,
         };
 
         // Save metadata
@@ -463,9 +465,6 @@ impl CredentialVault {
         Self::init_with_password(data_dir, password)
     }
 
-    /// Unlocks the vault with a password.
-    /// Derives the master key from the password using the stored salt,
-    /// then verifies it against the stored verification data.
     /// Unlocks the vault with a password.
     /// Only works if the vault was initialized with password-based encryption.
     pub fn unlock_with_password(&mut self, password: &str) -> Result<()> {
@@ -645,16 +644,6 @@ impl CredentialVault {
         self.data_dir.join("meta.json")
     }
 
-    /// Returns the path to the endpoints file.
-    fn endpoints_path(&self) -> PathBuf {
-        self.data_dir.join("endpoints.json")
-    }
-
-    /// Returns the path to the credentials file.
-    fn credentials_path(&self) -> PathBuf {
-        self.data_dir.join("credentials.json")
-    }
-
     /// Loads vault metadata from disk.
     fn load_meta(&mut self) -> Result<()> {
         let path = self.meta_path();
@@ -680,77 +669,142 @@ impl CredentialVault {
 
         let path = self.meta_path();
         let file = File::create(&path)?;
-        let writer = BufWriter::new(file);
+        let writer = std::io::BufWriter::new(file);
         serde_json::to_writer_pretty(writer, meta)
             .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
 
         Ok(())
     }
 
-    /// Loads endpoints from disk.
-    fn load_endpoints(&mut self) -> Result<()> {
-        let path = self.endpoints_path();
-        if !path.exists() {
-            return Ok(());
+    /// Migrate legacy JSON files into the redb store.
+    ///
+    /// If `endpoints.json` or `credentials.json` exist, import their contents
+    /// and rename the old files to `.json.migrated`.
+    fn migrate_legacy_json(&mut self) -> Result<()> {
+        let endpoints_path = self.data_dir.join("endpoints.json");
+        let credentials_path = self.data_dir.join("credentials.json");
+
+        if endpoints_path.exists() {
+            tracing::info!("Migrating legacy endpoints.json to redb");
+            let file = File::open(&endpoints_path)?;
+            let reader = BufReader::new(file);
+            let endpoints: Vec<Endpoint> = serde_json::from_reader(reader)
+                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
+
+            for endpoint in &endpoints {
+                let json = serde_json::to_vec(endpoint)
+                    .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
+                self.store
+                    .put(tables::ENDPOINTS, &endpoint.id.to_string(), &json)
+                    .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
+            }
+
+            fs::rename(
+                &endpoints_path,
+                self.data_dir.join("endpoints.json.migrated"),
+            )?;
         }
 
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
-        let endpoints: Vec<Endpoint> = serde_json::from_reader(reader)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
+        if credentials_path.exists() {
+            tracing::info!("Migrating legacy credentials.json to redb");
+            let file = File::open(&credentials_path)?;
+            let reader = BufReader::new(file);
+            let credentials: Vec<Credential> = serde_json::from_reader(reader)
+                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
 
-        self.endpoints = endpoints.into_iter().map(|e| (e.id, e)).collect();
-        Ok(())
-    }
+            for credential in &credentials {
+                let json = serde_json::to_vec(credential)
+                    .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
+                self.store
+                    .put(tables::CREDENTIALS, &credential.id.to_string(), &json)
+                    .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
+            }
 
-    /// Loads credentials from disk.
-    fn load_credentials(&mut self) -> Result<()> {
-        let path = self.credentials_path();
-        if !path.exists() {
-            return Ok(());
+            fs::rename(
+                &credentials_path,
+                self.data_dir.join("credentials.json.migrated"),
+            )?;
         }
 
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
-        let credentials: Vec<Credential> = serde_json::from_reader(reader)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        self.credentials = credentials.into_iter().map(|c| (c.id, c)).collect();
         Ok(())
     }
 
-    /// Saves endpoints to disk.
-    fn save_endpoints(&self) -> Result<()> {
-        let path = self.endpoints_path();
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)?;
-        let writer = BufWriter::new(file);
+    // === Store helpers ===
 
-        let endpoints: Vec<&Endpoint> = self.endpoints.values().collect();
-        serde_json::to_writer_pretty(writer, &endpoints)
+    fn store_get_endpoint(&self, id: Uuid) -> Result<Option<Endpoint>> {
+        let bytes = self
+            .store
+            .get(tables::ENDPOINTS, &id.to_string())
+            .map_err(|e| CredentialError::Internal(format!("Store get error: {e}")))?;
+        match bytes {
+            Some(b) => {
+                let endpoint: Endpoint = serde_json::from_slice(&b)
+                    .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
+                Ok(Some(endpoint))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn store_put_endpoint(&self, endpoint: &Endpoint) -> Result<()> {
+        let json = serde_json::to_vec(endpoint)
             .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
-
+        self.store
+            .put(tables::ENDPOINTS, &endpoint.id.to_string(), &json)
+            .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
         Ok(())
     }
 
-    /// Saves credentials to disk.
-    fn save_credentials(&self) -> Result<()> {
-        let path = self.credentials_path();
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)?;
-        let writer = BufWriter::new(file);
+    fn store_get_credential(&self, id: Uuid) -> Result<Option<Credential>> {
+        let bytes = self
+            .store
+            .get(tables::CREDENTIALS, &id.to_string())
+            .map_err(|e| CredentialError::Internal(format!("Store get error: {e}")))?;
+        match bytes {
+            Some(b) => {
+                let credential: Credential = serde_json::from_slice(&b)
+                    .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
+                Ok(Some(credential))
+            }
+            None => Ok(None),
+        }
+    }
 
-        let credentials: Vec<&Credential> = self.credentials.values().collect();
-        serde_json::to_writer_pretty(writer, &credentials)
+    fn store_put_credential(&self, credential: &Credential) -> Result<()> {
+        let json = serde_json::to_vec(credential)
             .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
-
+        self.store
+            .put(tables::CREDENTIALS, &credential.id.to_string(), &json)
+            .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
         Ok(())
+    }
+
+    fn store_list_endpoints(&self) -> Result<Vec<Endpoint>> {
+        let entries = self
+            .store
+            .list(tables::ENDPOINTS)
+            .map_err(|e| CredentialError::Internal(format!("Store list error: {e}")))?;
+        let mut endpoints = Vec::with_capacity(entries.len());
+        for (_key, bytes) in entries {
+            let endpoint: Endpoint = serde_json::from_slice(&bytes)
+                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
+            endpoints.push(endpoint);
+        }
+        Ok(endpoints)
+    }
+
+    fn store_list_credentials(&self) -> Result<Vec<Credential>> {
+        let entries = self
+            .store
+            .list(tables::CREDENTIALS)
+            .map_err(|e| CredentialError::Internal(format!("Store list error: {e}")))?;
+        let mut credentials = Vec::with_capacity(entries.len());
+        for (_key, bytes) in entries {
+            let credential: Credential = serde_json::from_slice(&bytes)
+                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
+            credentials.push(credential);
+        }
+        Ok(credentials)
     }
 
     // === Endpoint Operations ===
@@ -773,62 +827,56 @@ impl CredentialVault {
             updated_at: now,
         };
 
-        self.endpoints.insert(endpoint.id, endpoint.clone());
-        self.save_endpoints()?;
-
+        self.store_put_endpoint(&endpoint)?;
         Ok(endpoint)
     }
 
     /// Gets an endpoint by ID.
-    pub fn get_endpoint(&self, id: Uuid) -> Result<&Endpoint> {
-        self.endpoints
-            .get(&id)
+    pub fn get_endpoint(&self, id: Uuid) -> Result<Endpoint> {
+        self.store_get_endpoint(id)?
             .ok_or(CredentialError::EndpointNotFound(id))
     }
 
     /// Gets an endpoint by name.
-    pub fn get_endpoint_by_name(&self, name: &str) -> Option<&Endpoint> {
-        self.endpoints.values().find(|e| e.name == name)
-    }
-
-    /// Gets an endpoint by ID (mutable).
-    pub fn get_endpoint_mut(&mut self, id: Uuid) -> Result<&mut Endpoint> {
-        self.endpoints
-            .get_mut(&id)
-            .ok_or(CredentialError::EndpointNotFound(id))
+    pub fn get_endpoint_by_name(&self, name: &str) -> Option<Endpoint> {
+        self.store_list_endpoints()
+            .ok()?
+            .into_iter()
+            .find(|e| e.name == name)
     }
 
     /// Lists all endpoints.
-    pub fn list_endpoints(&self) -> Vec<&Endpoint> {
-        self.endpoints.values().collect()
+    pub fn list_endpoints(&self) -> Vec<Endpoint> {
+        self.store_list_endpoints().unwrap_or_default()
     }
 
     /// Updates an endpoint.
     pub fn update_endpoint(&mut self, endpoint: Endpoint) -> Result<()> {
-        if !self.endpoints.contains_key(&endpoint.id) {
-            return Err(CredentialError::EndpointNotFound(endpoint.id));
-        }
+        // Verify it exists
+        let _ = self
+            .store_get_endpoint(endpoint.id)?
+            .ok_or(CredentialError::EndpointNotFound(endpoint.id))?;
 
-        self.endpoints.insert(endpoint.id, endpoint);
-        self.save_endpoints()?;
-
+        self.store_put_endpoint(&endpoint)?;
         Ok(())
     }
 
     /// Deletes an endpoint and its associated credential.
     pub fn delete_endpoint(&mut self, id: Uuid) -> Result<()> {
         let endpoint = self
-            .endpoints
-            .remove(&id)
+            .store_get_endpoint(id)?
             .ok_or(CredentialError::EndpointNotFound(id))?;
 
         // Also remove associated credential
         if endpoint.credential_id != Uuid::nil() {
-            self.credentials.remove(&endpoint.credential_id);
-            self.save_credentials()?;
+            self.store
+                .delete(tables::CREDENTIALS, &endpoint.credential_id.to_string())
+                .map_err(|e| CredentialError::Internal(format!("Store delete error: {e}")))?;
         }
 
-        self.save_endpoints()?;
+        self.store
+            .delete(tables::ENDPOINTS, &id.to_string())
+            .map_err(|e| CredentialError::Internal(format!("Store delete error: {e}")))?;
 
         Ok(())
     }
@@ -865,27 +913,24 @@ impl CredentialVault {
         };
 
         // Update the endpoint with the credential ID
-        if let Some(endpoint) = self.endpoints.get_mut(&endpoint_id) {
+        if let Ok(Some(mut endpoint)) = self.store_get_endpoint(endpoint_id) {
             endpoint.credential_id = credential.id;
             endpoint.updated_at = now;
+            self.store_put_endpoint(&endpoint)?;
         }
 
-        self.credentials.insert(credential.id, credential.clone());
-        self.save_credentials()?;
-        self.save_endpoints()?;
-
+        self.store_put_credential(&credential)?;
         Ok(credential)
     }
 
     /// Gets the raw (still encrypted) credential by ID.
-    pub fn get_credential(&self, id: Uuid) -> Result<&Credential> {
-        self.credentials
-            .get(&id)
+    pub fn get_credential(&self, id: Uuid) -> Result<Credential> {
+        self.store_get_credential(id)?
             .ok_or(CredentialError::CredentialNotFound(id))
     }
 
     /// Gets the credential for an endpoint.
-    pub fn get_credential_for_endpoint(&self, endpoint_id: Uuid) -> Result<&Credential> {
+    pub fn get_credential_for_endpoint(&self, endpoint_id: Uuid) -> Result<Credential> {
         let endpoint = self.get_endpoint(endpoint_id)?;
         self.get_credential(endpoint.credential_id)
     }
@@ -928,10 +973,7 @@ impl CredentialVault {
             .as_ref()
             .ok_or(CredentialError::VaultLocked)?;
 
-        let credential = self
-            .credentials
-            .get_mut(&credential_id)
-            .ok_or(CredentialError::CredentialNotFound(credential_id))?;
+        let mut credential = self.get_credential(credential_id)?;
 
         // Encrypt new secret
         let nonce = generate_nonce();
@@ -941,33 +983,95 @@ impl CredentialVault {
         credential.nonce = hex_encode(&nonce);
         credential.rotated_at = Some(Utc::now());
 
-        self.save_credentials()?;
-
+        self.store_put_credential(&credential)?;
         Ok(())
     }
 
     /// Deletes a credential.
     pub fn delete_credential(&mut self, id: Uuid) -> Result<()> {
         let credential = self
-            .credentials
-            .remove(&id)
+            .store_get_credential(id)?
             .ok_or(CredentialError::CredentialNotFound(id))?;
 
         // Clear the credential reference from the endpoint
-        if let Some(endpoint) = self.endpoints.get_mut(&credential.endpoint_id) {
+        if let Ok(Some(mut endpoint)) = self.store_get_endpoint(credential.endpoint_id) {
             endpoint.credential_id = Uuid::nil();
             endpoint.updated_at = Utc::now();
+            self.store_put_endpoint(&endpoint)?;
         }
 
-        self.save_credentials()?;
-        self.save_endpoints()?;
+        self.store
+            .delete(tables::CREDENTIALS, &id.to_string())
+            .map_err(|e| CredentialError::Internal(format!("Store delete error: {e}")))?;
 
         Ok(())
     }
 
     /// Lists all credentials.
-    pub fn list_credentials(&self) -> Vec<&Credential> {
-        self.credentials.values().collect()
+    pub fn list_credentials(&self) -> Vec<Credential> {
+        self.store_list_credentials().unwrap_or_default()
+    }
+
+    // === KV Store Operations ===
+
+    /// Store arbitrary data in the generic KV store.
+    pub fn kv_put(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
+        self.store
+            .kv_put(namespace, key, value)
+            .map_err(|e| CredentialError::Internal(format!("KV put error: {e}")))
+    }
+
+    /// Retrieve data from the generic KV store.
+    pub fn kv_get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        self.store
+            .kv_get(namespace, key)
+            .map_err(|e| CredentialError::Internal(format!("KV get error: {e}")))
+    }
+
+    /// Delete data from the generic KV store.
+    pub fn kv_delete(&self, namespace: &str, key: &str) -> Result<()> {
+        self.store
+            .kv_delete(namespace, key)
+            .map_err(|e| CredentialError::Internal(format!("KV delete error: {e}")))?;
+        Ok(())
+    }
+
+    /// List all keys in a KV store namespace.
+    pub fn kv_list(&self, namespace: &str) -> Vec<String> {
+        self.store
+            .kv_list(namespace)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    // === Permission Persistence ===
+
+    /// Store a permission rule in the vault.
+    pub fn store_permission(&self, permission: &crate::types::Permission) -> Result<()> {
+        let json = serde_json::to_vec(permission)
+            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
+        self.store
+            .put(tables::PERMISSIONS, &permission.id.to_string(), &json)
+            .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
+        Ok(())
+    }
+
+    /// Delete a permission rule from the vault.
+    pub fn delete_permission(&self, id: Uuid) -> Result<bool> {
+        self.store
+            .delete(tables::PERMISSIONS, &id.to_string())
+            .map_err(|e| CredentialError::Internal(format!("Store delete error: {e}")))
+    }
+
+    /// List all stored permission rules.
+    pub fn list_permissions(&self) -> Vec<crate::types::Permission> {
+        let entries = self.store.list(tables::PERMISSIONS).unwrap_or_default();
+        entries
+            .into_iter()
+            .filter_map(|(_key, bytes)| serde_json::from_slice(&bytes).ok())
+            .collect()
     }
 }
 
@@ -1208,5 +1312,94 @@ mod tests {
         // Decrypt via endpoint
         let decrypted = vault.decrypt_credential_for_endpoint(endpoint.id).unwrap();
         assert_eq!(decrypted, secret);
+    }
+
+    #[test]
+    fn test_kv_operations() {
+        let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
+        let vault = CredentialVault::open(dir.path()).unwrap();
+
+        // KV operations don't require unlock (they're for non-secret data)
+        vault.kv_put("test-ns", "key1", b"value1").unwrap();
+        vault.kv_put("test-ns", "key2", b"value2").unwrap();
+        vault.kv_put("other-ns", "key1", b"other-value").unwrap();
+
+        let val = vault.kv_get("test-ns", "key1").unwrap();
+        assert_eq!(val.as_deref(), Some(b"value1".as_ref()));
+
+        let keys = vault.kv_list("test-ns");
+        assert_eq!(keys.len(), 2);
+
+        vault.kv_delete("test-ns", "key1").unwrap();
+        let val = vault.kv_get("test-ns", "key1").unwrap();
+        assert!(val.is_none());
+
+        // Other namespace unaffected
+        let val = vault.kv_get("other-ns", "key1").unwrap();
+        assert_eq!(val.as_deref(), Some(b"other-value".as_ref()));
+    }
+
+    #[test]
+    fn test_permission_persistence() {
+        let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
+        let vault = CredentialVault::open(dir.path()).unwrap();
+
+        let perm = crate::types::Permission {
+            id: Uuid::new_v4(),
+            endpoint_id: Uuid::new_v4(),
+            path_pattern: "/api/**".to_string(),
+            method: None,
+            permission_level: crate::types::PermissionLevel::Allow,
+            created_at: Utc::now(),
+        };
+
+        vault.store_permission(&perm).unwrap();
+
+        let perms = vault.list_permissions();
+        assert_eq!(perms.len(), 1);
+        assert_eq!(perms[0].id, perm.id);
+        assert_eq!(perms[0].path_pattern, "/api/**");
+
+        vault.delete_permission(perm.id).unwrap();
+        let perms = vault.list_permissions();
+        assert!(perms.is_empty());
+    }
+
+    #[test]
+    fn test_legacy_json_migration() {
+        let dir = tempdir().unwrap();
+
+        // Create a vault first (for meta.json)
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
+
+        // Write legacy JSON files
+        let endpoint = Endpoint {
+            id: Uuid::new_v4(),
+            name: "Legacy Endpoint".to_string(),
+            endpoint_type: EndpointType::GenericRest,
+            base_url: "http://legacy.test".to_string(),
+            credential_id: Uuid::nil(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let endpoints_json = serde_json::to_string_pretty(&vec![&endpoint]).unwrap();
+        fs::write(dir.path().join("endpoints.json"), &endpoints_json).unwrap();
+
+        // Remove the vault.db so a fresh open triggers migration
+        let _ = fs::remove_file(dir.path().join("vault.db"));
+
+        // Reopen — should migrate
+        let vault = CredentialVault::open(dir.path()).unwrap();
+
+        // Legacy files should be renamed
+        assert!(!dir.path().join("endpoints.json").exists());
+        assert!(dir.path().join("endpoints.json.migrated").exists());
+
+        // Data should be accessible via the store
+        let endpoints = vault.list_endpoints();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].name, "Legacy Endpoint");
     }
 }

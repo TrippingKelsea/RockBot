@@ -1,11 +1,10 @@
 use clap::Parser;
 use rockbot_cli::Cli;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Parse command line arguments
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    // Run the CLI command (handles tracing init with verbosity support)
-    rockbot_cli::run(cli).await
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(rockbot_cli::run(cli))
 }

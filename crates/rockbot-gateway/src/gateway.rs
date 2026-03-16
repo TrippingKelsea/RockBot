@@ -222,6 +222,18 @@ pub struct Gateway {
     /// Noise Protocol static keypair (gateway side)
     #[cfg(feature = "remote-exec")]
     noise_keypair: Arc<snow::Keypair>,
+    /// S3 CA certificate distributor
+    #[cfg(feature = "bedrock-deploy")]
+    deploy_distributor: Option<Arc<rockbot_deploy::CaDistributor>>,
+    /// Route53 DNS provisioner
+    #[cfg(feature = "bedrock-deploy")]
+    deploy_dns: Option<Arc<rockbot_deploy::DnsProvisioner>>,
+    /// Deploy config (parsed from config.deploy)
+    #[cfg(feature = "bedrock-deploy")]
+    deploy_config: Option<rockbot_deploy::DeployConfig>,
+    /// Stored error from deploy initialization failure
+    #[cfg(feature = "bedrock-deploy")]
+    deploy_init_error: Option<String>,
     /// Shutdown broadcast channel
     shutdown_tx: broadcast::Sender<()>,
 }
@@ -600,6 +612,51 @@ impl Gateway {
             (None, None)
         };
 
+        // Initialize S3 CA distributor + DNS provisioner if configured and feature-enabled
+        #[cfg(feature = "bedrock-deploy")]
+        let (deploy_distributor, deploy_dns, deploy_config_parsed, deploy_init_error) =
+            if let Some(ref deploy_value) = config.deploy {
+                match serde_json::from_value::<rockbot_deploy::DeployConfig>(deploy_value.clone()) {
+                    Ok(deploy_cfg) => {
+                        let mut dist = None;
+                        let mut dns = None;
+                        let mut err = None;
+
+                        match rockbot_deploy::CaDistributor::new(deploy_cfg.clone()).await {
+                            Ok(d) => {
+                                info!("Deploy: S3 CA distributor initialized");
+                                dist = Some(Arc::new(d));
+                            }
+                            Err(e) => {
+                                error!("Failed to initialize S3 CA distributor: {e}");
+                                err = Some(format!("S3: {e}"));
+                            }
+                        }
+
+                        match rockbot_deploy::DnsProvisioner::new(deploy_cfg.clone()).await {
+                            Ok(d) => {
+                                info!("Deploy: DNS provisioner initialized");
+                                dns = Some(Arc::new(d));
+                            }
+                            Err(e) => {
+                                error!("Failed to initialize DNS provisioner: {e}");
+                                let msg = format!("DNS: {e}");
+                                err = Some(err.map(|prev| format!("{prev}; {msg}")).unwrap_or(msg));
+                            }
+                        }
+
+                        (dist, dns, Some(deploy_cfg), err)
+                    }
+                    Err(e) => {
+                        error!("Invalid deploy config: {e}");
+                        (None, None, None, Some(format!("Invalid config: {e}")))
+                    }
+                }
+            } else {
+                debug!("Deploy not configured");
+                (None, None, None, None)
+            };
+
         Ok(Self {
             config: config.gateway,
             credentials_config: config.credentials,
@@ -655,6 +712,14 @@ impl Gateway {
                 rockbot_client::remote_exec::generate_keypair()
                     .expect("Noise keypair generation should not fail"),
             ),
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_distributor,
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_dns,
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_config: deploy_config_parsed,
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_init_error,
             shutdown_tx,
         })
     }
@@ -714,6 +779,107 @@ impl Gateway {
     #[cfg(feature = "overseer")]
     pub fn overseer(&self) -> Option<&Arc<rockbot_overseer::Overseer>> {
         self.overseer.as_ref()
+    }
+
+    /// Publish the CA certificate to S3 and register DNS records.
+    ///
+    /// Called from gateway startup and from `rockbot cert ca publish` CLI.
+    /// Silently skips if deploy is not configured or initialization failed.
+    #[cfg(feature = "bedrock-deploy")]
+    pub async fn publish_ca_to_s3(&self) {
+        let deploy_config = match &self.deploy_config {
+            Some(cfg) if cfg.upload_on_startup => cfg.clone(),
+            Some(_) => {
+                debug!("Deploy: upload_on_startup disabled, skipping");
+                return;
+            }
+            None => {
+                if let Some(ref err) = self.deploy_init_error {
+                    warn!("Deploy not available: {err}");
+                }
+                return;
+            }
+        };
+
+        // Read CA cert from pki_dir
+        let pki_dir = self.config.pki.pki_dir.clone().unwrap_or_else(|| {
+            dirs::config_dir()
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+                .join("rockbot")
+                .join("pki")
+        });
+
+        let ca_cert_path = pki_dir.join("ca.crt");
+        let ca_pem = match tokio::fs::read_to_string(&ca_cert_path).await {
+            Ok(pem) => pem,
+            Err(e) => {
+                warn!(
+                    "Deploy: CA cert not found at {}: {e}",
+                    ca_cert_path.display()
+                );
+                return;
+            }
+        };
+
+        // Auto-import AWS credentials if vault is available
+        if let Some(ref cred_mgr) = self.credential_manager {
+            let importer = rockbot_deploy::AwsCredentialImporter::new(cred_mgr.clone());
+            let client_uuid = uuid::Uuid::new_v4().to_string();
+            match importer.import_or_prompt(&client_uuid).await {
+                Ok(rockbot_deploy::credentials::ImportResult::Imported) => {
+                    info!("Deploy: auto-imported AWS credentials into vault");
+                }
+                Ok(rockbot_deploy::credentials::ImportResult::Conflict {
+                    existing_endpoint_name,
+                    ..
+                }) => {
+                    warn!(
+                        "Deploy: found different AWS keys vs vault ({}). Use 'rockbot cert ca publish' to resolve.",
+                        existing_endpoint_name
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("Deploy: credential import failed: {e}");
+                }
+            }
+        }
+
+        // Provision S3
+        if let Some(ref distributor) = self.deploy_distributor {
+            match distributor.provision(&ca_pem).await {
+                Ok(()) => {
+                    info!("Deploy: CA cert published to {}", distributor.ca_cert_url());
+                }
+                Err(e) => {
+                    error!("Deploy: S3 provisioning failed: {e}");
+                    return;
+                }
+            }
+        } else {
+            warn!("Deploy: S3 distributor not initialized");
+            return;
+        }
+
+        // Register DNS records
+        if let Some(ref dns) = self.deploy_dns {
+            let cluster_uuid = uuid::Uuid::new_v4().to_string();
+            let s3_endpoint = format!(
+                "{}.s3.{}.amazonaws.com",
+                deploy_config.bucket, deploy_config.region
+            );
+
+            if let Err(e) = dns
+                .register_cluster(
+                    &cluster_uuid,
+                    deploy_config.cluster_name.as_deref(),
+                    &s3_endpoint,
+                )
+                .await
+            {
+                warn!("Deploy: DNS registration failed: {e}");
+            }
+        }
     }
 
     /// Register an agent with the gateway
@@ -5737,6 +5903,14 @@ impl Clone for Gateway {
             remote_exec_registry: Arc::clone(&self.remote_exec_registry),
             #[cfg(feature = "remote-exec")]
             noise_keypair: Arc::clone(&self.noise_keypair),
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_distributor: self.deploy_distributor.clone(),
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_dns: self.deploy_dns.clone(),
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_config: self.deploy_config.clone(),
+            #[cfg(feature = "bedrock-deploy")]
+            deploy_init_error: self.deploy_init_error.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }
@@ -6030,6 +6204,8 @@ mod tests {
             credentials: CredentialsConfig::default(),
             providers: ProvidersConfig::default(),
             overseer: None,
+            doctor: None,
+            deploy: None,
         };
 
         Gateway::new(config, session_manager).await.unwrap()

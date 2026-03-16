@@ -30,6 +30,7 @@ members = [
     "crates/rockbot-deploy",
     "crates/rockbot-butler",
     "crates/rockbot-tui",
+    "crates/rockbot-chat",
 ]
 resolver = "2"
 
@@ -179,7 +180,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # Package metadata for all crates
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

@@ -1,0 +1,13 @@
+[package]
+name = "rockbot-chat"
+version.workspace = true
+edition = "2021"
+description = "Shared chat command trait and registry for RockBot TUI and WebUI"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }

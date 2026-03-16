@@ -2,13 +2,13 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
-use crate::effects::{self, palette, EffectState};
+use crate::effects::{self, EffectState};
 use crate::state::{AppState, MenuItem};
 
 /// Render the sidebar navigation as a compact scrollable menu.
@@ -42,11 +42,7 @@ pub fn render_sidebar(frame: &mut Frame, area: Rect, state: &AppState, effect_st
     let can_scroll_down = end < total;
 
     // Build scroll indicator for right border
-    let border_style = if state.sidebar_focus {
-        effects::active_border_style(effect_state.elapsed_secs())
-    } else {
-        effects::inactive_border_style()
-    };
+    let border_style = effects::inactive_border_style();
 
     // Build the right-border title to show scroll arrows
     let scroll_hint = match (can_scroll_up, can_scroll_down) {
@@ -75,12 +71,7 @@ pub fn render_sidebar(frame: &mut Frame, area: Rect, state: &AppState, effect_st
         let item = &all_items[idx];
         let is_selected = idx == selected;
 
-        let style = if is_selected && state.sidebar_focus {
-            Style::default()
-                .bg(palette::ACTIVE_PRIMARY)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else if is_selected {
+        let style = if is_selected {
             Style::default().bg(Color::DarkGray).fg(Color::White)
         } else {
             Style::default().fg(Color::White)

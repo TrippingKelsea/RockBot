@@ -639,142 +639,129 @@ impl App {
         Ok(())
     }
 
-    fn dispatch_action(&mut self, action: super::keybindings::TuiAction) {
+    fn dispatch_action(&mut self, action: crate::keybindings::TuiAction) {
         use crate::keybindings::TuiAction::*;
         match action {
             Quit => {
                 self.state.should_exit = true;
             }
             NavUp => {
-                if self.state.sidebar_focus {
-                    // Cycle mode / view in slot bar
-                    let agents = self.state.agents.clone();
-                    let sessions = self.state.sessions.clone();
-                    self.state.slot_bar.cycle_up(&agents, &sessions);
-                    // Sync menu_item with new mode
-                    let new_mode = self.state.slot_bar.current_mode();
-                    self.state.menu_item = new_mode;
-                    self.state.menu_index = new_mode.index();
-                } else {
-                    match self.state.menu_item {
-                        MenuItem::Credentials => self.state.credential_list_prev(),
-                        MenuItem::Sessions => {
-                            if let Some(chat) = self.state.active_chat_mut() {
-                                if chat.auto_scroll {
-                                    chat.scroll = chat.max_scroll.get();
-                                    chat.auto_scroll = false;
-                                }
-                                chat.scroll = chat.scroll.saturating_sub(1);
+                match self.state.menu_item {
+                    MenuItem::Credentials => self.state.credential_list_prev(),
+                    MenuItem::Sessions => {
+                        if let Some(chat) = self.state.active_chat_mut() {
+                            if chat.auto_scroll {
+                                chat.scroll = chat.max_scroll.get();
+                                chat.auto_scroll = false;
                             }
+                            chat.scroll = chat.scroll.saturating_sub(1);
                         }
-                        MenuItem::CronJobs => {
-                            if !self.state.cron_jobs.is_empty() {
-                                self.state.selected_cron_job = if self.state.selected_cron_job == 0
-                                {
-                                    self.state.cron_jobs.len() - 1
-                                } else {
-                                    self.state.selected_cron_job - 1
-                                };
-                            }
-                        }
-                        _ => {}
                     }
+                    MenuItem::CronJobs => {
+                        if !self.state.cron_jobs.is_empty() {
+                            self.state.selected_cron_job = if self.state.selected_cron_job == 0
+                            {
+                                self.state.cron_jobs.len() - 1
+                            } else {
+                                self.state.selected_cron_job - 1
+                            };
+                        }
+                    }
+                    _ => {}
                 }
             }
             NavDown => {
-                if self.state.sidebar_focus {
-                    // Cycle mode / view in slot bar
-                    let agents = self.state.agents.clone();
-                    let sessions = self.state.sessions.clone();
-                    self.state.slot_bar.cycle_down(&agents, &sessions);
-                    // Sync menu_item with new mode
-                    let new_mode = self.state.slot_bar.current_mode();
-                    self.state.menu_item = new_mode;
-                    self.state.menu_index = new_mode.index();
-                } else {
-                    match self.state.menu_item {
-                        MenuItem::Credentials => self.state.credential_list_next(),
-                        MenuItem::Sessions => {
-                            if let Some(chat) = self.state.active_chat_mut() {
-                                if chat.auto_scroll {
-                                    // Already at bottom in auto-scroll
-                                    return;
-                                }
-                                chat.scroll = chat.scroll.saturating_add(1);
-                                if chat.scroll >= chat.max_scroll.get() {
-                                    chat.auto_scroll = true;
-                                }
+                match self.state.menu_item {
+                    MenuItem::Credentials => self.state.credential_list_next(),
+                    MenuItem::Sessions => {
+                        if let Some(chat) = self.state.active_chat_mut() {
+                            if chat.auto_scroll {
+                                return;
+                            }
+                            chat.scroll = chat.scroll.saturating_add(1);
+                            if chat.scroll >= chat.max_scroll.get() {
+                                chat.auto_scroll = true;
                             }
                         }
-                        MenuItem::CronJobs => {
-                            if !self.state.cron_jobs.is_empty() {
-                                self.state.selected_cron_job =
-                                    (self.state.selected_cron_job + 1) % self.state.cron_jobs.len();
-                            }
-                        }
-                        _ => {}
                     }
+                    MenuItem::CronJobs => {
+                        if !self.state.cron_jobs.is_empty() {
+                            self.state.selected_cron_job =
+                                (self.state.selected_cron_job + 1) % self.state.cron_jobs.len();
+                        }
+                    }
+                    _ => {}
                 }
             }
             NavLeft => {
-                if self.state.sidebar_focus {
-                    self.state.slot_bar.select_left();
-                } else {
-                    self.state.select_prev();
-                    if self.state.menu_item == MenuItem::Sessions {
-                        self.on_session_selection_changed();
-                    }
+                self.state.select_prev();
+                if self.state.menu_item == MenuItem::Sessions {
+                    self.on_session_selection_changed();
                 }
             }
             NavRight => {
-                if self.state.sidebar_focus {
-                    self.state.slot_bar.select_right();
-                } else {
-                    self.state.select_next();
-                    if self.state.menu_item == MenuItem::Sessions {
-                        self.on_session_selection_changed();
-                    }
+                self.state.select_next();
+                if self.state.menu_item == MenuItem::Sessions {
+                    self.on_session_selection_changed();
                 }
             }
             Enter => {
-                if self.state.sidebar_focus {
-                    self.state.sidebar_focus = false;
-                    self.effect_state.set_active(true);
-                } else {
-                    match self.state.menu_item {
-                        MenuItem::Credentials => match self.state.credentials_tab {
-                            0 if !self.state.endpoints.is_empty() => {
-                                self.state.input_mode = InputMode::ViewEndpoint {
-                                    endpoint_index: self.state.selected_endpoint,
-                                };
-                            }
-                            1 => {
-                                self.state.input_mode = InputMode::ViewProvider {
-                                    provider_index: self.state.selected_provider_index,
-                                };
-                            }
-                            2 if !self.state.permissions.is_empty() => {
-                                self.state.input_mode = InputMode::ViewPermission {
-                                    permission_index: self.state.selected_permission,
-                                };
-                            }
-                            _ => {}
-                        },
-                        MenuItem::Models if !self.state.providers.is_empty() => {
-                            self.state.input_mode = InputMode::ViewModelList {
-                                provider_index: self.state.selected_provider,
-                                scroll: 0,
+                match self.state.menu_item {
+                    MenuItem::Credentials => match self.state.credentials_tab {
+                        0 if !self.state.endpoints.is_empty() => {
+                            self.state.input_mode = InputMode::ViewEndpoint {
+                                endpoint_index: self.state.selected_endpoint,
+                            };
+                        }
+                        1 => {
+                            self.state.input_mode = InputMode::ViewProvider {
+                                provider_index: self.state.selected_provider_index,
+                            };
+                        }
+                        2 if !self.state.permissions.is_empty() => {
+                            self.state.input_mode = InputMode::ViewPermission {
+                                permission_index: self.state.selected_permission,
                             };
                         }
                         _ => {}
+                    },
+                    MenuItem::Models if !self.state.providers.is_empty() => {
+                        self.state.input_mode = InputMode::ViewModelList {
+                            provider_index: self.state.selected_provider,
+                            scroll: 0,
+                        };
                     }
+                    _ => {}
                 }
             }
             Escape => {
-                if !self.state.sidebar_focus {
-                    self.state.sidebar_focus = true;
-                    self.effect_state.set_active(false);
-                }
+                // No-op in normal mode (was: return to sidebar)
+            }
+            // Card bar navigation via Alt+arrows
+            CardLeft => {
+                self.state.slot_bar.select_left();
+            }
+            CardRight => {
+                self.state.slot_bar.select_right();
+            }
+            CardUp => {
+                let agents = self.state.agents.clone();
+                let sessions = self.state.sessions.clone();
+                self.state.slot_bar.cycle_up(&agents, &sessions);
+                let new_mode = self.state.slot_bar.current_mode();
+                self.state.menu_item = new_mode;
+                self.state.menu_index = new_mode.index();
+            }
+            CardDown => {
+                let agents = self.state.agents.clone();
+                let sessions = self.state.sessions.clone();
+                self.state.slot_bar.cycle_down(&agents, &sessions);
+                let new_mode = self.state.slot_bar.current_mode();
+                self.state.menu_item = new_mode;
+                self.state.menu_index = new_mode.index();
+            }
+            CardActivate => {
+                // Open card detail overlay (implemented in Part 5)
             }
             JumpToSection(n) => {
                 let item = match n {
@@ -804,7 +791,7 @@ impl App {
                 self.next_content_tab();
             }
             ScrollUp => {
-                if !self.state.sidebar_focus && self.state.menu_item == MenuItem::Sessions {
+                if self.state.menu_item == MenuItem::Sessions {
                     if let Some(chat) = self.state.active_chat_mut() {
                         if chat.auto_scroll {
                             chat.scroll = chat.max_scroll.get();
@@ -815,7 +802,7 @@ impl App {
                 }
             }
             ScrollDown => {
-                if !self.state.sidebar_focus && self.state.menu_item == MenuItem::Sessions {
+                if self.state.menu_item == MenuItem::Sessions {
                     if let Some(chat) = self.state.active_chat_mut() {
                         if !chat.auto_scroll {
                             chat.scroll = chat.scroll.saturating_add(10);
@@ -827,19 +814,19 @@ impl App {
                 }
             }
             ScrollEnd => {
-                if !self.state.sidebar_focus && self.state.menu_item == MenuItem::Sessions {
+                if self.state.menu_item == MenuItem::Sessions {
                     if let Some(chat) = self.state.active_chat_mut() {
                         chat.auto_scroll = true;
                     }
                 }
             }
             Add => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_add_action();
                 }
             }
             Delete => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_delete_action();
                 }
             }
@@ -853,12 +840,12 @@ impl App {
                 self.handle_unlock_action();
             }
             LockVault => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_lock_action();
                 }
             }
             Chat => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_chat_action();
                 }
             }
@@ -868,7 +855,7 @@ impl App {
                 }
             }
             Edit => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_edit_action();
                 }
             }
@@ -888,37 +875,37 @@ impl App {
                 }
             }
             Permissions => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_permission_action();
                 }
             }
             Kill => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_kill_action();
                 }
             }
             View => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_view_action();
                 }
             }
             TestAction => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_test_action();
                 }
             }
             StartGateway => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_start_action();
                 }
             }
             StopGateway => {
-                if !self.state.sidebar_focus {
+                {
                     self.handle_stop_action();
                 }
             }
             OpenContextMenu => {
-                if !self.state.sidebar_focus {
+                {
                     let menu = self.state.build_context_menu();
                     self.state.input_mode = InputMode::ContextMenu(menu);
                 }
@@ -1063,21 +1050,21 @@ impl App {
 
     fn handle_refresh_action(&mut self) {
         match self.state.menu_item {
-            MenuItem::Settings if !self.state.sidebar_focus => {
+            MenuItem::Settings => {
                 // On Settings tab, 'r' means restart gateway
                 self.state.status_message = Some(("Restarting gateway...".to_string(), false));
                 self.spawn_gateway_control("restart");
             }
-            MenuItem::Agents if !self.state.sidebar_focus => {
+            MenuItem::Agents => {
                 // On Agents tab, reload agents from config
                 self.state.status_message = Some(("Reloading agents...".to_string(), false));
                 self.spawn_agents_load();
             }
-            MenuItem::Sessions if !self.state.sidebar_focus => {
+            MenuItem::Sessions => {
                 self.state.status_message = Some(("Reloading sessions...".to_string(), false));
                 self.spawn_sessions_load();
             }
-            MenuItem::CronJobs if !self.state.sidebar_focus => {
+            MenuItem::CronJobs => {
                 self.state.status_message = Some(("Reloading cron jobs...".to_string(), false));
                 self.spawn_cron_jobs_load();
             }
@@ -3671,37 +3658,33 @@ impl App {
     fn get_help_text(&self) -> String {
         match &self.state.input_mode {
             InputMode::Normal => {
-                if self.state.sidebar_focus {
-                    "Ctrl+Q:Quit │ ←→:Slot │ ↑↓:Mode/View │ Enter:Content │ 1-7:Jump".to_string()
-                } else {
-                    match self.state.menu_item {
-                        MenuItem::Dashboard => {
-                            "←→:Select │ r:Refresh │ Esc:Slots".to_string()
-                        }
-                        MenuItem::Credentials => {
-                            let tab_help = match self.state.credentials_tab {
-                                0 => "Enter:View │ a:Add │ d:Delete │ p:Permission",
-                                1 => "Enter:View │ a:Configure",
-                                2 => "Enter:View │ p:Add Rule │ ↑↓:Navigate",
-                                _ => "Enter:View",
-                            };
-                            format!("←→:Tab │ {tab_help} │ Esc:Slots ({})", self.credentials_tab().label())
-                        }
-                        MenuItem::Agents => {
-                            "←→:Select │ a:Add │ e:Edit │ d:Disable │ r:Reload │ Esc:Slots".to_string()
-                        }
-                        MenuItem::Sessions => {
-                            "←→:Select │ n:New │ c:Chat │ k:Kill │ Esc:Slots".to_string()
-                        }
-                        MenuItem::CronJobs => {
-                            "←→:Filter │ ↑↓:Select │ e:Enable/Disable │ d:Delete │ t:Trigger │ r:Refresh".to_string()
-                        }
-                        MenuItem::Models => {
-                            "←→:Select │ Enter:Models │ e:Edit │ t:Test │ Esc:Slots".to_string()
-                        }
-                        MenuItem::Settings => {
-                            "←→:Select │ s:Start │ S:Stop │ r:Restart │ Esc:Slots".to_string()
-                        }
+                match self.state.menu_item {
+                    MenuItem::Dashboard => {
+                        "←→:Select │ r:Refresh │ Alt+←→:Cards │ 1-7:Jump".to_string()
+                    }
+                    MenuItem::Credentials => {
+                        let tab_help = match self.state.credentials_tab {
+                            0 => "Enter:View │ a:Add │ d:Delete │ p:Permission",
+                            1 => "Enter:View │ a:Configure",
+                            2 => "Enter:View │ p:Add Rule │ ↑↓:Navigate",
+                            _ => "Enter:View",
+                        };
+                        format!("←→:Tab │ {tab_help} │ Alt+←→:Cards ({})", self.credentials_tab().label())
+                    }
+                    MenuItem::Agents => {
+                        "←→:Select │ a:Add │ e:Edit │ d:Disable │ r:Reload │ Alt+←→:Cards".to_string()
+                    }
+                    MenuItem::Sessions => {
+                        "←→:Select │ n:New │ c:Chat │ k:Kill │ Alt+←→:Cards".to_string()
+                    }
+                    MenuItem::CronJobs => {
+                        "←→:Filter │ ↑↓:Select │ e:Enable/Disable │ d:Delete │ t:Trigger │ r:Refresh".to_string()
+                    }
+                    MenuItem::Models => {
+                        "←→:Select │ Enter:Models │ e:Edit │ t:Test │ Alt+←→:Cards".to_string()
+                    }
+                    MenuItem::Settings => {
+                        "←→:Select │ s:Start │ S:Stop │ r:Restart │ Alt+←→:Cards".to_string()
                     }
                 }
             }

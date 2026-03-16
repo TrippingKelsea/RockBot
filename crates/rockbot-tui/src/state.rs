@@ -877,8 +877,6 @@ pub struct AppState {
     // Navigation
     pub menu_item: MenuItem,
     pub menu_index: usize,
-    pub sidebar_focus: bool,
-
     // Slotted card bar navigation
     pub slot_bar: SlottedCardBar,
 
@@ -2708,7 +2706,6 @@ impl AppState {
         Self {
             menu_item: MenuItem::Dashboard,
             menu_index: 0,
-            sidebar_focus: true,
             slot_bar: SlottedCardBar::new(),
 
             config_path,
@@ -2778,7 +2775,6 @@ impl AppState {
             Message::Navigate(item) => {
                 self.menu_item = item;
                 self.menu_index = item.index();
-                self.sidebar_focus = false;
                 // Keep slot_bar in sync
                 self.slot_bar.mode = item.index();
                 self.slot_bar.slots[0].label = item.title().to_string();
@@ -2787,7 +2783,7 @@ impl AppState {
                 self.slot_bar.rebuild_content_slots(&agents, &sessions);
             }
             Message::ToggleSidebar => {
-                self.sidebar_focus = !self.sidebar_focus;
+                // No-op: sidebar_focus removed, card bar always navigated via Alt+arrows
             }
 
             Message::GatewayStatus(status) => {

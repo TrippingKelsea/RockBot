@@ -42,6 +42,11 @@ pub enum TuiAction {
     ScrollEnd,         // End / 'G'
     Enter,             // Enter key action
     Escape,            // Esc key action
+    CardLeft,          // Alt+Left: navigate card slots left
+    CardRight,         // Alt+Right: navigate card slots right
+    CardUp,            // Alt+Up: cycle card bar mode up
+    CardDown,          // Alt+Down: cycle card bar mode down
+    CardActivate,      // Alt+Enter: open card detail overlay
 }
 
 /// A parsed key specification, e.g. "q", "ctrl+c", "Left", "Shift+Tab"
@@ -240,7 +245,6 @@ impl KeyBinding {
 pub struct KeybindingConfig {
     pub normal: Vec<KeyBinding>,
     pub chat: Vec<KeyBinding>,
-    pub slot_bar: Vec<KeyBinding>,
 }
 
 impl KeybindingConfig {
@@ -250,7 +254,6 @@ impl KeybindingConfig {
         let bindings = match mode {
             "normal" => &self.normal,
             "chat" => &self.chat,
-            "slot_bar" => &self.slot_bar,
             _ => return None,
         };
         bindings
@@ -329,6 +332,12 @@ impl Default for KeybindingConfig {
             KeyBinding::new(char('p'), TuiAction::Permissions),
             KeyBinding::new(char('t'), TuiAction::TestAction),
             KeyBinding::new(char('?'), TuiAction::OpenContextMenu),
+            // Card bar navigation (Alt+arrows)
+            KeyBinding::new(modified(Km::ALT, Left), TuiAction::CardLeft),
+            KeyBinding::new(modified(Km::ALT, Right), TuiAction::CardRight),
+            KeyBinding::new(modified(Km::ALT, Up), TuiAction::CardUp),
+            KeyBinding::new(modified(Km::ALT, Down), TuiAction::CardDown),
+            KeyBinding::new(modified(Km::ALT, Enter), TuiAction::CardActivate),
         ];
 
         let chat = vec![
@@ -338,26 +347,15 @@ impl Default for KeybindingConfig {
             KeyBinding::new(key(Down), TuiAction::ScrollDown),
             KeyBinding::new(key(PageUp), TuiAction::ScrollUp),
             KeyBinding::new(key(PageDown), TuiAction::ScrollDown),
+            // Card bar navigation works in chat mode too
+            KeyBinding::new(modified(Km::ALT, Left), TuiAction::CardLeft),
+            KeyBinding::new(modified(Km::ALT, Right), TuiAction::CardRight),
+            KeyBinding::new(modified(Km::ALT, Up), TuiAction::CardUp),
+            KeyBinding::new(modified(Km::ALT, Down), TuiAction::CardDown),
+            KeyBinding::new(modified(Km::ALT, Enter), TuiAction::CardActivate),
         ];
 
-        let slot_bar = vec![
-            KeyBinding::new(key(Left), TuiAction::NavLeft),
-            KeyBinding::new(char('h'), TuiAction::NavLeft),
-            KeyBinding::new(key(Right), TuiAction::NavRight),
-            KeyBinding::new(char('l'), TuiAction::NavRight),
-            KeyBinding::new(key(Down), TuiAction::NavDown),
-            KeyBinding::new(char('j'), TuiAction::NavDown),
-            KeyBinding::new(key(Up), TuiAction::NavUp),
-            KeyBinding::new(char('k'), TuiAction::NavUp),
-            KeyBinding::new(key(Enter), TuiAction::Enter),
-            KeyBinding::new(key(Esc), TuiAction::Escape),
-        ];
-
-        Self {
-            normal,
-            chat,
-            slot_bar,
-        }
+        Self { normal, chat }
     }
 }
 

@@ -83,10 +83,8 @@ fn render_tab_cards(
     for (idx, &(label, sub1, sub2)) in TABS.iter().enumerate() {
         let is_selected = idx == selected_tab;
 
-        let border_style = if is_selected && !state.sidebar_focus {
+        let border_style = if is_selected {
             effects::active_border_style(elapsed)
-        } else if is_selected {
-            Style::default().fg(palette::ACTIVE_PRIMARY)
         } else {
             Style::default().fg(palette::INACTIVE_BORDER)
         };
@@ -248,16 +246,10 @@ fn render_endpoints_list(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .collect();
 
-    let highlight_style = if !state.sidebar_focus {
-        Style::default()
-            .bg(palette::ACTIVE_PRIMARY)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
-    };
+    let highlight_style = Style::default()
+        .bg(palette::ACTIVE_PRIMARY)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
 
     let list = List::new(items)
         .highlight_style(highlight_style)
@@ -344,16 +336,10 @@ fn render_providers_list(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .collect();
 
-    let highlight_style = if !state.sidebar_focus {
-        Style::default()
-            .bg(palette::ACTIVE_PRIMARY)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
-    };
+    let highlight_style = Style::default()
+        .bg(palette::ACTIVE_PRIMARY)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
 
     let list = List::new(items)
         .highlight_style(highlight_style)
@@ -445,16 +431,10 @@ fn render_permissions_list(frame: &mut Frame, area: Rect, state: &AppState) {
         ),
     ])));
 
-    let highlight_style = if !state.sidebar_focus {
-        Style::default()
-            .bg(palette::ACTIVE_PRIMARY)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
-    };
+    let highlight_style = Style::default()
+        .bg(palette::ACTIVE_PRIMARY)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
 
     let list = List::new(items)
         .highlight_style(highlight_style)

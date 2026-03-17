@@ -20,6 +20,9 @@ pub struct Config {
     /// Gateway server configuration
     #[serde(default)]
     pub gateway: GatewayConfig,
+    /// Shared PKI and TLS bootstrap settings.
+    #[serde(default)]
+    pub pki: PkiConfig,
     /// Agent configurations
     #[serde(default)]
     pub agents: AgentConfig,
@@ -64,6 +67,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             gateway: GatewayConfig::default(),
+            pki: PkiConfig::default(),
             agents: AgentConfig::default(),
             tools: ToolConfig::default(),
             security: SecurityConfig::default(),
@@ -463,6 +467,24 @@ impl PkiConfig {
     /// Check if mTLS client verification is configured.
     pub fn has_mtls(&self) -> bool {
         self.tls_ca.is_some()
+    }
+
+    /// Merge this config with a fallback config.
+    ///
+    /// Fields already set on `self` win. This keeps top-level `[pki]` authoritative
+    /// while still allowing legacy `[gateway]` PKI fields to load.
+    pub fn merged_with_fallback(&self, fallback: &Self) -> Self {
+        Self {
+            tls_cert: self.tls_cert.clone().or_else(|| fallback.tls_cert.clone()),
+            tls_key: self.tls_key.clone().or_else(|| fallback.tls_key.clone()),
+            tls_ca: self.tls_ca.clone().or_else(|| fallback.tls_ca.clone()),
+            require_client_cert: self.require_client_cert || fallback.require_client_cert,
+            pki_dir: self.pki_dir.clone().or_else(|| fallback.pki_dir.clone()),
+            enrollment_psk: self
+                .enrollment_psk
+                .clone()
+                .or_else(|| fallback.enrollment_psk.clone()),
+        }
     }
 }
 
@@ -1170,6 +1192,12 @@ pub struct ConfigWatcher {
 }
 
 impl Config {
+    /// Resolve the effective PKI config, preferring top-level `[pki]` and
+    /// falling back to legacy gateway-scoped PKI fields when present.
+    pub fn effective_pki(&self) -> PkiConfig {
+        self.pki.merged_with_fallback(&self.gateway.pki)
+    }
+
     /// Load configuration from a TOML file
     pub async fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
@@ -1550,6 +1578,7 @@ mod tests {
                 require_api_key: None,
                 pki: PkiConfig::default(),
             },
+            pki: PkiConfig::default(),
             agents: AgentConfig {
                 defaults: AgentDefaults {
                     workspace: PathBuf::from("/tmp"),

@@ -60,7 +60,7 @@ pub async fn run(command: &AgentCommands, config_path: &PathBuf) -> Result<()> {
             let gateway_target = gateway
                 .clone()
                 .unwrap_or_else(|| format!("{}:{}", config.client.gateway_host, config.client.client_port));
-            run_agent_session(agent_id, &gateway_target, *exec).await?;
+            run_agent_session(agent_id, &gateway_target, config.effective_pki(), *exec).await?;
         }
     }
 
@@ -68,13 +68,18 @@ pub async fn run(command: &AgentCommands, config_path: &PathBuf) -> Result<()> {
 }
 
 /// Run an interactive agent session via a remote gateway.
-async fn run_agent_session(agent_id: &str, gateway_url: &str, _exec: bool) -> Result<()> {
+async fn run_agent_session(
+    agent_id: &str,
+    gateway_url: &str,
+    pki: rockbot_config::PkiConfig,
+    _exec: bool,
+) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let ws_url = rockbot_client::normalize_gateway_url(gateway_url);
 
     println!("Connecting to gateway at {ws_url}...");
-    let client = rockbot_client::GatewayClient::connect(&ws_url);
+    let client = rockbot_client::GatewayClient::connect_with_pki(&ws_url, Some(&pki));
     let mut events = client.subscribe();
 
     // Wait for connection

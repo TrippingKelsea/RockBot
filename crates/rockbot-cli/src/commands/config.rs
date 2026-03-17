@@ -133,6 +133,8 @@ bind_host = "{bind_host}"
 {listen_ips}
 port = {https_port}
 client_port = {client_port}
+
+[pki]
 tls_cert = "{tls_cert}"
 tls_key = "{tls_key}"
 pki_dir = "{pki_dir}"
@@ -209,6 +211,9 @@ gateway_host = "{gateway_ip}"
 https_port = {https_port}
 client_port = {client_port}
 
+[pki]
+pki_dir = "{pki_dir}"
+
 [security.storage]
 enabled = true
 mode = "encrypted_by_default"
@@ -217,7 +222,12 @@ key_source = "pki_local"
 [security.roles]
 gateway = false
 vault_provider = false
-"#
+"#,
+        pki_dir = output_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("pki")
+            .display()
     );
 
     tokio::fs::write(output_path, toml).await?;

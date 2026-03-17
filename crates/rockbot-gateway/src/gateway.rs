@@ -5,7 +5,8 @@
 
 use rockbot_agent::agent::{Agent, AgentResponse};
 use rockbot_config::{
-    Config, CredentialsConfig, GatewayConfig, StorageEncryptionMode, StorageKeySource,
+    Config, CredentialsConfig, GatewayConfig, PkiConfig, StorageEncryptionMode,
+    StorageKeySource,
 };
 use rockbot_credentials::{generate_salt, CredentialManager, MasterKey};
 use rockbot_pki::PkiManager;
@@ -196,6 +197,8 @@ pub struct ProviderModelInfo {
 pub struct Gateway {
     /// Gateway configuration
     config: GatewayConfig,
+    /// Effective PKI/TLS configuration.
+    pki: PkiConfig,
     /// Credentials configuration
     pub(crate) credentials_config: CredentialsConfig,
     /// Path to the TOML config file (for persisting agent changes)
@@ -719,6 +722,8 @@ impl Gateway {
                 (None, None, None, None)
             };
 
+        let effective_pki = config.effective_pki();
+
         let cron_storage_key = if config.security.storage.enabled
             && !matches!(
                 config.security.storage.mode,
@@ -728,7 +733,7 @@ impl Gateway {
                 config.security.storage.key_source,
                 StorageKeySource::PkiLocal
             ) {
-            let pki_dir = config.gateway.pki.pki_dir.clone().unwrap_or_else(|| {
+            let pki_dir = effective_pki.pki_dir.clone().unwrap_or_else(|| {
                 dirs::config_dir()
                     .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
                     .join("rockbot")
@@ -745,8 +750,11 @@ impl Gateway {
             None
         };
 
+        let gateway_config = config.gateway.clone();
+
         Ok(Self {
-            config: config.gateway,
+            config: gateway_config,
+            pki: effective_pki,
             credentials_config: config.credentials,
             config_path: None,
             store: None,
@@ -907,7 +915,7 @@ impl Gateway {
         };
 
         // Read CA cert from pki_dir
-        let pki_dir = self.config.pki.pki_dir.clone().unwrap_or_else(|| {
+        let pki_dir = self.pki.pki_dir.clone().unwrap_or_else(|| {
             dirs::config_dir()
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
                 .join("rockbot")
@@ -1286,7 +1294,7 @@ impl Gateway {
     /// Load a TLS acceptor from the configured cert/key paths.
     /// Supports optional mTLS when `tls_ca` is configured.
     fn load_tls_acceptor(&self, listener_kind: ListenerKind) -> Result<Option<tokio_rustls::TlsAcceptor>> {
-        let (cert_path, key_path) = match (&self.config.pki.tls_cert, &self.config.pki.tls_key) {
+        let (cert_path, key_path) = match (&self.pki.tls_cert, &self.pki.tls_key) {
             (Some(c), Some(k)) => (Self::expand_tilde(c), Self::expand_tilde(k)),
             _ => return Ok(None),
         };
@@ -1325,7 +1333,7 @@ impl Gateway {
             .ok_or_else(|| tls_config_err("No private key found in TLS key file".into()))?;
 
         // Build client auth configuration
-        let tls_config = if let Some(ca_path) = &self.config.pki.tls_ca {
+        let tls_config = if let Some(ca_path) = &self.pki.tls_ca {
             let ca_path = Self::expand_tilde(ca_path);
             let ca_pem = std::fs::read(&ca_path).map_err(|e| {
                 tls_config_err(format!("Failed to read CA cert {}: {e}", ca_path.display()))
@@ -1348,7 +1356,7 @@ impl Gateway {
             }
 
             let verifier = match listener_kind {
-                ListenerKind::Client if self.config.pki.require_client_cert => {
+                ListenerKind::Client if self.pki.require_client_cert => {
                     info!(
                         "Client listener mTLS enabled: requiring client certificates (CA: {})",
                         ca_path.display()
@@ -6133,7 +6141,7 @@ impl Gateway {
         req: Request<IncomingBody>,
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         // Check that PKI is configured
-        let pki_dir = match &self.config.pki.pki_dir {
+        let pki_dir = match &self.pki.pki_dir {
             Some(d) => Self::expand_tilde(d),
             None => {
                 let default = dirs::config_dir()
@@ -6297,7 +6305,7 @@ impl Gateway {
     async fn handle_cert_ca_info(
         &self,
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
-        let pki_dir = match &self.config.pki.pki_dir {
+        let pki_dir = match &self.pki.pki_dir {
             Some(d) => Self::expand_tilde(d),
             None => dirs::config_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
@@ -6381,6 +6389,7 @@ impl Clone for Gateway {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
+            pki: self.pki.clone(),
             credentials_config: self.credentials_config.clone(),
             config_path: self.config_path.clone(),
             store: self.store.clone(),

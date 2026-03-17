@@ -39,7 +39,7 @@ fn resolve_pki_dir(config_path: &Path) -> PathBuf {
 
 async fn resolve_pki_dir_from_config(config_path: &Path) -> Result<PathBuf> {
     if let Ok(config) = rockbot_config::Config::from_file(config_path).await {
-        if let Some(dir) = &config.gateway.pki.pki_dir {
+        if let Some(dir) = &config.effective_pki().pki_dir {
             return Ok(expand_tilde(dir));
         }
     }
@@ -473,21 +473,24 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
     let mut doc: toml_edit::DocumentMut =
         content.parse().context("Failed to parse config as TOML")?;
 
-    if doc.get("gateway").is_none() {
-        doc["gateway"] = toml_edit::Item::Table(toml_edit::Table::new());
+    if doc.get("pki").is_none() {
+        doc["pki"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
 
-    doc["gateway"]["tls_cert"] = toml_edit::value(cert_path.to_string_lossy().as_ref());
-    doc["gateway"]["tls_key"] = toml_edit::value(key_path.to_string_lossy().as_ref());
+    doc["pki"]["tls_cert"] = toml_edit::value(cert_path.to_string_lossy().as_ref());
+    doc["pki"]["tls_key"] = toml_edit::value(key_path.to_string_lossy().as_ref());
 
     if ca_path.exists() {
-        doc["gateway"]["tls_ca"] = toml_edit::value(ca_path.to_string_lossy().as_ref());
+        doc["pki"]["tls_ca"] = toml_edit::value(ca_path.to_string_lossy().as_ref());
     }
 
-    doc["gateway"]["pki_dir"] = toml_edit::value(dir.to_string_lossy().as_ref());
+    doc["pki"]["pki_dir"] = toml_edit::value(dir.to_string_lossy().as_ref());
 
     // Set require_client_cert based on role
     if role == CertRole::Gateway {
+        if doc.get("gateway").is_none() {
+            doc["gateway"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
         // Gateway certs: enable mTLS by default
         doc["gateway"]["require_client_cert"] = toml_edit::value(true);
     }
@@ -596,7 +599,7 @@ async fn cmd_verify(
         drop(verifier);
         println!("Chain:       OK (CA loaded, full verification at TLS handshake)");
     } else if let Ok(config) = load_config(&config_path.to_path_buf()).await {
-        if let Some(ca_cfg) = &config.gateway.pki.tls_ca {
+        if let Some(ca_cfg) = &config.effective_pki().tls_ca {
             println!(
                 "Hint: use --ca {} to verify chain against configured CA",
                 ca_cfg.display()
@@ -922,11 +925,11 @@ async fn resolve_cert_key_paths(
             let config = load_config(&config_path.to_path_buf()).await?;
             let c = cert
                 .map(|p| expand_tilde(p))
-                .or(config.gateway.pki.tls_cert.map(|p| expand_tilde(&p)))
+                .or(config.effective_pki().tls_cert.map(|p| expand_tilde(&p)))
                 .context("No --cert provided and no tls_cert in config")?;
             let k = key
                 .map(|p| expand_tilde(p))
-                .or(config.gateway.pki.tls_key.map(|p| expand_tilde(&p)))
+                .or(config.effective_pki().tls_key.map(|p| expand_tilde(&p)))
                 .context("No --key provided and no tls_key in config")?;
             Ok((c, k))
         }

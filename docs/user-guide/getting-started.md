@@ -46,6 +46,8 @@ store, not in the TOML file.
 bind_host = "0.0.0.0"
 port = 18181
 client_port = 18182
+
+[pki]
 tls_cert = "/home/you/.config/rockbot/gateway.crt"
 tls_key = "/home/you/.config/rockbot/gateway.key"
 
@@ -113,7 +115,7 @@ rockbot cert ca generate --days 3650
 rockbot cert client generate --name gateway --role gateway \
   --san localhost --san 127.0.0.1 --days 365
 
-# Install into rockbot.toml (sets tls_cert, tls_key, tls_ca, require_client_cert)
+# Install into rockbot.toml (writes [pki] and enables gateway mTLS policy)
 rockbot cert install --name gateway
 
 # Generate a TUI client certificate

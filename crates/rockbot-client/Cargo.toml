@@ -28,6 +28,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+dirs = { workspace = true }
+rustls-pemfile = { workspace = true }
 
 # Noise Protocol for remote execution (optional)
 snow = { workspace = true, optional = true }

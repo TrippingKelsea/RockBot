@@ -6,7 +6,9 @@
 //! own message types.
 
 use futures_util::{SinkExt, StreamExt};
+use rockbot_config::PkiConfig;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -127,6 +129,12 @@ impl GatewayClient {
     /// Spawns a background task that connects (with retry) to the gateway
     /// WebSocket at `ws_url` and emits `GatewayEvent`s.
     pub fn connect(ws_url: &str) -> Self {
+        Self::connect_with_pki(ws_url, None)
+    }
+
+    /// Create and connect a new gateway client using the provided PKI config
+    /// for outbound client-auth TLS when certificate material is available.
+    pub fn connect_with_pki(ws_url: &str, pki: Option<&PkiConfig>) -> Self {
         let (event_tx, _) = broadcast::channel(256);
         let ws_tx: Arc<tokio::sync::RwLock<Option<mpsc::UnboundedSender<String>>>> =
             Arc::new(tokio::sync::RwLock::new(None));
@@ -139,8 +147,9 @@ impl GatewayClient {
         };
 
         let url = ws_url.to_string();
+        let pki = pki.cloned();
         tokio::spawn(async move {
-            Self::run_connection(url, ws_tx, event_tx, connected).await;
+            Self::run_connection(url, ws_tx, event_tx, connected, pki).await;
         });
 
         client
@@ -201,7 +210,7 @@ impl GatewayClient {
     }
 
     /// Build a TLS connector that accepts self-signed certificates.
-    fn tls_connector() -> Option<tokio_tungstenite::Connector> {
+    fn tls_connector(pki: Option<&PkiConfig>) -> Option<tokio_tungstenite::Connector> {
         /// Verifier that accepts any server certificate (for self-signed certs).
         #[derive(Debug)]
         struct AcceptAnyCert;
@@ -245,14 +254,65 @@ impl GatewayClient {
             }
         }
 
-        let config = rustls::ClientConfig::builder()
+        let builder = rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyCert))
-            .with_no_client_auth();
+            .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyCert));
+
+        let config = match pki.and_then(|cfg| Self::load_client_identity(cfg).ok().flatten()) {
+            Some((certs, key)) => builder.with_client_auth_cert(certs, key).ok()?,
+            None => builder.with_no_client_auth(),
+        };
 
         Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(
             config,
         )))
+    }
+
+    fn load_client_identity(
+        pki: &PkiConfig,
+    ) -> Result<
+        Option<(
+            Vec<rustls::pki_types::CertificateDer<'static>>,
+            rustls::pki_types::PrivateKeyDer<'static>,
+        )>,
+        ClientError,
+    > {
+        let (cert_path, key_path) = match (&pki.tls_cert, &pki.tls_key) {
+            (Some(cert), Some(key)) => (Self::expand_tilde(cert), Self::expand_tilde(key)),
+            _ => return Ok(None),
+        };
+
+        let cert_pem = std::fs::read(&cert_path).map_err(|e| {
+            ClientError::TlsConfig(format!(
+                "Failed to read client certificate {}: {e}",
+                cert_path.display()
+            ))
+        })?;
+        let key_pem = std::fs::read(&key_path).map_err(|e| {
+            ClientError::TlsConfig(format!(
+                "Failed to read client key {}: {e}",
+                key_path.display()
+            ))
+        })?;
+
+        let certs: Vec<_> = rustls_pemfile::certs(&mut &cert_pem[..])
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| ClientError::TlsConfig(format!("Invalid client certificate PEM: {e}")))?;
+        let key = rustls_pemfile::private_key(&mut &key_pem[..])
+            .map_err(|e| ClientError::TlsConfig(format!("Invalid client key PEM: {e}")))?
+            .ok_or_else(|| ClientError::TlsConfig("No private key found in client key file".into()))?;
+
+        Ok(Some((certs, key)))
+    }
+
+    fn expand_tilde(path: &Path) -> PathBuf {
+        let s = path.to_string_lossy();
+        if s == "~" || s.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(s.strip_prefix("~/").unwrap_or(""));
+            }
+        }
+        path.to_path_buf()
     }
 
     /// Try connecting to a single WebSocket URL with retries.
@@ -261,12 +321,13 @@ impl GatewayClient {
     async fn try_connect_url(
         url: &str,
         max_attempts: u32,
+        pki: Option<&PkiConfig>,
     ) -> Option<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     > {
-        let connector = Self::tls_connector();
+        let connector = Self::tls_connector(pki);
         for attempt in 1..=max_attempts {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -303,6 +364,7 @@ impl GatewayClient {
         ws_tx: Arc<tokio::sync::RwLock<Option<mpsc::UnboundedSender<String>>>>,
         event_tx: broadcast::Sender<GatewayEvent>,
         connected: Arc<AtomicBool>,
+        pki: Option<PkiConfig>,
     ) {
         // Build candidate URLs: primary first, then fallback(s)
         #[allow(unused_mut)]
@@ -318,7 +380,7 @@ impl GatewayClient {
         let mut ws_stream = None;
         for candidate in &candidates {
             let attempts = if candidates.len() > 1 { 3 } else { 6 };
-            if let Some(stream) = Self::try_connect_url(candidate, attempts).await {
+            if let Some(stream) = Self::try_connect_url(candidate, attempts, pki.as_ref()).await {
                 ws_stream = Some(stream);
                 break;
             }
@@ -744,6 +806,8 @@ impl GatewaySender {
 pub enum ClientError {
     #[error("WebSocket disconnected")]
     Disconnected,
+    #[error("TLS configuration error: {0}")]
+    TlsConfig(String),
 }
 
 /// Derive the HTTP base URL from a WebSocket URL.

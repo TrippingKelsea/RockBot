@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use rockbot_config::{AnimationStyle, ColorTheme, RgbaColor, TuiConfig, TuiThemeConfig};
+use rockbot_config::{AnimationStyle, ColorTheme, PkiConfig, RgbaColor, TuiConfig, TuiThemeConfig};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -329,7 +329,8 @@ impl App {
         }
 
         let ws_url = self.state.ws_url();
-        let client = rockbot_client::GatewayClient::connect(&ws_url);
+        let pki = load_pki_config_from_file(&self.state.config_path);
+        let client = rockbot_client::GatewayClient::connect_with_pki(&ws_url, pki.as_ref());
         let events_rx = client.subscribe();
 
         // Initiate Noise handshake once connected
@@ -3279,6 +3280,12 @@ impl App {
 
         // Let the spawn handle the result — we return to normal mode immediately
     }
+}
+
+fn load_pki_config_from_file(config_path: &PathBuf) -> Option<PkiConfig> {
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let config = rockbot_config::Config::from_toml(&content).ok()?;
+    Some(config.effective_pki())
 }
 
 /// Direct config file save (fallback when gateway is unavailable)

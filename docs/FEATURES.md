@@ -88,6 +88,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Distributed vault node registry | ✅ | `node_keys` table + manager APIs |
 | Distributed vault object metadata | ✅ | `vault_objects` table |
 | Per-node/provider vault grants | ✅ | Age-encrypted `vault_node_grants` / `vault_provider_grants` |
+| Gateway auto-registers local vault node | ✅ | PKI-backed local vault keypair + role registration on startup |
 | OpenRaft replication | 🚧 | Feature-gated (`replication`); log store + state machine implemented, network stubs |
 
 ### Endpoint Types

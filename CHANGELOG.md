@@ -28,6 +28,10 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   - Logical vault objects separate from grant payloads
   - Per-recipient Age-encrypted provider and node grants
   - Grant decryption helpers and async manager wrappers
+- **Gateway startup**: Automatic local vault-node bootstrap when vault and PKI
+  are available
+  - Ensures a node-local vault keypair exists
+  - Registers the local node's vault public key and configured roles in the vault
 - **Config**: `[security.noise]` transport policy scaffolding for future
   `ws-over-noise` and `stream-over-noise` enforcement modes
 - **Gateway API**: `GET /api/executors` for listing connected remote executors,

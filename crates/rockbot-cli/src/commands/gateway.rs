@@ -1,11 +1,13 @@
 //! Gateway server command implementation
 
 use anyhow::Result;
+use chrono::Utc;
 use rockbot_agent::{Agent, VaultCredentialAccessor};
 use rockbot_config::{
     config::{AgentInstance, StorageEncryptionMode, StorageKeySource},
     Config,
 };
+use rockbot_credentials::{ClusterNodeRole, RegisteredNodeKey};
 use rockbot_gateway::{convert_security_config, convert_tool_config, Gateway};
 use rockbot_llm::LlmProviderRegistry;
 use rockbot_memory::MemoryManager;
@@ -90,6 +92,9 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
 
     tokio::fs::create_dir_all(db_path.parent().unwrap()).await?;
     let pki_manager = open_pki_for_storage(&config);
+    if let (Some(vault_result), Some(pki_manager)) = (vault_result.as_ref(), pki_manager.as_ref()) {
+        bootstrap_local_vault_node(&config, pki_manager, &vault_result.manager).await;
+    }
     let session_key = storage_key_for_label(&config, pki_manager.as_ref(), "sessions");
     let session_manager =
         Arc::new(SessionManager::new_with_key(&db_path, 1000, session_key).await?);
@@ -365,6 +370,69 @@ fn default_pki_dir() -> PathBuf {
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
         .join("rockbot")
         .join("pki")
+}
+
+async fn bootstrap_local_vault_node(
+    config: &Config,
+    pki_manager: &PkiManager,
+    manager: &Arc<rockbot_credentials::CredentialManager>,
+) {
+    let node_id = local_node_id(config);
+    match pki_manager.ensure_vault_keypair(&node_id) {
+        Ok(keypair) => {
+            let record = RegisteredNodeKey {
+                node_id: node_id.clone(),
+                identity_fingerprint: None,
+                vault_public_key: keypair.public_key,
+                roles: local_node_roles(config),
+                active: true,
+                created_at: Utc::now(),
+                rotated_at: None,
+                revoked_at: None,
+            };
+            if let Err(e) = manager.register_node_key(record).await {
+                warn!("Failed to register local vault node '{}': {}", node_id, e);
+            } else {
+                info!("Registered local vault node '{}'", node_id);
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to ensure local vault keypair for '{}': {}",
+                node_id, e
+            );
+        }
+    }
+}
+
+fn local_node_id(config: &Config) -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if config.security.roles.gateway {
+                "gateway".to_string()
+            } else {
+                "node".to_string()
+            }
+        })
+}
+
+fn local_node_roles(config: &Config) -> Vec<ClusterNodeRole> {
+    let mut roles = Vec::new();
+    if config.security.roles.gateway {
+        roles.push(ClusterNodeRole::Gateway);
+    }
+    if config.security.roles.vault_provider {
+        roles.push(ClusterNodeRole::VaultProvider);
+    }
+    if config.security.roles.client {
+        roles.push(ClusterNodeRole::Client);
+    }
+    if config.security.roles.admin {
+        roles.push(ClusterNodeRole::Admin);
+    }
+    roles
 }
 
 /// Get the service name based on whether it's user or system level

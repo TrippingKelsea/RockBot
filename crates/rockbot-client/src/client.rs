@@ -64,6 +64,7 @@ pub enum GatewayEvent {
         connected: bool,
         version: Option<String>,
         uptime_secs: Option<u64>,
+        active_connections: usize,
         active_sessions: usize,
         pending_agents: usize,
     },
@@ -568,6 +569,10 @@ impl GatewayClient {
                             .and_then(|v| v.as_str())
                             .map(String::from),
                         uptime_secs: status.get("uptime_seconds").and_then(|v| v.as_u64()),
+                        active_connections: status
+                            .get("active_connections")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize,
                         active_sessions: status
                             .get("active_sessions")
                             .and_then(|v| v.as_u64())

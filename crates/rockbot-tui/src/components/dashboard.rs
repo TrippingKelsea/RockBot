@@ -1,7 +1,7 @@
 //! Dashboard component - detail panel (card bar is now in the top slot bar)
 
 use ratatui::{
-    layout::{Alignment, Constraint, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Paragraph, Row, Table, Wrap},
@@ -30,11 +30,98 @@ fn render_detail_panel(frame: &mut Frame, area: Rect, state: &AppState) {
     let active_card = state.slot_bar.active_slot.saturating_sub(1);
     match active_card {
         0 => render_gateway_detail(frame, area, state),
-        1 => render_agents_detail(frame, area, state),
-        2 => render_sessions_detail(frame, area, state),
+        1 => render_client_detail(frame, area, state),
+        2 => render_agents_detail(frame, area, state),
         3 => render_vault_detail(frame, area, state),
         _ => render_gateway_detail(frame, area, state),
     }
+}
+
+fn render_client_detail(frame: &mut Frame, area: Rect, state: &AppState) {
+    use ratatui::widgets::Sparkline;
+
+    let body = super::render_detail_header(frame, area, "WS Connection");
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Fill(1)])
+        .split(body);
+
+    if !state.ws_latency_history.is_empty() {
+        let data: Vec<u64> = state.ws_latency_history.iter().copied().collect();
+        let sparkline = Sparkline::default()
+            .data(&data)
+            .style(Style::default().fg(if state.ws_connected {
+                Color::Green
+            } else {
+                Color::Yellow
+            }));
+        let spark_block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Span::styled(" RTT ms ", Style::default().fg(Color::DarkGray)));
+        let spark_inner = spark_block.inner(chunks[0]);
+        frame.render_widget(spark_block, chunks[0]);
+        frame.render_widget(sparkline, spark_inner);
+    }
+
+    let mut content = vec![
+        Line::from(vec![
+            Span::styled("WS: ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                if state.ws_connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                },
+                Style::default().fg(if state.ws_connected {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                }),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("RTT: ", Style::default().fg(Color::Cyan)),
+            Span::raw(
+                state
+                    .ws_last_rtt_ms
+                    .map(|ms| format!("{ms} ms"))
+                    .unwrap_or_else(|| "--".to_string()),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Server Conns: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{}", state.gateway.active_connections)),
+        ]),
+        Line::from(vec![
+            Span::styled("Server Sessions: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{}", state.gateway.active_sessions)),
+        ]),
+        Line::from(vec![
+            Span::styled("Reconnects: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{}", state.ws_reconnect_count)),
+            Span::styled("  Disconnects: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{}", state.ws_disconnect_count)),
+        ]),
+    ];
+
+    if let Some(reason) = &state.ws_last_disconnect_reason {
+        content.push(Line::from(""));
+        content.push(Line::from(vec![
+            Span::styled("Last Disconnect: ", Style::default().fg(Color::Cyan)),
+            Span::styled(reason.as_str(), Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
+    frame.render_widget(
+        paragraph,
+        if state.ws_latency_history.is_empty() {
+            body
+        } else {
+            chunks[1]
+        },
+    );
 }
 
 fn render_gateway_detail(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -186,81 +273,6 @@ fn render_agents_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     let table = Table::new(rows, widths).header(header);
 
     frame.render_widget(table, body);
-}
-
-fn render_sessions_detail(frame: &mut Frame, area: Rect, state: &AppState) {
-    let body = super::render_detail_header(frame, area, "Sessions Overview");
-
-    if state.sessions_loading {
-        render_spinner(frame, body, "Loading sessions...", state.tick_count);
-        return;
-    }
-
-    if state.sessions.is_empty() {
-        let content = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "No active sessions",
-                Style::default().fg(Color::DarkGray),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Go to Sessions tab (4) to create one",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ])
-        .alignment(Alignment::Center);
-        frame.render_widget(content, body);
-        return;
-    }
-
-    let mut content = vec![
-        Line::from(vec![
-            Span::styled("Active: ", Style::default().fg(Color::Cyan)),
-            Span::raw(format!("{}", state.sessions.len())),
-        ]),
-        Line::from(vec![
-            Span::styled("Total Messages: ", Style::default().fg(Color::Cyan)),
-            Span::raw(format!(
-                "{}",
-                state
-                    .sessions
-                    .iter()
-                    .map(|s| s.message_count)
-                    .sum::<usize>()
-            )),
-        ]),
-        Line::from(""),
-    ];
-
-    for session in state.sessions.iter().take(10) {
-        let model_hint = session
-            .model
-            .as_ref()
-            .and_then(|m| m.split('/').last())
-            .unwrap_or("-");
-        content.push(Line::from(vec![
-            Span::styled(&session.agent_id, Style::default().fg(Color::White)),
-            Span::styled(
-                format!("  {model_hint}"),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                format!("  ({} msgs)", session.message_count),
-                Style::default().fg(Color::Cyan),
-            ),
-        ]));
-    }
-
-    if state.sessions.len() > 10 {
-        content.push(Line::from(Span::styled(
-            format!("  ... and {} more", state.sessions.len() - 10),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    let paragraph = Paragraph::new(content);
-    frame.render_widget(paragraph, body);
 }
 
 fn render_vault_detail(frame: &mut Frame, area: Rect, state: &AppState) {

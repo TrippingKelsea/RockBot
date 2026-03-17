@@ -116,15 +116,39 @@ fn render_gateway_network(frame: &mut Frame, area: Rect) {
 
 fn render_client_status(frame: &mut Frame, area: Rect, state: &AppState) {
     let rows = card_rows(area);
+    let label_text = match state.ws_last_rtt_ms {
+        Some(rtt_ms) => format!("WS {rtt_ms}ms"),
+        None => "WS Link".to_string(),
+    };
     let label = Paragraph::new(Span::styled(
-        "Client",
+        label_text,
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM),
     ));
     frame.render_widget(label, rows[0]);
 
-    let (text, color) = if state.gateway.connected {
+    if !state.ws_latency_history.is_empty() {
+        let data: Vec<u64> = state.ws_latency_history.iter().copied().collect();
+        let color = if state.ws_connected {
+            Color::Green
+        } else {
+            Color::Yellow
+        };
+        let sparkline = Sparkline::default()
+            .data(&data)
+            .style(Style::default().fg(color));
+        let spark_area = Rect {
+            x: rows[1].x,
+            y: rows[1].y,
+            width: rows[1].width,
+            height: 2.min(area.height.saturating_sub(1)),
+        };
+        frame.render_widget(sparkline, spark_area);
+        return;
+    }
+
+    let (text, color) = if state.ws_connected {
         ("● Connected", Color::Green)
     } else {
         ("○ Disconnected", Color::Yellow)
@@ -132,7 +156,10 @@ fn render_client_status(frame: &mut Frame, area: Rect, state: &AppState) {
     let value = Paragraph::new(Span::styled(text, Style::default().fg(color)));
     frame.render_widget(value, rows[1]);
 
-    let detail = Paragraph::new(Span::styled("WS", Style::default().fg(Color::DarkGray)));
+    let detail = Paragraph::new(Span::styled(
+        format!("srv {}", state.gateway.active_connections),
+        Style::default().fg(Color::DarkGray),
+    ));
     frame.render_widget(detail, rows[2]);
 }
 

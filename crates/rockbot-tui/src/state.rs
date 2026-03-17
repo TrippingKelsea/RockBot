@@ -43,6 +43,11 @@ pub enum Message {
     // Gateway status
     GatewayStatus(GatewayStatus),
     GatewayStatusError(String),
+    WsConnectionChanged {
+        connected: bool,
+        reason: Option<String>,
+    },
+    WsLatencySample(u64),
 
     // Agents
     AgentsLoaded(Vec<AgentInfo>),
@@ -417,7 +422,7 @@ fn build_dashboard_slots() -> Vec<CardSlot> {
             badge: None,
             views: vec![
                 SlotView {
-                    label: "Status".to_string(),
+                    label: "Graph".to_string(),
                     widget: CardWidgetId::ClientStatus,
                 },
                 SlotView {
@@ -532,6 +537,7 @@ pub struct GatewayStatus {
     pub connected: bool,
     pub version: Option<String>,
     pub uptime_secs: Option<u64>,
+    pub active_connections: usize,
     pub active_sessions: usize,
     pub pending_agents: usize,
 }
@@ -952,6 +958,12 @@ pub struct AppState {
     // History buffers for sparkline widgets
     pub gateway_load_history: std::collections::VecDeque<u64>,
     pub client_msg_history: std::collections::VecDeque<u64>,
+    pub ws_latency_history: std::collections::VecDeque<u64>,
+    pub ws_connected: bool,
+    pub ws_last_rtt_ms: Option<u64>,
+    pub ws_disconnect_count: u64,
+    pub ws_reconnect_count: u64,
+    pub ws_last_disconnect_reason: Option<String>,
     // Settings card selection (General=0, Paths=1, About=2, Theme=3)
     pub selected_settings_card: usize,
     // Theme section field (0=color_theme, 1=animation_style)
@@ -2807,6 +2819,12 @@ impl AppState {
             selected_cron_card: 0,
             gateway_load_history: std::collections::VecDeque::new(),
             client_msg_history: std::collections::VecDeque::new(),
+            ws_latency_history: std::collections::VecDeque::new(),
+            ws_connected: false,
+            ws_last_rtt_ms: None,
+            ws_disconnect_count: 0,
+            ws_reconnect_count: 0,
+            ws_last_disconnect_reason: None,
             selected_settings_card: 0,
             selected_settings_field: 0,
             credential_schemas: Vec::new(),
@@ -2868,6 +2886,28 @@ impl AppState {
                 self.gateway_loading = false;
                 self.push_alert(AlertSeverity::Warning, "gateway", err.clone());
                 self.gateway_error = Some(err);
+            }
+            Message::WsConnectionChanged { connected, reason } => {
+                if connected {
+                    if !self.ws_connected && self.ws_disconnect_count > 0 {
+                        self.ws_reconnect_count = self.ws_reconnect_count.saturating_add(1);
+                    }
+                    self.ws_connected = true;
+                    self.ws_last_disconnect_reason = None;
+                } else {
+                    if self.ws_connected {
+                        self.ws_disconnect_count = self.ws_disconnect_count.saturating_add(1);
+                    }
+                    self.ws_connected = false;
+                    self.ws_last_disconnect_reason = reason;
+                }
+            }
+            Message::WsLatencySample(rtt_ms) => {
+                self.ws_last_rtt_ms = Some(rtt_ms);
+                self.ws_latency_history.push_back(rtt_ms);
+                while self.ws_latency_history.len() > 60 {
+                    self.ws_latency_history.pop_front();
+                }
             }
 
             Message::AgentsLoaded(agents) => {
@@ -3114,6 +3154,22 @@ impl AppState {
 
             Message::Tick => {
                 self.tick_count = self.tick_count.wrapping_add(1);
+
+                self.gateway_load_history
+                    .push_back(self.gateway.active_connections as u64);
+                while self.gateway_load_history.len() > 60 {
+                    self.gateway_load_history.pop_front();
+                }
+
+                let total_messages = self
+                    .sessions
+                    .iter()
+                    .map(|s| s.message_count as u64)
+                    .sum::<u64>();
+                self.client_msg_history.push_back(total_messages);
+                while self.client_msg_history.len() > 60 {
+                    self.client_msg_history.pop_front();
+                }
             }
 
             Message::Quit => {

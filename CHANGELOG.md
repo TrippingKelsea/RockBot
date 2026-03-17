@@ -10,13 +10,37 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 
 ## [Unreleased]
 
+### Added
+- **TUI**: WebSocket connection monitoring — RTT latency sampling, reconnect/disconnect counters,
+  live sparkline graph on Client dashboard card and detail panel
+- **TUI**: `active_connections` field parsed from gateway health status and displayed in Client detail
+- **TUI**: Bracketed paste support — pasted text inserted at cursor in chat input
+- **TUI**: Focus change events enabled (terminal focus gained/lost)
+- **TUI**: `WsConnectionChanged` and `WsLatencySample` messages for real-time WS state tracking
+- **TUI**: Dashboard Client card replaced Sessions overview with WS Connection detail panel
+  showing RTT, server connections, server sessions, reconnect/disconnect counts
+- **TUI**: Gateway load sparkline now driven by `active_connections` instead of static data
+- **TUI**: Settings overlay tab bar (General | Paths | About | Theme) with Left/Right/Tab navigation
+- **TUI**: Theme picker in Settings — change color theme and animation style live with `[`/`]` keys
+
 ### Fixed
 - **TUI**: Chat input box now always visible (was missing on Dashboard/Butler and agent welcome screens)
 - **TUI**: Bottom status bar no longer shows persistent help text — only displays errors/success messages
+- **TUI**: Terminal no longer left in broken state on unclean exit — `TerminalGuard` RAII restores
+  raw mode, alternate screen, keyboard enhancement, bracketed paste, and focus change on drop
+- **TUI**: Shift+Enter / Ctrl+J newline detection now goes through `normalize_for_text_input()`
+  which checks all known representations (KeyCode::Enter, Char('\r'), Char('\n') with SHIFT)
+- **TUI**: Modified keys (Alt+letter, Ctrl+letter) no longer accidentally insert text in chat input —
+  text acceptance guarded to empty or Shift-only modifiers
 
-### Added
-- **TUI**: Settings overlay tab bar (General | Paths | About | Theme) with Left/Right/Tab navigation
-- **TUI**: Theme picker in Settings — change color theme and animation style live with `[`/`]` keys
+### Changed
+- **TUI**: Input architecture rewritten — replaced busy-loop `poll/read` inside `tokio::select!`
+  with crossterm's async `EventStream` in a dedicated task, eliminating spurious wakeups
+- **TUI**: Input normalization layer (`InputAction` enum + `normalize_for_text_input()`) is now
+  the single source of truth for text-input key semantics across all chat/editor contexts
+- **TUI**: Tick handling moved through `Message::Tick` so sparkline history buffers update in state
+- **TUI**: WS health check now sends a `ping` before `health_check` to measure round-trip time
+- **Client**: `GatewayEvent::HealthStatus` now includes `active_connections` field
 
 ### Changed
 - **Chat-first TUI architecture**: Chat is always visible; other views are overlays

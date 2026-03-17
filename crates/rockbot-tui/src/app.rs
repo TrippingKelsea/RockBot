@@ -108,6 +108,8 @@ pub struct App {
     gateway_client: Option<rockbot_client::GatewayClient>,
     /// Receiver for gateway events
     gateway_events_rx: Option<tokio::sync::broadcast::Receiver<rockbot_client::GatewayEvent>>,
+    /// Timestamp of the most recent WS ping, used for RTT sampling.
+    last_ws_ping_sent_at: Option<Instant>,
     /// Local tool registry for remote tool execution (TUI executes tools on behalf of gateway)
     #[cfg(feature = "remote-exec")]
     #[allow(dead_code)]
@@ -156,6 +158,7 @@ impl App {
             vault: None,
             gateway_client: None,
             gateway_events_rx: None,
+            last_ws_ping_sent_at: None,
             #[cfg(feature = "remote-exec")]
             local_tool_registry: None,
             keybindings: super::keybindings::KeybindingConfig::default(),
@@ -4318,8 +4321,8 @@ impl App {
                 "Gateway Load",
             ),
             "Client" => (
-                self.state.client_msg_history.iter().copied().collect(),
-                "Messages/min",
+                self.state.ws_latency_history.iter().copied().collect(),
+                "WS RTT (ms)",
             ),
             _ => (Vec::new(), ""),
         };
@@ -4384,13 +4387,40 @@ impl App {
             }
             "Client" => {
                 lines.push(Line::from(vec![
-                    Span::styled("Active Sessions: ", Style::default().fg(Color::Cyan)),
-                    Span::raw(format!("{}", self.state.sessions.len())),
+                    Span::styled("WS: ", Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        if self.state.ws_connected {
+                            "Connected"
+                        } else {
+                            "Disconnected"
+                        },
+                        Style::default().fg(if self.state.ws_connected {
+                            Color::Green
+                        } else {
+                            Color::Yellow
+                        }),
+                    ),
                 ]));
-                let total_msgs: usize = self.state.sessions.iter().map(|s| s.message_count).sum();
                 lines.push(Line::from(vec![
-                    Span::styled("Total Messages: ", Style::default().fg(Color::Cyan)),
-                    Span::raw(format!("{total_msgs}")),
+                    Span::styled("RTT: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(
+                        self.state
+                            .ws_last_rtt_ms
+                            .map(|ms| format!("{ms} ms"))
+                            .unwrap_or_else(|| "--".to_string()),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("Server Conns: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(format!("{}", self.state.gateway.active_connections)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("Server Sessions: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(format!("{}", self.state.gateway.active_sessions)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("Reconnects: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(format!("{}", self.state.ws_reconnect_count)),
                 ]));
             }
             "Agents" => {
@@ -4950,7 +4980,7 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: Str
 
             // Tick for animations
             _ = tick_interval.tick() => {
-                app.state.tick_count = app.state.tick_count.wrapping_add(1);
+                app.handle_message(Message::Tick);
             }
 
             // Gateway events from WebSocket
@@ -4962,7 +4992,14 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: Str
                 }
             } => {
                 if let Some(event) = event {
-                    handle_gateway_event(&app.state.tx, app.gateway_client.as_ref(), &event).await;
+                    let ws_rtt_ms = if matches!(event, rockbot_client::GatewayEvent::Pong) {
+                        app.last_ws_ping_sent_at
+                            .take()
+                            .map(|started| started.elapsed().as_millis() as u64)
+                    } else {
+                        None
+                    };
+                    handle_gateway_event(&app.state.tx, app.gateway_client.as_ref(), &event, ws_rtt_ms).await;
                 }
             }
 
@@ -4970,12 +5007,15 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: Str
             _ = refresh_interval.tick() => {
                 if app.ws_connected() {
                     if let Some(ref client) = app.gateway_client {
+                        app.last_ws_ping_sent_at = Some(Instant::now());
                         let sender = client.sender();
                         tokio::spawn(async move {
+                            let _ = sender.send(r#"{"type":"ping"}"#.to_string()).await;
                             let _ = sender.send(r#"{"type":"health_check"}"#.to_string()).await;
                         });
                     }
                 } else {
+                    app.last_ws_ping_sent_at = None;
                     if !app.state.gateway_loading {
                         app.spawn_gateway_check();
                     }
@@ -5309,8 +5349,9 @@ async fn send_tool_response(
 /// Map a GatewayEvent from rockbot-client into TUI Messages.
 async fn handle_gateway_event(
     tx: &mpsc::UnboundedSender<Message>,
-    client: Option<&rockbot_client::GatewayClient>,
+    _client: Option<&rockbot_client::GatewayClient>,
     event: &rockbot_client::GatewayEvent,
+    ws_rtt_ms: Option<u64>,
 ) {
     use rockbot_client::GatewayEvent;
     match event {
@@ -5411,10 +5452,15 @@ async fn handle_gateway_event(
                 iteration: *iteration,
             });
         }
-        GatewayEvent::Pong => {}
+        GatewayEvent::Pong => {
+            if let Some(rtt_ms) = ws_rtt_ms {
+                let _ = tx.send(Message::WsLatencySample(rtt_ms));
+            }
+        }
         GatewayEvent::HealthStatus {
             version,
             uptime_secs,
+            active_connections,
             active_sessions,
             pending_agents,
             ..
@@ -5423,6 +5469,7 @@ async fn handle_gateway_event(
                 connected: true,
                 version: version.clone(),
                 uptime_secs: *uptime_secs,
+                active_connections: *active_connections,
                 active_sessions: *active_sessions,
                 pending_agents: *pending_agents,
             };
@@ -5430,8 +5477,16 @@ async fn handle_gateway_event(
         }
         GatewayEvent::Connected => {
             tracing::info!("GatewayClient connected");
+            let _ = tx.send(Message::WsConnectionChanged {
+                connected: true,
+                reason: None,
+            });
         }
         GatewayEvent::Disconnected { reason } => {
+            let _ = tx.send(Message::WsConnectionChanged {
+                connected: false,
+                reason: Some(reason.clone()),
+            });
             let _ = tx.send(Message::SetStatus(
                 format!("WebSocket disconnected: {reason}"),
                 false,
@@ -5443,7 +5498,7 @@ async fn handle_gateway_event(
         #[cfg(feature = "remote-exec")]
         GatewayEvent::NoiseHandshakeStep { step, payload } => {
             if *step == 2 {
-                if let Some(c) = client {
+                if let Some(c) = _client {
                     let sender = c.sender();
                     handle_noise_step2(&sender, payload).await;
                 }
@@ -5466,7 +5521,7 @@ async fn handle_gateway_event(
             session_id,
             workspace_path,
         } => {
-            if let Some(c) = client {
+            if let Some(c) = _client {
                 let sender = c.sender();
                 let request_id = request_id.clone();
                 let tool_name = tool_name.clone();
@@ -5538,6 +5593,10 @@ async fn check_gateway_status(gateway_url: &str) -> Result<GatewayStatus> {
                         .and_then(|v| v.as_str())
                         .map(String::from),
                     uptime_secs: json.get("uptime_secs").and_then(serde_json::Value::as_u64),
+                    active_connections: json
+                        .get("active_connections")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0) as usize,
                     active_sessions: json
                         .get("active_sessions")
                         .and_then(serde_json::Value::as_u64)
@@ -5553,6 +5612,7 @@ async fn check_gateway_status(gateway_url: &str) -> Result<GatewayStatus> {
                 connected: true,
                 version: Some("unknown".to_string()),
                 uptime_secs: None,
+                active_connections: 0,
                 active_sessions: 0,
                 pending_agents: 0,
             })
@@ -5563,6 +5623,7 @@ async fn check_gateway_status(gateway_url: &str) -> Result<GatewayStatus> {
                 connected: false,
                 version: None,
                 uptime_secs: None,
+                active_connections: 0,
                 active_sessions: 0,
                 pending_agents: 0,
             })

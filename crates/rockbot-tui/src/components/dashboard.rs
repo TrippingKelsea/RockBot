@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use super::render_spinner;
+use crate::effects::palette;
 use crate::effects::EffectState;
 use crate::state::{AgentStatus, AppState};
 
@@ -52,16 +53,16 @@ fn render_client_detail(frame: &mut Frame, area: Rect, state: &AppState) {
             Sparkline::default()
                 .data(&data)
                 .style(Style::default().fg(if state.ws_connected {
-                    Color::Green
+                    palette::graph_primary(&state.tui_config)
                 } else {
-                    Color::Yellow
+                    palette::graph_secondary(&state.tui_config)
                 }));
         let spark_block = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(Style::default().fg(palette::text_secondary(&state.tui_config)))
             .title(Span::styled(
                 " RTT ms ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(palette::text_secondary(&state.tui_config)),
             ));
         let spark_inner = spark_block.inner(chunks[0]);
         frame.render_widget(spark_block, chunks[0]);
@@ -78,9 +79,9 @@ fn render_client_detail(frame: &mut Frame, area: Rect, state: &AppState) {
                     "Disconnected"
                 },
                 Style::default().fg(if state.ws_connected {
-                    Color::Green
+                    palette::graph_primary(&state.tui_config)
                 } else {
-                    Color::Yellow
+                    palette::graph_secondary(&state.tui_config)
                 }),
             ),
         ]),
@@ -113,7 +114,10 @@ fn render_client_detail(frame: &mut Frame, area: Rect, state: &AppState) {
         content.push(Line::from(""));
         content.push(Line::from(vec![
             Span::styled("Last Disconnect: ", Style::default().fg(Color::Cyan)),
-            Span::styled(reason.as_str(), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                reason.as_str(),
+                Style::default().fg(palette::text_secondary(&state.tui_config)),
+            ),
         ]));
     }
 

@@ -8,9 +8,10 @@
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
-    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseEvent, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -35,6 +36,8 @@ pub enum AppEvent {
     Key(KeyEvent),
     /// Bracketed paste
     Paste(String),
+    /// Mouse event
+    Mouse(MouseEvent),
     /// Terminal resized
     Resize(u16, u16),
     /// Terminal gained focus
@@ -78,11 +81,10 @@ pub fn spawn_terminal_input(tx: mpsc::UnboundedSender<AppEvent>) {
                     AppEvent::Key(key)
                 }
                 CrosstermEvent::Paste(text) => AppEvent::Paste(text),
+                CrosstermEvent::Mouse(mouse) => AppEvent::Mouse(mouse),
                 CrosstermEvent::Resize(w, h) => AppEvent::Resize(w, h),
                 CrosstermEvent::FocusGained => AppEvent::FocusGained,
                 CrosstermEvent::FocusLost => AppEvent::FocusLost,
-                // Mouse events not handled yet
-                _ => continue,
             };
 
             if tx.send(app_event).is_err() {
@@ -114,6 +116,7 @@ impl TerminalGuard {
             EnterAlternateScreen,
             EnableBracketedPaste,
             EnableFocusChange,
+            EnableMouseCapture,
         )?;
 
         // Try to enable Kitty keyboard protocol for Shift+Enter detection.
@@ -152,6 +155,7 @@ impl Drop for TerminalGuard {
             stdout,
             DisableBracketedPaste,
             DisableFocusChange,
+            DisableMouseCapture,
             LeaveAlternateScreen,
         );
     }

@@ -102,7 +102,7 @@ Manage your secure credential vault. Has four tabs:
 
 ### Settings (Alt+S)
 
-Application configuration with four tab sections: General, Paths, About, Theme.
+Application configuration with five tab sections: General, Paths, About, Theme, Fonts.
 
 | Key | Action |
 |-----|--------|
@@ -117,9 +117,19 @@ custom token editing and persisted font preferences available in config:
 
 | Key | Action |
 |-----|--------|
-| `Up/Down` | Select field (current lightweight controls) |
-| `]` | Next value |
-| `[` | Previous value |
+| `Up/Down` | Select field |
+| `]` | Next value / increment |
+| `[` | Previous value / decrement |
+| Mouse | Select presets, tokens, drag the color wheel/sliders |
+
+**Typography section** — stores font preferences for the Web UI and other richer clients:
+
+| Key | Action |
+|-----|--------|
+| `Up/Down` | Select role / family / size field |
+| `]` | Next role/family or larger size |
+| `[` | Previous role/family or smaller size |
+| Mouse | Select roles, font families, and size buttons |
 
 ### Models (Alt+M)
 
@@ -184,7 +194,9 @@ When accessing credentials with a locked vault:
 
 ## Color Themes
 
-Color themes and animation styles can be changed live in the **Settings overlay** (Alt+S) under the **Theme** tab. Richer token-level theme configuration and stored font preferences live under `[tui.theme]` and `[tui.fonts]` in `rockbot.toml`.
+Color themes, animation styles, token-level custom colors, and stored font
+preferences can be changed live in the **Settings overlay** (Alt+S). Changes
+autosave to `[tui]`, `[tui.theme]`, and `[tui.fonts]` in `rockbot.toml`.
 
 You can also configure defaults in `rockbot.toml`:
 
@@ -202,6 +214,10 @@ tool_text_color = { r = 255, g = 214, b = 153, a = 255 }
 ai_font_family = "terminal-default"
 ai_font_size = 14
 ```
+
+The terminal TUI uses the text-color tokens immediately, including
+`ai_text_color`, `thinking_text_color`, and `tool_text_color`. Font families and
+sizes are persisted but not enforced by the terminal emulator.
 
 ## Tips
 

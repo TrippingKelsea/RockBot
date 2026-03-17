@@ -3,7 +3,7 @@
 //! Uses tokio::select! for responsive concurrent event + background task handling.
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
+use rockbot_core::{AnimationStyle, ColorTheme};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -26,8 +27,8 @@ use crate::effects::EffectState;
 use crate::state::{
     AddCredentialState, AppState, ChatMessage, ChatTarget, ConfirmAction, ContextFileInfo,
     ContextMenuAction, ContextMenuState, CreateSessionState, EditAgentState, EditCredentialState,
-    EditProviderState, EndpointInfo, InputMode, MenuItem, Message, PasswordAction, SessionMode,
-    ToolCallInfo, UnlockMethod, ViewContextFilesState,
+    EditProviderState, EndpointInfo, FontRole, InputMode, MenuItem, Message, PasswordAction,
+    SessionMode, ThemeToken, ToolCallInfo, UnlockMethod, ViewContextFilesState,
 };
 
 /// Check if Claude Code OAuth credentials are available
@@ -201,6 +202,7 @@ impl App {
                             .set_animations_enabled(self.state.tui_config.animations);
                         self.effect_state.animation_style =
                             self.state.tui_config.animation_style.clone();
+                        self.sync_settings_picker_from_theme();
                     }
                 }
             }
@@ -217,6 +219,116 @@ impl App {
         self.spawn_ws_connect();
         self.spawn_keybinding_watch();
         Ok(())
+    }
+
+    fn current_theme_token(&self) -> ThemeToken {
+        ThemeToken::all()[self
+            .state
+            .selected_theme_token
+            .min(ThemeToken::all().len() - 1)]
+    }
+
+    fn current_font_role(&self) -> FontRole {
+        FontRole::all()[self.state.selected_font_role.min(FontRole::all().len() - 1)]
+    }
+
+    fn sync_settings_picker_from_theme(&mut self) {
+        let theme = self.state.tui_config.resolved_theme();
+        let color = self.current_theme_token().value(&theme);
+        let (hue, saturation, value) = super::components::settings::rgba_to_hsv(color);
+        self.state.settings_color_hue = hue;
+        self.state.settings_color_saturation = saturation;
+        self.state.settings_color_value = value;
+        self.state.settings_color_alpha = color.a;
+    }
+
+    fn ensure_custom_theme(&mut self) -> rockbot_core::TuiThemeConfig {
+        self.state
+            .tui_config
+            .theme
+            .clone()
+            .unwrap_or_else(|| self.state.tui_config.resolved_theme())
+    }
+
+    fn save_tui_preferences(&mut self) {
+        match save_tui_preferences_to_config(&self.state.config_path, &self.state.tui_config) {
+            Ok(()) => {
+                self.state.settings_save_feedback =
+                    Some(("Saved to rockbot.toml".to_string(), false));
+            }
+            Err(err) => {
+                tracing::warn!("Failed to save TUI preferences: {err}");
+                self.state.settings_save_feedback = Some((format!("Save failed: {err}"), true));
+            }
+        }
+    }
+
+    fn apply_selected_theme_color(&mut self) {
+        let mut theme = self.ensure_custom_theme();
+        let color = super::components::settings::hsv_to_rgba(
+            self.state.settings_color_hue,
+            self.state.settings_color_saturation,
+            self.state.settings_color_value,
+            self.state.settings_color_alpha,
+        );
+        self.current_theme_token().set_value(&mut theme, color);
+        self.state.tui_config.theme = Some(theme);
+        self.save_tui_preferences();
+    }
+
+    fn cycle_theme_token(&mut self, delta: isize) {
+        let len = ThemeToken::all().len() as isize;
+        let current = self.state.selected_theme_token as isize;
+        self.state.selected_theme_token = (current + delta).rem_euclid(len) as usize;
+        self.sync_settings_picker_from_theme();
+    }
+
+    fn adjust_theme_component(&mut self, delta: f32) {
+        match self.state.selected_settings_field {
+            3 => {
+                self.state.settings_color_hue =
+                    (self.state.settings_color_hue + delta).rem_euclid(1.0);
+            }
+            4 => {
+                self.state.settings_color_saturation =
+                    (self.state.settings_color_saturation + delta).clamp(0.0, 1.0);
+            }
+            5 => {
+                self.state.settings_color_value =
+                    (self.state.settings_color_value + delta).clamp(0.0, 1.0);
+            }
+            6 => {
+                let alpha = (f32::from(self.state.settings_color_alpha) + (delta * 255.0))
+                    .clamp(0.0, 255.0);
+                self.state.settings_color_alpha = alpha.round() as u8;
+            }
+            _ => return,
+        }
+        self.apply_selected_theme_color();
+    }
+
+    fn cycle_font_family(&mut self, delta: isize) {
+        let options = super::components::settings::FONT_FAMILY_OPTIONS;
+        let role = self.current_font_role();
+        let current = role.family(&self.state.tui_config.fonts);
+        let current_idx = options
+            .iter()
+            .position(|item| *item == current)
+            .unwrap_or(0) as isize;
+        let next_idx = (current_idx + delta).rem_euclid(options.len() as isize) as usize;
+        role.set_family(
+            &mut self.state.tui_config.fonts,
+            options[next_idx].to_string(),
+        );
+        self.save_tui_preferences();
+    }
+
+    fn adjust_font_size(&mut self, delta: i16) {
+        let role = self.current_font_role();
+        let size = i32::from(role.size(&self.state.tui_config.fonts));
+        let next = (size + i32::from(delta)).clamp(8, 48) as u16;
+        role.set_size(&mut self.state.tui_config.fonts, next);
+        self.save_tui_preferences();
     }
 
     /// Connect to the gateway via WebSocket using GatewayClient.
@@ -927,6 +1039,7 @@ impl App {
                 self.state.input_mode = InputMode::VaultOverlay;
             }
             OpenSettings => {
+                self.sync_settings_picker_from_theme();
                 self.state.input_mode = InputMode::SettingsOverlay;
             }
             OpenModels => {
@@ -1084,41 +1197,274 @@ impl App {
                     self.state.selected_settings_card.saturating_sub(1);
             }
             KeyCode::Right | KeyCode::Tab => {
-                if self.state.selected_settings_card < 3 {
+                if self.state.selected_settings_card < 4 {
                     self.state.selected_settings_card += 1;
                 }
             }
-            // Theme section: Up/Down to switch field, [/] to cycle values
             KeyCode::Up | KeyCode::Char('k') if self.state.selected_settings_card == 3 => {
                 self.state.selected_settings_field =
                     self.state.selected_settings_field.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') if self.state.selected_settings_card == 3 => {
-                if self.state.selected_settings_field < 1 {
+                if self.state.selected_settings_field < 6 {
                     self.state.selected_settings_field += 1;
                 }
             }
+            KeyCode::Up | KeyCode::Char('k') if self.state.selected_settings_card == 4 => {
+                self.state.selected_font_field = self.state.selected_font_field.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.state.selected_settings_card == 4 => {
+                if self.state.selected_font_field < 2 {
+                    self.state.selected_font_field += 1;
+                }
+            }
             KeyCode::Char(']') if self.state.selected_settings_card == 3 => {
-                if self.state.selected_settings_field == 0 {
-                    self.state.tui_config.color_theme = self.state.tui_config.color_theme.next();
-                } else {
-                    let next = self.state.tui_config.animation_style.next();
-                    self.state.tui_config.animation_style = next.clone();
-                    self.effect_state.animation_style = next;
+                match self.state.selected_settings_field {
+                    0 => {
+                        self.state.tui_config.color_theme =
+                            self.state.tui_config.color_theme.next();
+                        self.state.tui_config.theme = Some(self.state.tui_config.resolved_theme());
+                        self.sync_settings_picker_from_theme();
+                        self.save_tui_preferences();
+                    }
+                    1 => {
+                        let next = self.state.tui_config.animation_style.next();
+                        self.state.tui_config.animation_style = next.clone();
+                        self.effect_state.animation_style = next;
+                        self.save_tui_preferences();
+                    }
+                    2 => self.cycle_theme_token(1),
+                    3..=6 => self.adjust_theme_component(0.02),
+                    _ => {}
                 }
             }
             KeyCode::Char('[') if self.state.selected_settings_card == 3 => {
-                if self.state.selected_settings_field == 0 {
-                    self.state.tui_config.color_theme = self.state.tui_config.color_theme.prev();
-                } else {
-                    let prev = self.state.tui_config.animation_style.prev();
-                    self.state.tui_config.animation_style = prev.clone();
-                    self.effect_state.animation_style = prev;
+                match self.state.selected_settings_field {
+                    0 => {
+                        self.state.tui_config.color_theme =
+                            self.state.tui_config.color_theme.prev();
+                        self.state.tui_config.theme = Some(self.state.tui_config.resolved_theme());
+                        self.sync_settings_picker_from_theme();
+                        self.save_tui_preferences();
+                    }
+                    1 => {
+                        let prev = self.state.tui_config.animation_style.prev();
+                        self.state.tui_config.animation_style = prev.clone();
+                        self.effect_state.animation_style = prev;
+                        self.save_tui_preferences();
+                    }
+                    2 => self.cycle_theme_token(-1),
+                    3..=6 => self.adjust_theme_component(-0.02),
+                    _ => {}
+                }
+            }
+            KeyCode::Char(']') if self.state.selected_settings_card == 4 => {
+                match self.state.selected_font_field {
+                    0 => {
+                        self.state.selected_font_role =
+                            (self.state.selected_font_role + 1) % FontRole::all().len();
+                    }
+                    1 => self.cycle_font_family(1),
+                    2 => self.adjust_font_size(1),
+                    _ => {}
+                }
+            }
+            KeyCode::Char('[') if self.state.selected_settings_card == 4 => {
+                match self.state.selected_font_field {
+                    0 => {
+                        self.state.selected_font_role = self
+                            .state
+                            .selected_font_role
+                            .checked_sub(1)
+                            .unwrap_or(FontRole::all().len() - 1);
+                    }
+                    1 => self.cycle_font_family(-1),
+                    2 => self.adjust_font_size(-1),
+                    _ => {}
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent, full_area: Rect) -> Result<()> {
+        if matches!(self.state.input_mode, InputMode::SettingsOverlay) {
+            self.handle_settings_overlay_mouse(mouse, full_area);
+        }
+        Ok(())
+    }
+
+    fn handle_settings_overlay_mouse(&mut self, mouse: MouseEvent, full_area: Rect) {
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::Down(_) | MouseEventKind::Drag(_)
+        ) {
+            return;
+        }
+
+        let overlay = super::components::centered_rect(80, 85, full_area);
+        if mouse.column < overlay.x
+            || mouse.column >= overlay.x + overlay.width
+            || mouse.row < overlay.y
+            || mouse.row >= overlay.y + overlay.height
+        {
+            return;
+        }
+
+        let inner = Rect {
+            x: overlay.x + 1,
+            y: overlay.y + 1,
+            width: overlay.width.saturating_sub(2),
+            height: overlay.height.saturating_sub(2),
+        };
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Fill(1)])
+            .split(inner);
+
+        let tab_cells = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Ratio(
+                    1,
+                    super::components::settings::SETTINGS_SECTION_LABELS.len() as u32
+                );
+                super::components::settings::SETTINGS_SECTION_LABELS
+                    .len()
+            ])
+            .split(chunks[0]);
+        for (idx, rect) in tab_cells.iter().enumerate() {
+            if contains_point(*rect, mouse.column, mouse.row) {
+                self.state.selected_settings_card = idx;
+                if idx == 3 {
+                    self.sync_settings_picker_from_theme();
+                }
+                return;
+            }
+        }
+
+        match self.state.selected_settings_card {
+            3 => self.handle_theme_mouse(mouse, chunks[1]),
+            4 => self.handle_typography_mouse(mouse, chunks[1]),
+            _ => {}
+        }
+    }
+
+    fn handle_theme_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+        let layout = super::components::settings::theme_editor_layout(area);
+        let control_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(3)])
+            .split(layout.controls);
+
+        for (idx, rect) in super::components::settings::preset_cells(control_rows[0])
+            .into_iter()
+            .enumerate()
+        {
+            if contains_point(rect, mouse.column, mouse.row) {
+                self.state.selected_settings_field = 0;
+                self.state.tui_config.color_theme = ColorTheme::all()[idx].clone();
+                self.state.tui_config.theme = Some(self.state.tui_config.resolved_theme());
+                self.sync_settings_picker_from_theme();
+                self.save_tui_preferences();
+                return;
+            }
+        }
+
+        for (idx, rect) in super::components::settings::animation_cells(control_rows[1])
+            .into_iter()
+            .enumerate()
+        {
+            if contains_point(rect, mouse.column, mouse.row) {
+                self.state.selected_settings_field = 1;
+                let style = AnimationStyle::all()[idx].clone();
+                self.state.tui_config.animation_style = style.clone();
+                self.effect_state.animation_style = style;
+                self.save_tui_preferences();
+                return;
+            }
+        }
+
+        let token_inner = shrink_rect(layout.tokens, 1);
+        if contains_point(token_inner, mouse.column, mouse.row) {
+            let row = mouse.row.saturating_sub(token_inner.y) as usize;
+            if row < ThemeToken::all().len() {
+                self.state.selected_settings_field = 2;
+                self.state.selected_theme_token = row;
+                self.sync_settings_picker_from_theme();
+            }
+            return;
+        }
+
+        let wheel_inner = shrink_rect(layout.wheel, 1);
+        if contains_point(wheel_inner, mouse.column, mouse.row) {
+            self.state.selected_settings_field = 3;
+            let (hue, saturation) = point_to_wheel_hs(mouse.column, mouse.row, wheel_inner);
+            self.state.settings_color_hue = hue;
+            self.state.settings_color_saturation = saturation;
+            self.apply_selected_theme_color();
+            return;
+        }
+
+        if contains_point(layout.value_slider, mouse.column, mouse.row) {
+            self.state.selected_settings_field = 5;
+            self.state.settings_color_value = point_to_slider(mouse.column, layout.value_slider);
+            self.apply_selected_theme_color();
+            return;
+        }
+
+        if contains_point(layout.alpha_slider, mouse.column, mouse.row) {
+            self.state.selected_settings_field = 6;
+            self.state.settings_color_alpha =
+                (point_to_slider(mouse.column, layout.alpha_slider) * 255.0).round() as u8;
+            self.apply_selected_theme_color();
+        }
+    }
+
+    fn handle_typography_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+        let layout = super::components::settings::typography_layout(area);
+        let roles_inner = shrink_rect(layout.roles, 1);
+        if contains_point(roles_inner, mouse.column, mouse.row) {
+            let row = mouse.row.saturating_sub(roles_inner.y) as usize;
+            if row < FontRole::all().len() {
+                self.state.selected_font_field = 0;
+                self.state.selected_font_role = row;
+            }
+            return;
+        }
+
+        for (idx, rect) in super::components::settings::family_cells(layout.families)
+            .into_iter()
+            .enumerate()
+        {
+            if contains_point(rect, mouse.column, mouse.row) {
+                self.state.selected_font_field = 1;
+                self.current_font_role().set_family(
+                    &mut self.state.tui_config.fonts,
+                    super::components::settings::FONT_FAMILY_OPTIONS[idx].to_string(),
+                );
+                self.save_tui_preferences();
+                return;
+            }
+        }
+
+        let size_inner = shrink_rect(layout.size, 1);
+        let cells = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(4),
+                Constraint::Fill(1),
+                Constraint::Length(4),
+            ])
+            .split(size_inner);
+        if contains_point(cells[0], mouse.column, mouse.row) {
+            self.state.selected_font_field = 2;
+            self.adjust_font_size(-1);
+        } else if contains_point(cells[2], mouse.column, mouse.row) {
+            self.state.selected_font_field = 2;
+            self.adjust_font_size(1);
+        }
     }
 
     fn handle_models_overlay(
@@ -2950,6 +3296,117 @@ fn apply_agent_fields_to_table(table: &mut toml_edit::Table, json: &serde_json::
     }
 }
 
+fn contains_point(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+}
+
+fn shrink_rect(rect: Rect, margin: u16) -> Rect {
+    Rect {
+        x: rect.x.saturating_add(margin),
+        y: rect.y.saturating_add(margin),
+        width: rect.width.saturating_sub(margin.saturating_mul(2)),
+        height: rect.height.saturating_sub(margin.saturating_mul(2)),
+    }
+}
+
+fn point_to_slider(x: u16, rect: Rect) -> f32 {
+    if rect.width <= 2 {
+        return 0.0;
+    }
+    let inner = shrink_rect(rect, 1);
+    let denom = inner.width.saturating_sub(1).max(1);
+    f32::from(x.saturating_sub(inner.x).min(denom)) / f32::from(denom)
+}
+
+fn point_to_wheel_hs(x: u16, y: u16, rect: Rect) -> (f32, f32) {
+    let cx = rect.x as f32 + rect.width as f32 / 2.0;
+    let cy = rect.y as f32 + rect.height as f32 / 2.0;
+    let dx = x as f32 + 0.5 - cx;
+    let dy = y as f32 + 0.5 - cy;
+    let radius = rect.width.min(rect.height) as f32 / 2.0 - 1.0;
+    if radius <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let saturation = ((dx * dx + dy * dy).sqrt() / radius).clamp(0.0, 1.0);
+    let hue = ((dy.atan2(dx).to_degrees() + 360.0) % 360.0) / 360.0;
+    (hue, saturation)
+}
+
+fn write_rgba_token(target: &mut toml_edit::Item, value: rockbot_core::RgbaColor) {
+    let mut table = toml_edit::InlineTable::new();
+    table.insert("r", toml_edit::Value::from(i64::from(value.r)));
+    table.insert("g", toml_edit::Value::from(i64::from(value.g)));
+    table.insert("b", toml_edit::Value::from(i64::from(value.b)));
+    table.insert("a", toml_edit::Value::from(i64::from(value.a)));
+    *target = toml_edit::value(table);
+}
+
+fn save_tui_preferences_to_config(
+    config_path: &PathBuf,
+    tui: &rockbot_core::TuiConfig,
+) -> Result<()> {
+    let content = if config_path.exists() {
+        std::fs::read_to_string(config_path)?
+    } else {
+        String::new()
+    };
+    let mut doc: toml_edit::DocumentMut = if content.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        content.parse()?
+    };
+
+    if !doc.contains_table("tui") {
+        doc["tui"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    doc["tui"]["floating_bar"] = toml_edit::value(tui.floating_bar);
+    doc["tui"]["animations"] = toml_edit::value(tui.animations);
+    doc["tui"]["color_theme"] = toml_edit::value(tui.color_theme.label());
+    doc["tui"]["animation_style"] = toml_edit::value(tui.animation_style.label());
+
+    doc["tui"]["theme"] = toml_edit::Item::Table(toml_edit::Table::new());
+    let theme = tui.resolved_theme();
+    for token in ThemeToken::all() {
+        write_rgba_token(
+            &mut doc["tui"]["theme"][token.label().to_ascii_lowercase().replace(' ', "_")],
+            token.value(&theme),
+        );
+    }
+
+    doc["tui"]["theme"]["ai_text_color"] = doc["tui"]["theme"]["ai_text"].clone();
+    doc["tui"]["theme"]["thinking_text_color"] = doc["tui"]["theme"]["thinking_text"].clone();
+    doc["tui"]["theme"]["tool_text_color"] = doc["tui"]["theme"]["tool_text"].clone();
+    doc["tui"]["theme"].as_table_mut().map(|table| {
+        table.remove("ai_text");
+        table.remove("thinking_text");
+        table.remove("tool_text");
+    });
+
+    doc["tui"]["fonts"] = toml_edit::Item::Table(toml_edit::Table::new());
+    let fonts = &tui.fonts;
+    doc["tui"]["fonts"]["interface_font_family"] =
+        toml_edit::value(fonts.interface_font_family.as_str());
+    doc["tui"]["fonts"]["interface_font_size"] =
+        toml_edit::value(i64::from(fonts.interface_font_size));
+    doc["tui"]["fonts"]["user_font_family"] = toml_edit::value(fonts.user_font_family.as_str());
+    doc["tui"]["fonts"]["user_font_size"] = toml_edit::value(i64::from(fonts.user_font_size));
+    doc["tui"]["fonts"]["ai_font_family"] = toml_edit::value(fonts.ai_font_family.as_str());
+    doc["tui"]["fonts"]["ai_font_size"] = toml_edit::value(i64::from(fonts.ai_font_size));
+    doc["tui"]["fonts"]["thinking_font_family"] =
+        toml_edit::value(fonts.thinking_font_family.as_str());
+    doc["tui"]["fonts"]["thinking_font_size"] =
+        toml_edit::value(i64::from(fonts.thinking_font_size));
+    doc["tui"]["fonts"]["tool_font_family"] = toml_edit::value(fonts.tool_font_family.as_str());
+    doc["tui"]["fonts"]["tool_font_size"] = toml_edit::value(i64::from(fonts.tool_font_size));
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(config_path, doc.to_string())?;
+    Ok(())
+}
+
 impl App {
     fn handle_view_session(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
@@ -3987,7 +4444,11 @@ impl App {
         );
         if is_modal {
             let area = frame.area();
-            super::effects::EffectState::dim_background(frame.buffer_mut(), area);
+            super::effects::EffectState::dim_background(
+                frame.buffer_mut(),
+                area,
+                super::effects::palette::overlay_alpha(&self.state.tui_config),
+            );
         }
 
         match &self.state.input_mode {
@@ -4957,6 +5418,10 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: Str
                 match evt {
                     AppEvent::Key(key) => app.handle_key(key)?,
                     AppEvent::Paste(text) => app.handle_paste(&text),
+                    AppEvent::Mouse(mouse) => {
+                        let area = terminal.size()?;
+                        app.handle_mouse(mouse, Rect::new(0, 0, area.width, area.height))?;
+                    }
                     AppEvent::Resize(_w, _h) => {
                         // ratatui handles resize automatically on next draw
                     }

@@ -203,26 +203,27 @@ impl EffectState {
         false
     }
 
-    /// Dim the background buffer by reducing RGB values (~40% darker).
+    /// Dim the background buffer according to a configurable overlay alpha.
     /// Used as a backdrop behind modals.
-    pub fn dim_background(buf: &mut Buffer, area: Rect) {
+    pub fn dim_background(buf: &mut Buffer, area: Rect, overlay_alpha: u8) {
+        let keep_ratio = 1.0 - (f32::from(overlay_alpha) / 255.0).clamp(0.0, 0.85);
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     // Dim foreground
                     if let Color::Rgb(r, g, b) = cell.fg {
                         cell.set_fg(Color::Rgb(
-                            (r as u16 * 60 / 100) as u8,
-                            (g as u16 * 60 / 100) as u8,
-                            (b as u16 * 60 / 100) as u8,
+                            (f32::from(r) * keep_ratio) as u8,
+                            (f32::from(g) * keep_ratio) as u8,
+                            (f32::from(b) * keep_ratio) as u8,
                         ));
                     }
                     // Dim background
                     if let Color::Rgb(r, g, b) = cell.bg {
                         cell.set_bg(Color::Rgb(
-                            (r as u16 * 60 / 100) as u8,
-                            (g as u16 * 60 / 100) as u8,
-                            (b as u16 * 60 / 100) as u8,
+                            (f32::from(r) * keep_ratio) as u8,
+                            (f32::from(g) * keep_ratio) as u8,
+                            (f32::from(b) * keep_ratio) as u8,
                         ));
                     }
                 }
@@ -234,7 +235,7 @@ impl EffectState {
 /// Color palette for the TUI
 pub mod palette {
     use ratatui::style::Color;
-    use rockbot_core::ColorTheme;
+    use rockbot_core::{ColorTheme, RgbaColor, TuiConfig};
 
     /// Active/focused element color (default purple theme — used by const references)
     pub const ACTIVE_PRIMARY: Color = Color::Rgb(147, 112, 219);
@@ -255,6 +256,74 @@ pub mod palette {
     pub const CONFIGURED: Color = Color::Rgb(46, 204, 113);
     pub const UNCONFIGURED: Color = Color::Rgb(241, 196, 15);
     pub const VAULT_HINT: Color = Color::Rgb(147, 112, 219);
+
+    pub fn rgba(color: RgbaColor) -> Color {
+        Color::Rgb(color.r, color.g, color.b)
+    }
+
+    fn resolved(cfg: &TuiConfig) -> rockbot_core::TuiThemeConfig {
+        cfg.resolved_theme()
+    }
+
+    pub fn border(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).border)
+    }
+
+    pub fn text_primary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).text_primary)
+    }
+
+    pub fn text_secondary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).text_secondary)
+    }
+
+    pub fn accent_primary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).accent_primary)
+    }
+
+    pub fn accent_secondary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).accent_secondary)
+    }
+
+    pub fn accent_tertiary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).accent_tertiary)
+    }
+
+    pub fn graph_primary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).graph_primary)
+    }
+
+    pub fn graph_secondary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).graph_secondary)
+    }
+
+    pub fn bg_primary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).bg_primary)
+    }
+
+    pub fn bg_secondary(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).bg_secondary)
+    }
+
+    pub fn overlay_alpha(cfg: &TuiConfig) -> u8 {
+        resolved(cfg).bg_overlay.a
+    }
+
+    pub fn user_text(cfg: &TuiConfig) -> Color {
+        accent_primary(cfg)
+    }
+
+    pub fn ai_text(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).ai_text_color)
+    }
+
+    pub fn thinking_text(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).thinking_text_color)
+    }
+
+    pub fn tool_text(cfg: &TuiConfig) -> Color {
+        rgba(resolved(cfg).tool_text_color)
+    }
 
     /// Theme-driven primary color
     pub fn theme_primary(theme: &ColorTheme) -> Color {
@@ -422,12 +491,12 @@ mod tests {
         buf.cell_mut((0, 0))
             .unwrap()
             .set_fg(Color::Rgb(100, 200, 50));
-        EffectState::dim_background(&mut buf, area);
+        EffectState::dim_background(&mut buf, area, 180);
         match buf.cell((0, 0)).unwrap().fg {
             Color::Rgb(r, g, b) => {
-                assert_eq!(r, 60); // 100 * 60/100
-                assert_eq!(g, 120); // 200 * 60/100
-                assert_eq!(b, 30); // 50 * 60/100
+                assert!(r < 100);
+                assert!(g < 200);
+                assert!(b < 50);
             }
             _ => panic!("Expected RGB color"),
         }

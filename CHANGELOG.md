@@ -26,8 +26,14 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 - **TUI**: Dashboard Client card replaced Sessions overview with WS Connection detail panel
   showing RTT, server connections, server sessions, reconnect/disconnect counts
 - **TUI**: Gateway load sparkline now driven by `active_connections` instead of static data
-- **TUI**: Settings overlay tab bar (General | Paths | About | Theme) with Left/Right/Tab navigation
+- **TUI**: Settings overlay tab bar (General | Paths | About | Theme | Fonts) with Left/Right/Tab navigation
 - **TUI**: Theme picker in Settings — change color theme and animation style live with `[`/`]` keys
+- **TUI**: Rich settings overlay editor with token-level theme controls, live preview, and
+  typography preference stubs
+  - Mouse-enabled wheel-style color picker for precise custom colors
+  - Separate border, primary/secondary text, AI/thinking/tool text, accent, graph, and background tokens
+  - Stored interface/user/AI/thinking/tool font family + size preferences
+  - Automatic save of `[tui]`, `[tui.theme]`, and `[tui.fonts]` changes to `rockbot.toml`
 
 ### Fixed
 - **TUI**: Chat input box now always visible (was missing on Dashboard/Butler and agent welcome screens)

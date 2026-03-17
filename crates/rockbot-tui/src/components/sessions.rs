@@ -100,7 +100,7 @@ pub fn render_chat_area(
             Line::from(""),
             Line::from(Span::styled(
                 "Press 'n' to create a new session",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(palette::text_secondary(&state.tui_config)),
             )),
         ])
         .alignment(Alignment::Center);
@@ -118,7 +118,7 @@ pub fn render_chat_area(
             Line::from(""),
             Line::from(Span::styled(
                 "No messages yet. Press 'c' to start chatting.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(palette::text_secondary(&state.tui_config)),
             )),
         ])
         .alignment(Alignment::Center);
@@ -149,7 +149,7 @@ pub fn render_chat_messages(
             Line::from(""),
             Line::from(Span::styled(
                 "No messages yet. Type a message and press Enter.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(palette::text_secondary(&state.tui_config)),
             )),
         ])
         .alignment(Alignment::Center);
@@ -161,8 +161,14 @@ pub fn render_chat_messages(
 
     for msg in messages {
         let (prefix, style) = match msg.role {
-            ChatRole::User => ("You: ", Style::default().fg(Color::Cyan)),
-            ChatRole::Assistant => ("AI: ", Style::default().fg(Color::Green)),
+            ChatRole::User => (
+                "You: ",
+                Style::default().fg(palette::user_text(&state.tui_config)),
+            ),
+            ChatRole::Assistant => (
+                "AI: ",
+                Style::default().fg(palette::ai_text(&state.tui_config)),
+            ),
             ChatRole::System => ("sys: ", Style::default().fg(Color::Yellow)),
         };
 
@@ -173,7 +179,10 @@ pub fn render_chat_messages(
             .unwrap_or_default();
 
         let first_line = Line::from(vec![
-            Span::styled(timestamp, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                timestamp,
+                Style::default().fg(palette::text_secondary(&state.tui_config)),
+            ),
             Span::styled(prefix.to_string(), style.add_modifier(Modifier::BOLD)),
         ]);
         lines.push(first_line);
@@ -207,17 +216,23 @@ pub fn render_chat_messages(
                 Span::styled(
                     format!(" {}", tc.tool_name),
                     Style::default()
-                        .fg(Color::Magenta)
+                        .fg(palette::tool_text(&state.tui_config))
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(duration, Style::default().fg(Color::DarkGray)),
-                Span::styled(expand_hint, Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    duration,
+                    Style::default().fg(palette::text_secondary(&state.tui_config)),
+                ),
+                Span::styled(
+                    expand_hint,
+                    Style::default().fg(palette::text_secondary(&state.tui_config)),
+                ),
             ]));
             if tc.expanded && !tc.result.is_empty() {
                 for result_line in tc.result.lines() {
                     lines.push(Line::from(Span::styled(
                         format!("    {result_line}"),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(palette::tool_text(&state.tui_config)),
                     )));
                 }
             }
@@ -239,13 +254,13 @@ pub fn render_chat_messages(
             Span::styled(
                 "AI: ",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(palette::ai_text(&state.tui_config))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 thinking_label,
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(palette::thinking_text(&state.tui_config))
                     .add_modifier(Modifier::ITALIC),
             ),
         ];
@@ -259,7 +274,10 @@ pub fn render_chat_messages(
                 } else {
                     format!("  [{} tok]", ts.cumulative_total)
                 };
-                indicator_spans.push(Span::styled(tps_str, Style::default().fg(Color::DarkGray)));
+                indicator_spans.push(Span::styled(
+                    tps_str,
+                    Style::default().fg(palette::text_secondary(&state.tui_config)),
+                ));
             }
         }
 

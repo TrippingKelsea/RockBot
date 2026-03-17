@@ -107,17 +107,20 @@ pub fn render_settings_overlay(
     state: &AppState,
     _effect_state: &EffectState,
 ) {
+    use crate::components::settings::SETTINGS_SECTION_LABELS;
     use crate::effects::palette;
 
     let area = centered_rect(80, 85, full);
     frame.render_widget(Clear, area);
 
-    let primary = palette::theme_primary(&state.tui_config.color_theme);
+    let primary = palette::border(&state.tui_config);
+    let secondary = palette::text_secondary(&state.tui_config);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(primary))
+        .style(Style::default().bg(palette::bg_primary(&state.tui_config)))
         .title(Span::styled(
             " Settings ",
             Style::default().fg(primary).add_modifier(Modifier::BOLD),
@@ -127,8 +130,7 @@ pub fn render_settings_overlay(
     frame.render_widget(block, area);
 
     // Tab bar + body
-    let section_labels = ["General", "Paths", "About", "Theme"];
-    let titles: Vec<Line<'_>> = section_labels
+    let titles: Vec<Line<'_>> = SETTINGS_SECTION_LABELS
         .iter()
         .enumerate()
         .map(|(i, label)| {
@@ -138,7 +140,7 @@ pub fn render_settings_overlay(
                     Style::default().fg(primary).add_modifier(Modifier::BOLD),
                 ))
             } else {
-                Line::from(Span::styled(*label, Style::default().fg(Color::DarkGray)))
+                Line::from(Span::styled(*label, Style::default().fg(secondary)))
             }
         })
         .collect();
@@ -150,7 +152,7 @@ pub fn render_settings_overlay(
 
     let tabs = Tabs::new(titles)
         .select(state.selected_settings_card)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().fg(secondary))
         .highlight_style(Style::default().fg(primary).add_modifier(Modifier::BOLD))
         .divider("│");
     frame.render_widget(tabs, chunks[0]);

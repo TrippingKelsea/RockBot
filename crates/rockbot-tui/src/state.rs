@@ -670,6 +670,181 @@ pub enum ChatRole {
     System,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeToken {
+    Border,
+    TextPrimary,
+    TextSecondary,
+    AiText,
+    ThinkingText,
+    ToolText,
+    AccentPrimary,
+    AccentSecondary,
+    AccentTertiary,
+    GraphPrimary,
+    GraphSecondary,
+    BackgroundPrimary,
+    BackgroundSecondary,
+    BackgroundOverlay,
+}
+
+impl ThemeToken {
+    pub const ALL: [Self; 14] = [
+        Self::Border,
+        Self::TextPrimary,
+        Self::TextSecondary,
+        Self::AiText,
+        Self::ThinkingText,
+        Self::ToolText,
+        Self::AccentPrimary,
+        Self::AccentSecondary,
+        Self::AccentTertiary,
+        Self::GraphPrimary,
+        Self::GraphSecondary,
+        Self::BackgroundPrimary,
+        Self::BackgroundSecondary,
+        Self::BackgroundOverlay,
+    ];
+
+    pub fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Border => "Border",
+            Self::TextPrimary => "Text Primary",
+            Self::TextSecondary => "Text Secondary",
+            Self::AiText => "AI Text",
+            Self::ThinkingText => "Thinking Text",
+            Self::ToolText => "Tool Text",
+            Self::AccentPrimary => "Accent Primary",
+            Self::AccentSecondary => "Accent Secondary",
+            Self::AccentTertiary => "Accent Tertiary",
+            Self::GraphPrimary => "Graph Primary",
+            Self::GraphSecondary => "Graph Secondary",
+            Self::BackgroundPrimary => "BG Primary",
+            Self::BackgroundSecondary => "BG Secondary",
+            Self::BackgroundOverlay => "BG Overlay",
+        }
+    }
+
+    pub fn value(self, theme: &rockbot_core::TuiThemeConfig) -> rockbot_core::RgbaColor {
+        match self {
+            Self::Border => theme.border,
+            Self::TextPrimary => theme.text_primary,
+            Self::TextSecondary => theme.text_secondary,
+            Self::AiText => theme.ai_text_color,
+            Self::ThinkingText => theme.thinking_text_color,
+            Self::ToolText => theme.tool_text_color,
+            Self::AccentPrimary => theme.accent_primary,
+            Self::AccentSecondary => theme.accent_secondary,
+            Self::AccentTertiary => theme.accent_tertiary,
+            Self::GraphPrimary => theme.graph_primary,
+            Self::GraphSecondary => theme.graph_secondary,
+            Self::BackgroundPrimary => theme.bg_primary,
+            Self::BackgroundSecondary => theme.bg_secondary,
+            Self::BackgroundOverlay => theme.bg_overlay,
+        }
+    }
+
+    pub fn set_value(
+        self,
+        theme: &mut rockbot_core::TuiThemeConfig,
+        value: rockbot_core::RgbaColor,
+    ) {
+        match self {
+            Self::Border => theme.border = value,
+            Self::TextPrimary => theme.text_primary = value,
+            Self::TextSecondary => theme.text_secondary = value,
+            Self::AiText => theme.ai_text_color = value,
+            Self::ThinkingText => theme.thinking_text_color = value,
+            Self::ToolText => theme.tool_text_color = value,
+            Self::AccentPrimary => theme.accent_primary = value,
+            Self::AccentSecondary => theme.accent_secondary = value,
+            Self::AccentTertiary => theme.accent_tertiary = value,
+            Self::GraphPrimary => theme.graph_primary = value,
+            Self::GraphSecondary => theme.graph_secondary = value,
+            Self::BackgroundPrimary => theme.bg_primary = value,
+            Self::BackgroundSecondary => theme.bg_secondary = value,
+            Self::BackgroundOverlay => theme.bg_overlay = value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontRole {
+    Interface,
+    User,
+    Ai,
+    Thinking,
+    Tool,
+}
+
+impl FontRole {
+    pub const ALL: [Self; 5] = [
+        Self::Interface,
+        Self::User,
+        Self::Ai,
+        Self::Thinking,
+        Self::Tool,
+    ];
+
+    pub fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Interface => "Interface",
+            Self::User => "User",
+            Self::Ai => "AI",
+            Self::Thinking => "Thinking",
+            Self::Tool => "Tool",
+        }
+    }
+
+    pub fn family(self, fonts: &rockbot_core::TuiFontPreferences) -> &str {
+        match self {
+            Self::Interface => &fonts.interface_font_family,
+            Self::User => &fonts.user_font_family,
+            Self::Ai => &fonts.ai_font_family,
+            Self::Thinking => &fonts.thinking_font_family,
+            Self::Tool => &fonts.tool_font_family,
+        }
+    }
+
+    pub fn set_family(self, fonts: &mut rockbot_core::TuiFontPreferences, family: String) {
+        match self {
+            Self::Interface => fonts.interface_font_family = family,
+            Self::User => fonts.user_font_family = family,
+            Self::Ai => fonts.ai_font_family = family,
+            Self::Thinking => fonts.thinking_font_family = family,
+            Self::Tool => fonts.tool_font_family = family,
+        }
+    }
+
+    pub fn size(self, fonts: &rockbot_core::TuiFontPreferences) -> u16 {
+        match self {
+            Self::Interface => fonts.interface_font_size,
+            Self::User => fonts.user_font_size,
+            Self::Ai => fonts.ai_font_size,
+            Self::Thinking => fonts.thinking_font_size,
+            Self::Tool => fonts.tool_font_size,
+        }
+    }
+
+    pub fn set_size(self, fonts: &mut rockbot_core::TuiFontPreferences, size: u16) {
+        match self {
+            Self::Interface => fonts.interface_font_size = size,
+            Self::User => fonts.user_font_size = size,
+            Self::Ai => fonts.ai_font_size = size,
+            Self::Thinking => fonts.thinking_font_size = size,
+            Self::Tool => fonts.tool_font_size = size,
+        }
+    }
+}
+
 /// Tool call information for display
 #[derive(Debug, Clone)]
 pub struct ToolCallInfo {
@@ -964,10 +1139,18 @@ pub struct AppState {
     pub ws_disconnect_count: u64,
     pub ws_reconnect_count: u64,
     pub ws_last_disconnect_reason: Option<String>,
-    // Settings card selection (General=0, Paths=1, About=2, Theme=3)
+    // Settings card selection (General=0, Paths=1, About=2, Theme=3, Typography=4)
     pub selected_settings_card: usize,
-    // Theme section field (0=color_theme, 1=animation_style)
+    // Theme section field (0=preset, 1=animation, 2=token, 3=hue, 4=sat, 5=value, 6=alpha)
     pub selected_settings_field: usize,
+    pub selected_theme_token: usize,
+    pub selected_font_role: usize,
+    pub selected_font_field: usize,
+    pub settings_color_hue: f32,
+    pub settings_color_saturation: f32,
+    pub settings_color_value: f32,
+    pub settings_color_alpha: u8,
+    pub settings_save_feedback: Option<(String, bool)>,
 
     // Credential schemas (from gateway — drives Credentials->Providers forms)
     pub credential_schemas: Vec<CredentialSchemaInfo>,
@@ -2826,6 +3009,14 @@ impl AppState {
             ws_last_disconnect_reason: None,
             selected_settings_card: 0,
             selected_settings_field: 0,
+            selected_theme_token: 0,
+            selected_font_role: 0,
+            selected_font_field: 0,
+            settings_color_hue: 0.75,
+            settings_color_saturation: 0.49,
+            settings_color_value: 0.86,
+            settings_color_alpha: 255,
+            settings_save_feedback: None,
             credential_schemas: Vec::new(),
 
             alerts: Vec::new(),

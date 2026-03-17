@@ -37,6 +37,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Config validation | ✅ | |
 | Rich TUI theme token config | ✅ | `[tui.theme]` supports RGBA token overrides |
 | Stored font preferences | ✅ | `[tui.fonts]` persisted for future richer clients |
+| Theme editor overlay | ✅ | Preset + token-level editing, mouse color wheel, live preview, autosave |
 | Config migration | 📋 | |
 
 ### Session Management

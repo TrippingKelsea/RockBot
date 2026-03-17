@@ -11,6 +11,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::effects::palette;
 use crate::state::{AgentStatus, AppState, CardWidgetId};
 
 /// Render a compact widget inside a card's inner area (~12w x 3h).
@@ -50,7 +51,7 @@ fn render_gateway_status(frame: &mut Frame, area: Rect, state: &AppState) {
     let label = Paragraph::new(Span::styled(
         "Gateway",
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(palette::text_secondary(&state.tui_config))
             .add_modifier(Modifier::DIM),
     ));
     frame.render_widget(label, rows[0]);
@@ -64,7 +65,10 @@ fn render_gateway_status(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(value, rows[1]);
 
     let version = state.gateway.version.as_deref().unwrap_or("--");
-    let detail = Paragraph::new(Span::styled(version, Style::default().fg(Color::DarkGray)));
+    let detail = Paragraph::new(Span::styled(
+        version,
+        Style::default().fg(palette::text_secondary(&state.tui_config)),
+    ));
     frame.render_widget(detail, rows[2]);
 }
 
@@ -73,20 +77,23 @@ fn render_gateway_load(frame: &mut Frame, area: Rect, state: &AppState) {
     let label = Paragraph::new(Span::styled(
         "Load",
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(palette::text_secondary(&state.tui_config))
             .add_modifier(Modifier::DIM),
     ));
     frame.render_widget(label, rows[0]);
 
     if state.gateway_load_history.is_empty() {
-        let p = Paragraph::new(Span::styled("--", Style::default().fg(Color::DarkGray)));
+        let p = Paragraph::new(Span::styled(
+            "--",
+            Style::default().fg(palette::text_secondary(&state.tui_config)),
+        ));
         frame.render_widget(p, rows[1]);
         return;
     }
     let data: Vec<u64> = state.gateway_load_history.iter().copied().collect();
     let sparkline = Sparkline::default()
         .data(&data)
-        .style(Style::default().fg(Color::Cyan));
+        .style(Style::default().fg(palette::graph_primary(&state.tui_config)));
     // Sparkline gets 2 rows (value + detail)
     let spark_area = Rect {
         x: rows[1].x,
@@ -123,7 +130,7 @@ fn render_client_status(frame: &mut Frame, area: Rect, state: &AppState) {
     let label = Paragraph::new(Span::styled(
         label_text,
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(palette::text_secondary(&state.tui_config))
             .add_modifier(Modifier::DIM),
     ));
     frame.render_widget(label, rows[0]);
@@ -131,9 +138,9 @@ fn render_client_status(frame: &mut Frame, area: Rect, state: &AppState) {
     if !state.ws_latency_history.is_empty() {
         let data: Vec<u64> = state.ws_latency_history.iter().copied().collect();
         let color = if state.ws_connected {
-            Color::Green
+            palette::graph_primary(&state.tui_config)
         } else {
-            Color::Yellow
+            palette::graph_secondary(&state.tui_config)
         };
         let sparkline = Sparkline::default()
             .data(&data)
@@ -158,7 +165,7 @@ fn render_client_status(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let detail = Paragraph::new(Span::styled(
         format!("srv {}", state.gateway.active_connections),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(palette::text_secondary(&state.tui_config)),
     ));
     frame.render_widget(detail, rows[2]);
 }
@@ -168,7 +175,7 @@ fn render_client_messages(frame: &mut Frame, area: Rect, state: &AppState) {
     let label = Paragraph::new(Span::styled(
         "Messages",
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(palette::text_secondary(&state.tui_config))
             .add_modifier(Modifier::DIM),
     ));
     frame.render_widget(label, rows[0]);
@@ -176,13 +183,13 @@ fn render_client_messages(frame: &mut Frame, area: Rect, state: &AppState) {
     let total: usize = state.sessions.iter().map(|s| s.message_count).sum();
     let value = Paragraph::new(Span::styled(
         format!("{total}"),
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(palette::accent_primary(&state.tui_config)),
     ));
     frame.render_widget(value, rows[1]);
 
     let detail = Paragraph::new(Span::styled(
         format!("{} sessions", state.sessions.len()),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(palette::text_secondary(&state.tui_config)),
     ));
     frame.render_widget(detail, rows[2]);
 }

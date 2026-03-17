@@ -350,6 +350,11 @@ tool_font_size = 14
 | `animation_style` | string | `"Coalesce"` | Modal transition style. Options: `Coalesce`, `Fade`, `Slide`, `None` |
 | `fonts` | table | terminal-default / 14 | Stored font preferences for richer renderers such as the Web UI; the terminal TUI persists these but cannot force terminal fonts |
 
+Settings changed in the TUI settings overlay are autosaved back into these
+sections. In the terminal UI, alpha is stored exactly and used approximately
+for overlay dimming because terminals do not support true per-cell alpha
+blending.
+
 ### `[tui.theme]`
 
 Each color token is an RGBA object:
@@ -376,12 +381,15 @@ Available tokens:
 - `bg_overlay`
 
 When `[tui.theme]` is omitted, RockBot derives these values from `color_theme`.
+The settings overlay can edit these tokens live with a mouse-enabled
+wheel-style picker and writes the results back to `rockbot.toml`.
 
 ### `[tui.fonts]`
 
 These preferences are persisted now so future richer clients can apply them
 directly. The terminal TUI stores them but does not control the terminal
-emulator’s actual font rendering.
+emulator’s actual font rendering. The settings overlay lets you choose stored
+font families and sizes per interface, user, AI, thinking, and tool text role.
 
 ## `[seed_model]`
 

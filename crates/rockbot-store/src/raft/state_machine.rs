@@ -131,6 +131,7 @@ fn bytes_table_def(
         "cron_jobs" => Ok(tables::CRON_JOBS),
         "route_bindings" => Ok(tables::ROUTE_BINDINGS),
         "pki_index" => Ok(tables::PKI_INDEX),
+        "agents" => Ok(tables::AGENTS),
         other => Err(io::Error::other(format!("unknown table: {other}"))),
     }
 }

@@ -15,15 +15,15 @@
 
 ---
 
-RockBot routes messages from Discord, Telegram, and Signal through a central
-gateway to AI agents backed by multiple LLM providers. Credentials are stored
-in an encrypted vault and injected into tool execution at runtime — never
-exposed to the agent.
+RockBot routes messages from Telegram and Signal through a central gateway to
+AI agents backed by multiple LLM providers. Credentials are stored in an
+encrypted vault and injected into tool execution at runtime — never exposed to
+the agent.
 
 ## Highlights
 
 - **Multi-provider LLM** — Anthropic, OpenAI, AWS Bedrock, Ollama
-- **Multi-channel** — Discord, Telegram, Signal
+- **Multi-channel** — Telegram, Signal
 - **Encrypted credential vault** — AES-256-GCM with Argon2id key derivation
 - **Human-in-the-loop approval** — sensitive operations require consent
 - **mTLS by default** — built-in PKI with CA, client certs, and enrollment

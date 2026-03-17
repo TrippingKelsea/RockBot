@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use rockbot_core::Config;
+use rockbot_config::Config;
 use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;

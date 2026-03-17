@@ -14,7 +14,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 // Per-channel crates are separate (no circular deps).
-// Registration of built-in channels happens in rockbot-core.
+// Registration of built-in channels happens in the gateway-facing application layer.
 
 /// Channel errors
 #[derive(Debug, Error)]

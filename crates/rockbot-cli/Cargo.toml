@@ -8,39 +8,44 @@ license = "MIT"
 [features]
 default = ["bedrock", "discord", "telegram", "signal", "tools-credentials", "tools-mcp", "tools-markdown"]
 # LLM providers
-anthropic = ["rockbot-llm/anthropic", "rockbot-core/anthropic", "rockbot-tui/anthropic"]
-openai = ["rockbot-llm/openai", "rockbot-core/openai", "rockbot-tui/openai"]
-ollama = ["rockbot-llm/ollama", "rockbot-core/ollama", "rockbot-tui/ollama"]
-bedrock = ["rockbot-llm/bedrock", "rockbot-core/bedrock", "rockbot-tui/bedrock"]
+anthropic = ["rockbot-llm/anthropic", "rockbot-gateway/anthropic", "rockbot-tui/anthropic"]
+openai = ["rockbot-llm/openai", "rockbot-gateway/openai", "rockbot-tui/openai"]
+ollama = ["rockbot-llm/ollama", "rockbot-gateway/ollama", "rockbot-tui/ollama"]
+bedrock = ["rockbot-llm/bedrock", "rockbot-gateway/bedrock", "rockbot-tui/bedrock"]
 # Channel providers
-discord = ["rockbot-core/discord", "rockbot-tui/discord"]
-telegram = ["rockbot-core/telegram", "rockbot-tui/telegram"]
-signal = ["rockbot-core/signal", "rockbot-tui/signal"]
+discord = ["rockbot-gateway/discord", "rockbot-tui/discord"]
+telegram = ["rockbot-gateway/telegram", "rockbot-tui/telegram"]
+signal = ["rockbot-gateway/signal", "rockbot-tui/signal"]
 # Tool providers
-tools-credentials = ["rockbot-core/tools-credentials", "rockbot-tui/tools-credentials"]
-tools-mcp = ["rockbot-core/tools-mcp", "rockbot-tui/tools-mcp"]
-tools-markdown = ["rockbot-core/tools-markdown", "rockbot-tui/tools-markdown"]
+tools-credentials = ["rockbot-gateway/tools-credentials", "rockbot-tui/tools-credentials"]
+tools-mcp = ["rockbot-gateway/tools-mcp", "rockbot-tui/tools-mcp"]
+tools-markdown = ["rockbot-gateway/tools-markdown", "rockbot-tui/tools-markdown"]
+# Telemetry
+otel = ["rockbot-gateway/otel"]
 # Embedded overseer
-overseer = ["rockbot-core/overseer", "rockbot-tui/overseer"]
+overseer = ["rockbot-gateway/overseer", "rockbot-tui/overseer"]
 # Embedded doctor AI for config diagnostics
 doctor-ai = ["dep:rockbot-doctor", "rockbot-tui/doctor-ai"]
 # Embedded butler companion agent
-butler = ["dep:rockbot-butler", "rockbot-core/butler", "rockbot-tui/butler"]
+butler = ["dep:rockbot-butler", "rockbot-gateway/butler", "rockbot-tui/butler"]
 # Noise handshake and transport primitives
-noise = ["rockbot-core/noise", "rockbot-client/noise", "rockbot-tui/noise"]
+noise = ["rockbot-gateway/noise", "rockbot-client/noise", "rockbot-tui/noise"]
 # Remote tool execution
-remote-exec = ["noise", "rockbot-core/remote-exec", "rockbot-client/remote-exec", "rockbot-tui/remote-exec"]
+remote-exec = ["noise", "rockbot-gateway/remote-exec", "rockbot-client/remote-exec", "rockbot-tui/remote-exec"]
 # S3 CA distribution + Route53 DNS
-bedrock-deploy = ["dep:rockbot-deploy", "rockbot-deploy/bedrock", "rockbot-core/bedrock-deploy"]
+bedrock-deploy = ["dep:rockbot-deploy", "rockbot-deploy/bedrock", "rockbot-gateway/bedrock-deploy"]
 # Allow plain-text HTTP/WS connections
-http-insecure = ["rockbot-core/http-insecure", "rockbot-client/http-insecure", "rockbot-tui/http-insecure"]
+http-insecure = ["rockbot-gateway/http-insecure", "rockbot-client/http-insecure", "rockbot-tui/http-insecure"]
 
 [lints]
 workspace = true
 
 [dependencies]
+rockbot-agent = { path = "../rockbot-agent" }
 rockbot-client = { path = "../rockbot-client" }
-rockbot-core = { path = "../rockbot-core", default-features = false }
+rockbot-config = { path = "../rockbot-config" }
+rockbot-gateway = { path = "../rockbot-gateway", default-features = false }
+rockbot-session = { path = "../rockbot-session" }
 rockbot-tools = { path = "../rockbot-tools" }
 rockbot-memory = { path = "../rockbot-memory" }
 rockbot-security = { path = "../rockbot-security" }

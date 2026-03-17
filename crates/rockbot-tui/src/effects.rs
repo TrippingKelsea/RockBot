@@ -26,7 +26,7 @@ pub struct EffectState {
     /// Whether animations are enabled (from TuiConfig)
     pub animations_enabled: bool,
     /// Animation style for modal transitions
-    pub animation_style: rockbot_core::AnimationStyle,
+    pub animation_style: rockbot_config::AnimationStyle,
     /// tachyonfx effect: modal open animation
     modal_open: Option<Effect>,
     /// tachyonfx effect: modal close animation
@@ -41,7 +41,7 @@ impl Default for EffectState {
             start_time: Instant::now(),
             is_active: false,
             animations_enabled: true,
-            animation_style: rockbot_core::AnimationStyle::default(),
+            animation_style: rockbot_config::AnimationStyle::default(),
             modal_open: None,
             modal_close: None,
             page_transition: None,
@@ -94,59 +94,59 @@ impl EffectState {
     /// Trigger a modal-open animation based on current animation style
     pub fn trigger_modal_open(&mut self) {
         if !self.animations_enabled
-            || matches!(self.animation_style, rockbot_core::AnimationStyle::None)
+            || matches!(self.animation_style, rockbot_config::AnimationStyle::None)
         {
             return;
         }
         self.modal_open = Some(match self.animation_style {
-            rockbot_core::AnimationStyle::Coalesce => {
+            rockbot_config::AnimationStyle::Coalesce => {
                 fx::coalesce(EffectTimer::from_ms(600, Interpolation::CubicOut))
             }
-            rockbot_core::AnimationStyle::Fade => fx::fade_from_fg(
+            rockbot_config::AnimationStyle::Fade => fx::fade_from_fg(
                 Color::Black,
                 EffectTimer::from_ms(400, Interpolation::CubicOut),
             ),
-            rockbot_core::AnimationStyle::Slide => fx::slide_in(
+            rockbot_config::AnimationStyle::Slide => fx::slide_in(
                 tachyonfx::Motion::DownToUp,
                 3,
                 0,
                 Color::Black,
                 EffectTimer::from_ms(350, Interpolation::CubicOut),
             ),
-            rockbot_core::AnimationStyle::None => return,
+            rockbot_config::AnimationStyle::None => return,
         });
     }
 
     /// Trigger a modal-close animation based on current animation style
     pub fn trigger_modal_close(&mut self) {
         if !self.animations_enabled
-            || matches!(self.animation_style, rockbot_core::AnimationStyle::None)
+            || matches!(self.animation_style, rockbot_config::AnimationStyle::None)
         {
             return;
         }
         self.modal_close = Some(match self.animation_style {
-            rockbot_core::AnimationStyle::Coalesce => {
+            rockbot_config::AnimationStyle::Coalesce => {
                 fx::dissolve(EffectTimer::from_ms(300, Interpolation::CubicIn))
             }
-            rockbot_core::AnimationStyle::Fade => fx::fade_to_fg(
+            rockbot_config::AnimationStyle::Fade => fx::fade_to_fg(
                 Color::Black,
                 EffectTimer::from_ms(250, Interpolation::CubicIn),
             ),
-            rockbot_core::AnimationStyle::Slide => fx::slide_out(
+            rockbot_config::AnimationStyle::Slide => fx::slide_out(
                 tachyonfx::Motion::UpToDown,
                 3,
                 0,
                 Color::Black,
                 EffectTimer::from_ms(300, Interpolation::CubicIn),
             ),
-            rockbot_core::AnimationStyle::None => return,
+            rockbot_config::AnimationStyle::None => return,
         });
     }
 
     /// Trigger a page transition animation (fade from white)
     pub fn trigger_page_transition(&mut self) {
         if !self.animations_enabled
-            || matches!(self.animation_style, rockbot_core::AnimationStyle::None)
+            || matches!(self.animation_style, rockbot_config::AnimationStyle::None)
         {
             return;
         }
@@ -235,7 +235,7 @@ impl EffectState {
 /// Color palette for the TUI
 pub mod palette {
     use ratatui::style::Color;
-    use rockbot_core::{ColorTheme, RgbaColor, TuiConfig};
+    use rockbot_config::{ColorTheme, RgbaColor, TuiConfig};
 
     /// Active/focused element color (default purple theme — used by const references)
     pub const ACTIVE_PRIMARY: Color = Color::Rgb(147, 112, 219);
@@ -261,7 +261,7 @@ pub mod palette {
         Color::Rgb(color.r, color.g, color.b)
     }
 
-    fn resolved(cfg: &TuiConfig) -> rockbot_core::TuiThemeConfig {
+    fn resolved(cfg: &TuiConfig) -> rockbot_config::TuiThemeConfig {
         cfg.resolved_theme()
     }
 

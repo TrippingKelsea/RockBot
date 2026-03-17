@@ -38,8 +38,8 @@ operator confidence.
 | Remote tool loops can run for too many iterations | high | investigating | Recent runs showed excessive repeated `exec` calls before convergence. |
 | Remote path semantics are unclear to the model | medium | investigating | Repeated failed `read` calls suggest poor grounding on executor-local filesystem state. |
 | UTF-8-unsafe truncation in gateway WS forwarding | high | investigating | Recently caused a panic while forwarding large tool output. |
-| `rockbot-core` remains a thin re-export facade | medium | proposed | Evaluate whether the compatibility layer still earns its maintenance cost. |
-| Sessions split across SQLite while agents/credentials use `redb` | medium | proposed | Consider whether storage consolidation is worth the migration cost. |
+| `rockbot-core` remains a thin re-export facade | medium | completed | Removed from the workspace; CLI/TUI/root crates now depend on focused subcrates directly. |
+| Sessions split across SQLite while agents/credentials use `redb` | medium | completed | Sessions, cron jobs, and route bindings now persist in redb-backed stores. |
 | `rockbot-overseer` string truncation bug risk | high | proposed | The model flagged another likely UTF-8 slicing issue that should be audited. |
 | File-based memory plus vector store split | low | proposed | Acceptable for now, but warrants an architecture review for durability and simplicity. |
 | Plugin system still scaffold-level | low | proposed | Consider whether WASM/plugin ABI work is worth prioritizing. |

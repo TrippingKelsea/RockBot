@@ -122,7 +122,7 @@ async fn run_diagnose(config_path: &PathBuf) -> Result<()> {
     let parse_error = match raw_toml.parse::<toml::Value>() {
         Ok(_) => {
             // TOML syntax is fine, try full deserialization
-            match rockbot_core::Config::from_file(config_path).await {
+            match rockbot_config::Config::from_file(config_path).await {
                 Ok(_) => {
                     println!("Config is valid! No issues detected.");
                     return Ok(());

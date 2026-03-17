@@ -45,8 +45,8 @@ pub enum RockBotError {
     #[error("TOML error: {0}")]
     Toml(#[from] toml::de::Error),
 
-    #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    #[error("Storage error: {0}")]
+    Storage(#[from] anyhow::Error),
 
     #[error("External security error: {0}")]
     ExternalSecurity(#[from] rockbot_security::SecurityError),

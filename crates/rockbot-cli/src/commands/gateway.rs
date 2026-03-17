@@ -1,12 +1,13 @@
 //! Gateway server command implementation
 
 use anyhow::Result;
-use rockbot_core::config::AgentInstance;
-use rockbot_core::session::SessionManager;
-use rockbot_core::{Agent, Config, Gateway, VaultCredentialAccessor};
+use rockbot_agent::{Agent, VaultCredentialAccessor};
+use rockbot_config::{config::AgentInstance, Config};
+use rockbot_gateway::{convert_security_config, convert_tool_config, Gateway};
 use rockbot_llm::LlmProviderRegistry;
 use rockbot_memory::MemoryManager;
 use rockbot_security::SecurityManager;
+use rockbot_session::SessionManager;
 use rockbot_tools::ToolRegistry;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -81,7 +82,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
         .join("rockbot")
         .join("data")
-        .join("sessions.db");
+        .join("sessions.redb");
 
     tokio::fs::create_dir_all(db_path.parent().unwrap()).await?;
     let session_manager = Arc::new(SessionManager::new(&db_path, 1000).await?);
@@ -91,18 +92,10 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     gateway.set_config_path(config_path.clone());
 
     // Initialize other components
-    let tool_registry = Arc::new(
-        ToolRegistry::new(rockbot_core::gateway::convert_tool_config(
-            config.tools.clone(),
-        ))
-        .await?,
-    );
-    let security_manager = Arc::new(
-        SecurityManager::new(rockbot_core::gateway::convert_security_config(
-            config.security.clone(),
-        ))
-        .await?,
-    );
+    let tool_registry =
+        Arc::new(ToolRegistry::new(convert_tool_config(config.tools.clone())).await?);
+    let security_manager =
+        Arc::new(SecurityManager::new(convert_security_config(config.security.clone())).await?);
     // Create LLM registry (Anthropic uses Claude Code OAuth automatically)
     let llm_registry = Arc::new(LlmProviderRegistry::new().await?);
 
@@ -114,7 +107,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let llm = llm_registry.clone();
     let cred_accessor = credential_accessor.clone();
 
-    let agent_factory: rockbot_core::gateway::AgentFactory =
+    let agent_factory: rockbot_gateway::gateway::AgentFactory =
         Arc::new(move |agent_config: AgentInstance| {
             let defaults = defaults.clone();
             let tr = tr.clone();
@@ -127,7 +120,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                 let model = agent_config.model.as_ref().unwrap_or(&defaults.model);
 
                 let llm_provider = llm.get_provider_for_model(model).await.map_err(|e| {
-                    rockbot_core::error::GatewayError::InvalidRequest {
+                    rockbot_gateway::error::GatewayError::InvalidRequest {
                         message: e.to_string(),
                     }
                 })?;
@@ -138,7 +131,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                     .unwrap_or(&defaults.workspace);
                 let memory_manager =
                     Arc::new(MemoryManager::new(workspace.clone()).await.map_err(|e| {
-                        rockbot_core::error::GatewayError::InvalidRequest {
+                        rockbot_gateway::error::GatewayError::InvalidRequest {
                             message: e.to_string(),
                         }
                     })?);
@@ -156,7 +149,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                 )
                 .await
                 .map_err(|e| {
-                    rockbot_core::error::GatewayError::InvalidRequest {
+                    rockbot_gateway::error::GatewayError::InvalidRequest {
                         message: e.to_string(),
                     }
                 })?;

@@ -60,6 +60,12 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   common path aliases (`path`, `file`) for better client passthrough compatibility
 - **Remote filesystem tools**: `write` now accepts `text` as a content alias in
   addition to `content`
+- **Storage**: sessions, cron jobs, and route bindings now persist in redb
+  instead of SQLite
+- **Store replication**: sessions, session messages, cron jobs, and agents now
+  have explicit replication policies in `rockbot-store::sync`
+- **Raft state machine**: `agents` table mutations are now accepted during
+  store replication
 - **TUI**: Chat input box now always visible (was missing on Dashboard/Butler and agent welcome screens)
 - **TUI**: Bottom status bar no longer shows persistent help text — only displays errors/success messages
 - **TUI**: Terminal no longer left in broken state on unclean exit — `TerminalGuard` RAII restores
@@ -80,6 +86,9 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   `executed on: ...`
 - **Client/Gateway protocol**: `tool_result` events now preserve result text and
   session keys for inline TUI streaming of tool output
+- **Workspace architecture**: removed the `rockbot-core` facade crate and
+  updated CLI/TUI/root crates to depend on focused subcrates directly
+- **Paths**: default local state now uses `sessions.redb` and `cron.redb`
 - **TUI**: Input architecture rewritten — replaced busy-loop `poll/read` inside `tokio::select!`
   with crossterm's async `EventStream` in a dedicated task, eliminating spurious wakeups
 - **TUI**: Input normalization layer (`InputAction` enum + `normalize_for_text_input()`) is now

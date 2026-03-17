@@ -23,9 +23,10 @@ pub fn policy_for(table_name: &str) -> SyncPolicy {
         n if n == tables::ENDPOINTS.name() => SyncPolicy::Eventual,
         n if n == tables::ROUTE_BINDINGS.name() => SyncPolicy::Eventual,
         n if n == tables::KV_STORE.name() => SyncPolicy::Eventual,
-        n if n == tables::SESSIONS.name() => SyncPolicy::LocalOnly,
-        n if n == tables::SESSION_MESSAGES.name() => SyncPolicy::LocalOnly,
-        n if n == tables::CRON_JOBS.name() => SyncPolicy::LocalOnly,
+        n if n == tables::SESSIONS.name() => SyncPolicy::Eventual,
+        n if n == tables::SESSION_MESSAGES.name() => SyncPolicy::Eventual,
+        n if n == tables::CRON_JOBS.name() => SyncPolicy::Eventual,
+        n if n == tables::AGENTS.name() => SyncPolicy::Eventual,
         _ => SyncPolicy::LocalOnly,
     }
 }
@@ -40,9 +41,10 @@ pub fn all_policies() -> Vec<(&'static str, SyncPolicy)> {
         (tables::ENDPOINTS.name(), SyncPolicy::Eventual),
         (tables::ROUTE_BINDINGS.name(), SyncPolicy::Eventual),
         (tables::KV_STORE.name(), SyncPolicy::Eventual),
-        (tables::SESSIONS.name(), SyncPolicy::LocalOnly),
-        (tables::SESSION_MESSAGES.name(), SyncPolicy::LocalOnly),
-        (tables::CRON_JOBS.name(), SyncPolicy::LocalOnly),
+        (tables::SESSIONS.name(), SyncPolicy::Eventual),
+        (tables::SESSION_MESSAGES.name(), SyncPolicy::Eventual),
+        (tables::CRON_JOBS.name(), SyncPolicy::Eventual),
+        (tables::AGENTS.name(), SyncPolicy::Eventual),
     ]
 }
 

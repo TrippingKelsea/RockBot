@@ -8,37 +8,39 @@ license = "MIT"
 [features]
 default = ["bedrock", "discord", "telegram", "signal", "tools-credentials", "tools-mcp", "tools-markdown"]
 # LLM providers
-anthropic = ["rockbot-llm/anthropic", "rockbot-core/anthropic"]
-openai = ["rockbot-llm/openai", "rockbot-core/openai"]
-ollama = ["rockbot-llm/ollama", "rockbot-core/ollama"]
-bedrock = ["rockbot-llm/bedrock", "rockbot-core/bedrock"]
+anthropic = ["rockbot-llm/anthropic"]
+openai = ["rockbot-llm/openai"]
+ollama = ["rockbot-llm/ollama"]
+bedrock = ["rockbot-llm/bedrock"]
 # Channel providers
-discord = ["rockbot-core/discord"]
-telegram = ["rockbot-core/telegram"]
-signal = ["rockbot-core/signal"]
+discord = []
+telegram = []
+signal = []
 # Tool providers
-tools-credentials = ["rockbot-core/tools-credentials"]
-tools-mcp = ["rockbot-core/tools-mcp"]
-tools-markdown = ["rockbot-core/tools-markdown"]
+tools-credentials = []
+tools-mcp = []
+tools-markdown = []
 # Embedded overseer
-overseer = ["rockbot-core/overseer"]
+overseer = []
 # Embedded doctor AI for config diagnostics
 doctor-ai = ["dep:rockbot-doctor"]
 # Embedded butler companion agent
-butler = ["dep:rockbot-butler", "rockbot-core/butler"]
+butler = ["dep:rockbot-butler"]
 # Noise handshake and transport primitives
-noise = ["rockbot-core/noise", "rockbot-client/noise"]
+noise = ["rockbot-client/noise"]
 # Remote tool execution
-remote-exec = ["noise", "rockbot-core/remote-exec", "rockbot-client/remote-exec"]
+remote-exec = ["noise", "rockbot-client/remote-exec"]
 # Allow plain-text HTTP/WS connections
-http-insecure = ["rockbot-core/http-insecure", "rockbot-client/http-insecure"]
+http-insecure = ["rockbot-client/http-insecure"]
 
 [lints]
 workspace = true
 
 [dependencies]
+rockbot-agent = { path = "../rockbot-agent" }
 rockbot-client = { path = "../rockbot-client" }
-rockbot-core = { path = "../rockbot-core", default-features = false }
+rockbot-config = { path = "../rockbot-config" }
+rockbot-gateway = { path = "../rockbot-gateway", default-features = false }
 rockbot-tools = { path = "../rockbot-tools" }
 rockbot-memory = { path = "../rockbot-memory" }
 rockbot-security = { path = "../rockbot-security" }

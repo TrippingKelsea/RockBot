@@ -6,12 +6,12 @@
 
 use crate::error::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rockbot_store::{tables, Store};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
@@ -302,8 +302,8 @@ pub struct MessageRoutingContext {
 pub struct RoutingEngine {
     /// In-memory binding cache keyed by binding ID.
     bindings: Arc<RwLock<HashMap<String, Binding>>>,
-    /// Database connection for persistence.
-    db: Arc<Mutex<Connection>>,
+    /// redb store for persistence.
+    store: Arc<Store>,
     /// Default agent ID used when no binding matches.
     default_agent_id: String,
     /// Default session scope used when a binding does not specify one.
@@ -311,34 +311,21 @@ pub struct RoutingEngine {
 }
 
 impl RoutingEngine {
-    /// Create a new routing engine backed by an SQLite database.
+    /// Create a new routing engine backed by a redb store.
     pub async fn new<P: AsRef<Path>>(
         db_path: P,
         default_agent_id: impl Into<String>,
         default_session_scope: SessionScope,
     ) -> Result<Self> {
         let path = db_path.as_ref();
-        let db = Connection::open(path)?;
-
-        db.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_bindings (
-                id TEXT PRIMARY KEY,
-                agent_id TEXT NOT NULL,
-                kind TEXT NOT NULL,       -- JSON-encoded BindingKind
-                route_policy TEXT NOT NULL DEFAULT 'session',
-                session_scope TEXT,       -- JSON-encoded SessionScope, nullable
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_bindings_agent_id ON route_bindings(agent_id);
-            "#,
-        )?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let store = Arc::new(Store::open(path).map_err(crate::error::RockBotError::from)?);
 
         let engine = Self {
             bindings: Arc::new(RwLock::new(HashMap::new())),
-            db: Arc::new(Mutex::new(db)),
+            store,
             default_agent_id: default_agent_id.into(),
             default_session_scope,
         };
@@ -356,31 +343,7 @@ impl RoutingEngine {
 
     /// Add a new binding and persist it.
     pub async fn add_binding(&self, binding: Binding) -> Result<()> {
-        // Persist.
-        {
-            let db = self.db.lock().await;
-            let kind_json = serde_json::to_string(&binding.kind)?;
-            let policy_json = serde_json::to_string(&binding.route_policy)?;
-            let scope_json = binding
-                .session_scope
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?;
-
-            db.execute(
-                "INSERT INTO route_bindings (id, agent_id, kind, route_policy, session_scope, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    &binding.id,
-                    &binding.agent_id,
-                    &kind_json,
-                    &policy_json,
-                    &scope_json,
-                    binding.created_at.timestamp(),
-                    binding.updated_at.timestamp(),
-                ],
-            )?;
-        }
+        self.persist_binding(&binding)?;
 
         // Update in-memory cache.
         {
@@ -393,54 +356,32 @@ impl RoutingEngine {
 
     /// Remove a binding by ID.
     pub async fn remove_binding(&self, binding_id: &str) -> Result<bool> {
-        let affected = {
-            let db = self.db.lock().await;
-            db.execute(
-                "DELETE FROM route_bindings WHERE id = ?1",
-                params![binding_id],
-            )?
-        };
+        let affected = self.store.delete(tables::ROUTE_BINDINGS, binding_id)?;
 
         let mut bindings = self.bindings.write().await;
         bindings.remove(binding_id);
 
-        Ok(affected > 0)
+        Ok(affected)
     }
 
     /// Update an existing binding (full replacement).
     pub async fn update_binding(&self, mut binding: Binding) -> Result<bool> {
         binding.updated_at = Utc::now();
 
-        let affected = {
-            let db = self.db.lock().await;
-            let kind_json = serde_json::to_string(&binding.kind)?;
-            let policy_json = serde_json::to_string(&binding.route_policy)?;
-            let scope_json = binding
-                .session_scope
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?;
+        let affected = self
+            .store
+            .get(tables::ROUTE_BINDINGS, &binding.id)?
+            .is_some();
+        if affected {
+            self.persist_binding(&binding)?;
+        }
 
-            db.execute(
-                "UPDATE route_bindings SET agent_id = ?1, kind = ?2, route_policy = ?3,
-                        session_scope = ?4, updated_at = ?5 WHERE id = ?6",
-                params![
-                    &binding.agent_id,
-                    &kind_json,
-                    &policy_json,
-                    &scope_json,
-                    binding.updated_at.timestamp(),
-                    &binding.id,
-                ],
-            )?
-        };
-
-        if affected > 0 {
+        if affected {
             let mut bindings = self.bindings.write().await;
             bindings.insert(binding.id.clone(), binding);
         }
 
-        Ok(affected > 0)
+        Ok(affected)
     }
 
     /// Get a binding by ID.
@@ -630,69 +571,34 @@ impl RoutingEngine {
 
     /// Load all bindings from the database into the in-memory cache.
     async fn load_bindings(&self) -> Result<()> {
-        let loaded: Vec<Binding> = {
-            let db = self.db.lock().await;
-            let mut stmt = db.prepare(
-                "SELECT id, agent_id, kind, route_policy, session_scope, created_at, updated_at
-                 FROM route_bindings",
-            )?;
-
-            let rows = stmt.query_map([], |row| {
-                let id: String = row.get(0)?;
-                let agent_id: String = row.get(1)?;
-                let kind_json: String = row.get(2)?;
-                let policy_json: String = row.get(3)?;
-                let scope_json: Option<String> = row.get(4)?;
-                let created_ts: i64 = row.get(5)?;
-                let updated_ts: i64 = row.get(6)?;
-
-                let kind: BindingKind = serde_json::from_str(&kind_json).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        2,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?;
-                let route_policy: RoutePolicy =
-                    serde_json::from_str(&policy_json).unwrap_or_default();
-                let session_scope: Option<SessionScope> = scope_json
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()
-                    .unwrap_or(None);
-
-                let created_at = DateTime::from_timestamp(created_ts, 0).unwrap_or_else(Utc::now);
-                let updated_at = DateTime::from_timestamp(updated_ts, 0).unwrap_or_else(Utc::now);
-
-                Ok(Binding {
-                    id,
-                    agent_id,
-                    kind,
-                    route_policy,
-                    session_scope,
-                    created_at,
-                    updated_at,
-                })
-            })?;
-
-            let mut result = Vec::new();
-            for row in rows {
-                match row {
-                    Ok(binding) => result.push(binding),
+        let loaded: Vec<Binding> = self
+            .store
+            .list(tables::ROUTE_BINDINGS)?
+            .into_iter()
+            .filter_map(
+                |(_, bytes)| match serde_json::from_slice::<Binding>(&bytes) {
+                    Ok(binding) => Some(binding),
                     Err(e) => {
-                        warn!("Failed to load binding from database: {}", e);
+                        warn!("Failed to load binding from store: {}", e);
+                        None
                     }
-                }
-            }
-            result
-        };
+                },
+            )
+            .collect();
 
         let mut bindings = self.bindings.write().await;
         for binding in loaded {
             bindings.insert(binding.id.clone(), binding);
         }
 
-        info!("Loaded {} route bindings from database", bindings.len());
+        info!("Loaded {} route bindings from store", bindings.len());
+        Ok(())
+    }
+
+    fn persist_binding(&self, binding: &Binding) -> Result<()> {
+        let bytes = serde_json::to_vec(binding)?;
+        self.store
+            .put(tables::ROUTE_BINDINGS, &binding.id, &bytes)?;
         Ok(())
     }
 }

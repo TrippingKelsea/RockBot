@@ -1,6 +1,6 @@
 # Crate Structure
 
-RockBot is a Cargo workspace with 33 crates organized by responsibility.
+RockBot is a Cargo workspace with 32 crates organized by responsibility.
 
 ## Workspace Layout
 
@@ -9,7 +9,6 @@ rockbot/
 ├── crates/
 │   ├── rockbot/                   # Binary entry point and top-level feature profiles
 │   ├── rockbot-cli/               # Clap CLI surface and command dispatch
-│   ├── rockbot-core/              # Re-export facade for backward compatibility
 │   ├── rockbot-config/            # Config types, message types, shared errors
 │   ├── rockbot-session/           # Session management and persistence
 │   ├── rockbot-agent/             # Agent execution engine
@@ -80,11 +79,12 @@ rockbot-gateway            → rockbot-config, rockbot-session, rockbot-agent,
                               rockbot-tools, rockbot-channels, rockbot-credentials,
                               rockbot-pki
 
-rockbot-core               → facade: re-exports config/session/agent/client/gateway/webui
-rockbot-tui                → rockbot-core, rockbot-client, rockbot-credentials,
+rockbot-tui                → rockbot-config, rockbot-agent, rockbot-gateway,
+                              rockbot-client, rockbot-credentials,
                               rockbot-chat, rockbot-editor, rockbot-shell
-rockbot-cli                → rockbot-core, rockbot-client, rockbot-pki, rockbot-tui
-rockbot                    → rockbot-cli, rockbot-core
+rockbot-cli                → rockbot-config, rockbot-agent, rockbot-gateway,
+                              rockbot-session, rockbot-client, rockbot-pki, rockbot-tui
+rockbot                    → rockbot-cli
 ```
 
 ## Feature Flags
@@ -189,7 +189,7 @@ cargo build --profile release-small --no-default-features -F anthropic
 - `gateway.rs` — HTTP/WS server, agent lifecycle, TLS listener
 - `routing.rs` — Multi-agent routing engine
 - `a2a.rs` — Agent-to-Agent protocol (JSON-RPC)
-- `cron.rs` — Cron scheduler with SQLite persistence
+- `cron.rs` — Cron scheduler with redb persistence
 - `slash_commands.rs` — Gateway-level slash command dispatch
 - `error.rs` — `RockBotError` aggregator
 

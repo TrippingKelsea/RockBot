@@ -10,7 +10,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 ---
 
-## Core Framework (`rockbot-core`)
+## Core Framework
 
 ### Gateway Server
 
@@ -45,7 +45,7 @@ This document tracks feature implementation status and helps identify gaps betwe
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| SQLite persistence | ✅ | |
+| redb persistence | ✅ | Sessions, cron jobs, and route bindings now use redb |
 | Message history | ✅ | |
 | Token usage tracking | ✅ | |
 | Session CRUD | ✅ | |

@@ -11,7 +11,7 @@ encrypted vault that agents never see directly.
 ┌───────────────────────────────────────────────────────────┐
 │                      Interfaces                           │
 │ CLI (rockbot-cli)  TUI (rockbot-tui)  Web UI  Channels   │
-│         ▲                 ▲              ▲    (Discord,  │
+│         ▲                 ▲              ▲    (Telegram, │
 │         │                 │              │     Telegram, │
 │         │                 │ WebSocket    │ HTTP Signal)  │
 └─────────┼────────────────────┼──────────┬─────────────────┘
@@ -57,7 +57,7 @@ The gateway (`rockbot-gateway`) is the single source of truth. It owns:
 - **Multi-agent routing** — routes messages to agents by channel, pattern, or keyword
 - **WebSocket protocol** — real-time streaming, health checks, remote tool dispatch
 - **A2A protocol** — agent-to-agent communication via JSON-RPC
-- **Cron scheduler** — timed jobs with SQLite persistence
+- **Cron scheduler** — timed jobs with redb persistence
 
 ### Agents
 
@@ -161,6 +161,6 @@ Plain HTTP requires building with the `http-insecure` feature flag.
 | `~/.config/rockbot/gateway.key` | TLS private key (legacy self-signed) |
 | `~/.config/rockbot/pki/` | PKI directory (CA, certs, keys, index, CRL) |
 | `~/.config/rockbot/agents/{id}/` | Per-agent context files |
-| `~/.config/rockbot/data/sessions.db` | Session history (SQLite) |
-| `~/.config/rockbot/data/cron.db` | Cron jobs (SQLite) |
+| `~/.config/rockbot/data/sessions.redb` | Session history |
+| `~/.config/rockbot/data/cron.redb` | Cron jobs |
 | `~/.local/share/rockbot/credentials/` | Encrypted credential vault |

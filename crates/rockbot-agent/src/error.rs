@@ -19,8 +19,6 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("TOML error: {0}")]
     Toml(#[from] toml::de::Error),
-    #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
     #[error("LLM error: {0}")]
     Llm(#[from] rockbot_llm::LlmError),
     #[error("Tool error: {0}")]

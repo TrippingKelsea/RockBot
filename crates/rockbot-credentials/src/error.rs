@@ -1,7 +1,7 @@
 //! Error types for rockbot-credentials.
 //!
 //! Uses `thiserror` for ergonomic error handling with proper Display implementations.
-//! Designed to integrate with rockbot-core's error hierarchy.
+//! Designed to integrate with the gateway/agent error hierarchy.
 
 use thiserror::Error;
 use uuid::Uuid;

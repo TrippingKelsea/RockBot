@@ -1,7 +1,7 @@
 //! Credential management CLI commands
 
 use anyhow::Result;
-use rockbot_core::Config;
+use rockbot_config::Config;
 use rockbot_credentials::{
     AuditLog, CredentialManager, CredentialType, CredentialVault, EndpointType, PathPermission,
     PermissionLevel,

@@ -10,8 +10,9 @@ workspace = true
 
 [dependencies]
 rockbot-config = { path = "../rockbot-config" }
+rockbot-store = { path = "../rockbot-store" }
 
-rusqlite = { workspace = true }
+anyhow = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }

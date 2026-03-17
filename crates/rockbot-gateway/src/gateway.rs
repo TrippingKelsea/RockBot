@@ -728,7 +728,7 @@ impl Gateway {
                     .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
                     .join("rockbot")
                     .join("data")
-                    .join("cron.db");
+                    .join("cron.redb");
                 if let Some(parent) = cron_db_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
@@ -6534,9 +6534,10 @@ impl GatewayCronExecutor {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use rockbot_config::config::NoiseTransportConfig;
     use rockbot_config::{
-        AgentConfig, AgentDefaults, AgentInstance, PkiConfig, ProvidersConfig, SandboxConfig,
-        SecurityConfig, ToolConfig,
+        AgentConfig, AgentDefaults, PkiConfig, ProvidersConfig, SandboxConfig, SecurityConfig,
+        ToolConfig,
     };
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
@@ -6575,7 +6576,7 @@ mod tests {
                     image: None,
                 },
                 capabilities: Default::default(),
-                noise: rockbot_config::NoiseTransportConfig::default(),
+                noise: NoiseTransportConfig::default(),
             },
             credentials: CredentialsConfig::default(),
             providers: ProvidersConfig::default(),

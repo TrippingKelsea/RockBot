@@ -40,7 +40,6 @@ which = "6"
 toml = { workspace = true }
 toml_edit = { workspace = true }
 rand = "0.8"
-rusqlite = { workspace = true }
 futures = { workspace = true }
 
 # OpenTelemetry (optional, behind `otel` feature)

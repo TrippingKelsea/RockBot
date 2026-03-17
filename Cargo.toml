@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "crates/rockbot",
-    "crates/rockbot-core",
     "crates/rockbot-tools",
     "crates/rockbot-tools-credentials",
     "crates/rockbot-tools-mcp",
@@ -66,9 +65,6 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pemfile = "2.1"
-
-# Database - SQLite bundled for security
-rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Command line parsing
 clap = { version = "4.0", features = ["derive"] }
@@ -182,7 +178,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # Package metadata for all crates
 [workspace.package]
-version = "0.3.28"
+version = "0.3.29"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

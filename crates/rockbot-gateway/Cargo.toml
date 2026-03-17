@@ -84,7 +84,6 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 notify = { workspace = true }
-rusqlite = { workspace = true }
 regex = { workspace = true }
 dirs = { workspace = true }
 cron = { workspace = true }

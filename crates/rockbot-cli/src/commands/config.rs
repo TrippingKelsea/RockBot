@@ -2,8 +2,8 @@
 
 use crate::{load_config, ConfigCommands};
 use anyhow::Result;
-use rockbot_core::config::*;
-use rockbot_core::Config;
+use rockbot_config::config::*;
+use rockbot_config::Config;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -147,14 +147,14 @@ fn create_default_config() -> Config {
                 image: None,
             },
             capabilities: CapabilityConfig::default(),
-            noise: rockbot_core::config::NoiseTransportConfig::default(),
+            noise: rockbot_config::config::NoiseTransportConfig::default(),
         },
         credentials: CredentialsConfig::default(),
-        providers: rockbot_core::ProvidersConfig::default(),
+        providers: rockbot_config::ProvidersConfig::default(),
         overseer: None,
         doctor: None,
         deploy: None,
-        tui: rockbot_core::TuiConfig::default(),
-        seed_model: rockbot_core::SeedModelConfig::default(),
+        tui: rockbot_config::TuiConfig::default(),
+        seed_model: rockbot_config::SeedModelConfig::default(),
     }
 }

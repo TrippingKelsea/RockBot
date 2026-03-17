@@ -786,7 +786,7 @@ impl ThemeToken {
         }
     }
 
-    pub fn value(self, theme: &rockbot_core::TuiThemeConfig) -> rockbot_core::RgbaColor {
+    pub fn value(self, theme: &rockbot_config::TuiThemeConfig) -> rockbot_config::RgbaColor {
         match self {
             Self::Border => theme.border,
             Self::TextPrimary => theme.text_primary,
@@ -807,8 +807,8 @@ impl ThemeToken {
 
     pub fn set_value(
         self,
-        theme: &mut rockbot_core::TuiThemeConfig,
-        value: rockbot_core::RgbaColor,
+        theme: &mut rockbot_config::TuiThemeConfig,
+        value: rockbot_config::RgbaColor,
     ) {
         match self {
             Self::Border => theme.border = value,
@@ -861,7 +861,7 @@ impl FontRole {
         }
     }
 
-    pub fn family(self, fonts: &rockbot_core::TuiFontPreferences) -> &str {
+    pub fn family(self, fonts: &rockbot_config::TuiFontPreferences) -> &str {
         match self {
             Self::Interface => &fonts.interface_font_family,
             Self::User => &fonts.user_font_family,
@@ -871,7 +871,7 @@ impl FontRole {
         }
     }
 
-    pub fn set_family(self, fonts: &mut rockbot_core::TuiFontPreferences, family: String) {
+    pub fn set_family(self, fonts: &mut rockbot_config::TuiFontPreferences, family: String) {
         match self {
             Self::Interface => fonts.interface_font_family = family,
             Self::User => fonts.user_font_family = family,
@@ -881,7 +881,7 @@ impl FontRole {
         }
     }
 
-    pub fn size(self, fonts: &rockbot_core::TuiFontPreferences) -> u16 {
+    pub fn size(self, fonts: &rockbot_config::TuiFontPreferences) -> u16 {
         match self {
             Self::Interface => fonts.interface_font_size,
             Self::User => fonts.user_font_size,
@@ -891,7 +891,7 @@ impl FontRole {
         }
     }
 
-    pub fn set_size(self, fonts: &mut rockbot_core::TuiFontPreferences, size: u16) {
+    pub fn set_size(self, fonts: &mut rockbot_config::TuiFontPreferences, size: u16) {
         match self {
             Self::Interface => fonts.interface_font_size = size,
             Self::User => fonts.user_font_size = size,
@@ -1244,7 +1244,7 @@ pub struct AppState {
     pub input_cursor: usize,
 
     // TUI display preferences
-    pub tui_config: rockbot_core::TuiConfig,
+    pub tui_config: rockbot_config::TuiConfig,
 
     // Message sender for async updates
     pub tx: mpsc::UnboundedSender<Message>,
@@ -3117,7 +3117,7 @@ impl AppState {
             input_buffer: String::new(),
             input_cursor: 0,
 
-            tui_config: rockbot_core::TuiConfig::default(),
+            tui_config: rockbot_config::TuiConfig::default(),
 
             tx,
         }

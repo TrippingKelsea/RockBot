@@ -1,14 +1,14 @@
 //! Cron system for RockBot (SPEC Section 13)
 //!
 //! This module provides scheduled job execution with support for one-time,
-//! interval-based, and cron-expression schedules. Jobs are persisted to SQLite
+//! interval-based, and cron-expression schedules. Jobs are persisted to redb
 //! and executed via a background tokio task.
 
 use crate::error::{Result, RockBotError};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cron::Schedule as CronExpression;
-use rusqlite::{params, Connection};
+use rockbot_store::{tables, Store};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,7 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -280,8 +280,8 @@ enum SchedulerCommand {
 pub struct CronScheduler {
     /// In-memory job store
     jobs: Arc<RwLock<HashMap<String, CronJob>>>,
-    /// SQLite persistence
-    db: Arc<Mutex<Connection>>,
+    /// redb persistence
+    store: Arc<Store>,
     /// Channel to send commands to the background task (interior mutability for Arc compatibility)
     cmd_tx: Arc<tokio::sync::Mutex<Option<mpsc::Sender<SchedulerCommand>>>>,
     /// Tick interval for checking due jobs
@@ -289,54 +289,25 @@ pub struct CronScheduler {
 }
 
 impl CronScheduler {
-    /// Create a new scheduler with SQLite persistence at `db_path`.
+    /// Create a new scheduler with redb persistence at `db_path`.
     pub async fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
-        let path = db_path.as_ref();
-        let db = Connection::open(path)?;
-
-        db.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS cron_jobs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                agent_id TEXT,
-                session_key TEXT,
-                schedule TEXT NOT NULL,       -- JSON
-                payload TEXT NOT NULL,        -- JSON
-                session_target TEXT NOT NULL,  -- JSON
-                wake_mode TEXT NOT NULL,       -- JSON
-                delivery TEXT,                -- JSON
-                target_client TEXT,
-                next_run_at_ms INTEGER,
-                last_run_at_ms INTEGER,
-                last_run_status TEXT,
-                last_error TEXT,
-                consecutive_errors INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled);
-            CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run_at_ms);
-
-            -- Migration: add target_client column if missing (for existing DBs)
-            -- SQLite silently ignores duplicate ADD COLUMN, so this is safe.
-            "#,
-        )?;
-
-        // Best-effort migration for existing databases (ignore errors if column exists)
-        let _ = db.execute_batch("ALTER TABLE cron_jobs ADD COLUMN target_client TEXT;");
+        let path = if db_path.as_ref() == Path::new(":memory:") {
+            std::env::temp_dir().join(format!("rockbot-cron-{}.redb", Uuid::new_v4()))
+        } else {
+            db_path.as_ref().to_path_buf()
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let store = Arc::new(Store::open(&path).map_err(crate::error::RockBotError::from)?);
 
         info!("Cron scheduler initialized with database at {:?}", path);
 
-        // Load existing jobs from DB
-        let jobs = Self::load_jobs_from_db(&db)?;
+        let jobs = Self::load_jobs_from_store(&store)?;
 
         Ok(Self {
             jobs: Arc::new(RwLock::new(jobs)),
-            db: Arc::new(Mutex::new(db)),
+            store,
             cmd_tx: Arc::new(tokio::sync::Mutex::new(None)),
             tick_interval: Duration::from_secs(1),
         })
@@ -358,11 +329,11 @@ impl CronScheduler {
         }
 
         let jobs = Arc::clone(&self.jobs);
-        let db = Arc::clone(&self.db);
+        let store = Arc::clone(&self.store);
         let tick_interval = self.tick_interval;
 
         tokio::spawn(async move {
-            Self::run_loop(jobs, db, executor, cmd_rx, tick_interval).await;
+            Self::run_loop(jobs, store, executor, cmd_rx, tick_interval).await;
         });
 
         info!("Cron scheduler background task started");
@@ -371,7 +342,7 @@ impl CronScheduler {
     /// The main scheduler loop
     async fn run_loop(
         jobs: Arc<RwLock<HashMap<String, CronJob>>>,
-        db: Arc<Mutex<Connection>>,
+        store: Arc<Store>,
         executor: Arc<dyn CronExecutor>,
         mut cmd_rx: mpsc::Receiver<SchedulerCommand>,
         tick_interval: Duration,
@@ -382,12 +353,12 @@ impl CronScheduler {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    Self::tick(&jobs, &db, &executor).await;
+                    Self::tick(&jobs, &store, &executor).await;
                 }
                 cmd = cmd_rx.recv() => {
                     match cmd {
                         Some(SchedulerCommand::TriggerNow { job_id }) => {
-                            Self::trigger_job(&jobs, &db, &executor, &job_id).await;
+                            Self::trigger_job(&jobs, &store, &executor, &job_id).await;
                         }
                         Some(SchedulerCommand::Shutdown) | None => {
                             info!("Cron scheduler shutting down");
@@ -402,7 +373,7 @@ impl CronScheduler {
     /// Single tick: find and execute all due jobs
     async fn tick(
         jobs: &Arc<RwLock<HashMap<String, CronJob>>>,
-        db: &Arc<Mutex<Connection>>,
+        store: &Arc<Store>,
         executor: &Arc<dyn CronExecutor>,
     ) {
         let now_ms = Utc::now().timestamp_millis() as u64;
@@ -418,14 +389,14 @@ impl CronScheduler {
         };
 
         for job_id in due_ids {
-            Self::trigger_job(jobs, db, executor, &job_id).await;
+            Self::trigger_job(jobs, store, executor, &job_id).await;
         }
     }
 
     /// Execute a single job by ID
     async fn trigger_job(
         jobs: &Arc<RwLock<HashMap<String, CronJob>>>,
-        db: &Arc<Mutex<Connection>>,
+        store: &Arc<Store>,
         executor: &Arc<dyn CronExecutor>,
         job_id: &str,
     ) {
@@ -481,7 +452,7 @@ impl CronScheduler {
                 // Persist state update
                 let job_clone = j.clone();
                 drop(jobs_write);
-                if let Err(e) = Self::persist_job_state(db, &job_clone).await {
+                if let Err(e) = Self::persist_job_state(store, &job_clone).await {
                     error!("Failed to persist cron job state: {}", e);
                 }
             }
@@ -505,47 +476,7 @@ impl CronScheduler {
         let now_ms = Utc::now().timestamp_millis() as u64;
         job.state.next_run_at_ms = job.compute_next_run(now_ms);
 
-        // Persist to DB
-        {
-            let db = self.db.lock().await;
-            db.execute(
-                "INSERT INTO cron_jobs (
-                    id, name, description, enabled, agent_id, session_key,
-                    schedule, payload, session_target, wake_mode, delivery,
-                    target_client, next_run_at_ms, last_run_at_ms, last_run_status,
-                    last_error, consecutive_errors, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                          ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-                params![
-                    &job.id,
-                    &job.name,
-                    &job.description,
-                    job.enabled as i32,
-                    &job.agent_id,
-                    &job.session_key,
-                    serde_json::to_string(&job.schedule)?,
-                    serde_json::to_string(&job.payload)?,
-                    serde_json::to_string(&job.session_target)?,
-                    serde_json::to_string(&job.wake_mode)?,
-                    job.delivery
-                        .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()?,
-                    &job.target_client,
-                    job.state.next_run_at_ms.map(|v| v as i64),
-                    job.state.last_run_at_ms.map(|v| v as i64),
-                    job.state
-                        .last_run_status
-                        .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()?,
-                    &job.state.last_error,
-                    job.state.consecutive_errors,
-                    job.created_at.timestamp(),
-                    job.updated_at.timestamp(),
-                ],
-            )?;
-        }
+        self.persist_job(&job)?;
 
         // Add to in-memory store
         {
@@ -573,54 +504,13 @@ impl CronScheduler {
         let now_ms = Utc::now().timestamp_millis() as u64;
         job.state.next_run_at_ms = job.compute_next_run(now_ms);
 
-        // Persist
-        {
-            let db = self.db.lock().await;
-            let affected = db.execute(
-                "UPDATE cron_jobs SET
-                    name = ?1, description = ?2, enabled = ?3, agent_id = ?4,
-                    session_key = ?5, schedule = ?6, payload = ?7,
-                    session_target = ?8, wake_mode = ?9, delivery = ?10,
-                    target_client = ?11, next_run_at_ms = ?12, last_run_at_ms = ?13,
-                    last_run_status = ?14, last_error = ?15,
-                    consecutive_errors = ?16, updated_at = ?17
-                 WHERE id = ?18",
-                params![
-                    &job.name,
-                    &job.description,
-                    job.enabled as i32,
-                    &job.agent_id,
-                    &job.session_key,
-                    serde_json::to_string(&job.schedule)?,
-                    serde_json::to_string(&job.payload)?,
-                    serde_json::to_string(&job.session_target)?,
-                    serde_json::to_string(&job.wake_mode)?,
-                    job.delivery
-                        .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()?,
-                    &job.target_client,
-                    job.state.next_run_at_ms.map(|v| v as i64),
-                    job.state.last_run_at_ms.map(|v| v as i64),
-                    job.state
-                        .last_run_status
-                        .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()?,
-                    &job.state.last_error,
-                    job.state.consecutive_errors,
-                    job.updated_at.timestamp(),
-                    &job.id,
-                ],
-            )?;
-
-            if affected == 0 {
-                return Err(CronError::NotFound {
-                    job_id: job.id.clone(),
-                }
-                .into());
+        if self.store.get(tables::CRON_JOBS, &job.id)?.is_none() {
+            return Err(CronError::NotFound {
+                job_id: job.id.clone(),
             }
+            .into());
         }
+        self.persist_job(&job)?;
 
         // Update in-memory
         {
@@ -634,15 +524,11 @@ impl CronScheduler {
 
     /// Remove a cron job by ID
     pub async fn remove_job(&self, job_id: &str) -> Result<()> {
-        {
-            let db = self.db.lock().await;
-            let affected = db.execute("DELETE FROM cron_jobs WHERE id = ?1", params![job_id])?;
-            if affected == 0 {
-                return Err(CronError::NotFound {
-                    job_id: job_id.to_string(),
-                }
-                .into());
+        if !self.store.delete(tables::CRON_JOBS, job_id)? {
+            return Err(CronError::NotFound {
+                job_id: job_id.to_string(),
             }
+            .into());
         }
 
         {
@@ -709,100 +595,33 @@ impl CronScheduler {
     // -----------------------------------------------------------------------
 
     /// Persist only the runtime state fields of a job
-    async fn persist_job_state(db: &Arc<Mutex<Connection>>, job: &CronJob) -> Result<()> {
-        let db = db.lock().await;
-        db.execute(
-            "UPDATE cron_jobs SET
-                enabled = ?1, next_run_at_ms = ?2, last_run_at_ms = ?3,
-                last_run_status = ?4, last_error = ?5, consecutive_errors = ?6,
-                updated_at = ?7
-             WHERE id = ?8",
-            params![
-                job.enabled as i32,
-                job.state.next_run_at_ms.map(|v| v as i64),
-                job.state.last_run_at_ms.map(|v| v as i64),
-                job.state
-                    .last_run_status
-                    .as_ref()
-                    .map(serde_json::to_string)
-                    .transpose()?,
-                &job.state.last_error,
-                job.state.consecutive_errors,
-                job.updated_at.timestamp(),
-                &job.id,
-            ],
-        )?;
+    fn persist_job(&self, job: &CronJob) -> Result<()> {
+        let bytes = serde_json::to_vec(job)?;
+        self.store.put(tables::CRON_JOBS, &job.id, &bytes)?;
         Ok(())
     }
 
-    /// Load all jobs from the database into memory
-    fn load_jobs_from_db(db: &Connection) -> Result<HashMap<String, CronJob>> {
-        let mut stmt = db.prepare(
-            "SELECT id, name, description, enabled, agent_id, session_key,
-                    schedule, payload, session_target, wake_mode, delivery,
-                    target_client, next_run_at_ms, last_run_at_ms, last_run_status,
-                    last_error, consecutive_errors, created_at, updated_at
-             FROM cron_jobs",
-        )?;
+    async fn persist_job_state(store: &Arc<Store>, job: &CronJob) -> Result<()> {
+        let bytes = serde_json::to_vec(job)?;
+        store.put(tables::CRON_JOBS, &job.id, &bytes)?;
+        Ok(())
+    }
 
-        let rows = stmt.query_map([], |row| {
-            let schedule_str: String = row.get(6)?;
-            let payload_str: String = row.get(7)?;
-            let session_target_str: String = row.get(8)?;
-            let wake_mode_str: String = row.get(9)?;
-            let delivery_str: Option<String> = row.get(10)?;
-            let target_client: Option<String> = row.get(11)?;
-            let last_run_status_str: Option<String> = row.get(14)?;
-
-            let created_at =
-                DateTime::from_timestamp(row.get::<_, i64>(17)?, 0).unwrap_or_else(Utc::now);
-            let updated_at =
-                DateTime::from_timestamp(row.get::<_, i64>(18)?, 0).unwrap_or_else(Utc::now);
-
-            Ok(CronJob {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                enabled: row.get::<_, i32>(3)? != 0,
-                agent_id: row.get(4)?,
-                session_key: row.get(5)?,
-                schedule: serde_json::from_str(&schedule_str).unwrap_or(CronSchedule::Every {
-                    interval_ms: 60_000,
-                }),
-                payload: serde_json::from_str(&payload_str).unwrap_or(CronPayload::SystemEvent {
-                    event: "unknown".into(),
-                    data: None,
-                }),
-                session_target: serde_json::from_str(&session_target_str).unwrap_or_default(),
-                wake_mode: serde_json::from_str(&wake_mode_str).unwrap_or_default(),
-                delivery: delivery_str.and_then(|s| serde_json::from_str(&s).ok()),
-                target_client,
-                state: CronJobState {
-                    next_run_at_ms: row.get::<_, Option<i64>>(12)?.map(|v| v as u64),
-                    last_run_at_ms: row.get::<_, Option<i64>>(13)?.map(|v| v as u64),
-                    last_run_status: last_run_status_str
-                        .and_then(|s| serde_json::from_str(&s).ok()),
-                    last_error: row.get(15)?,
-                    consecutive_errors: row.get::<_, u32>(16).unwrap_or(0),
-                },
-                created_at,
-                updated_at,
-            })
-        })?;
-
+    /// Load all jobs from the store into memory
+    fn load_jobs_from_store(store: &Store) -> Result<HashMap<String, CronJob>> {
         let mut jobs = HashMap::new();
-        for row_result in rows {
-            match row_result {
+        for (_, bytes) in store.list(tables::CRON_JOBS)? {
+            match serde_json::from_slice::<CronJob>(&bytes) {
                 Ok(job) => {
                     jobs.insert(job.id.clone(), job);
                 }
                 Err(e) => {
-                    warn!("Failed to load cron job from DB: {}", e);
+                    warn!("Failed to load cron job from store: {}", e);
                 }
             }
         }
 
-        info!("Loaded {} cron jobs from database", jobs.len());
+        info!("Loaded {} cron jobs from store", jobs.len());
         Ok(jobs)
     }
 }

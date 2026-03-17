@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::effects::palette;
 use crate::state::{AppState, FontRole, ThemeToken};
-use rockbot_core::{AnimationStyle, ColorTheme, RgbaColor};
+use rockbot_config::{AnimationStyle, ColorTheme, RgbaColor, TuiThemeConfig};
 
 pub const SETTINGS_SECTION_LABELS: [&str; 5] = ["General", "Paths", "About", "Theme", "Fonts"];
 pub const FONT_FAMILY_OPTIONS: [&str; 7] = [
@@ -587,7 +587,7 @@ fn render_theme_token_list(
     frame: &mut Frame,
     area: Rect,
     state: &AppState,
-    theme: &rockbot_core::TuiThemeConfig,
+    theme: &TuiThemeConfig,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -751,12 +751,7 @@ fn render_slider<F>(
     }
 }
 
-fn render_theme_preview(
-    frame: &mut Frame,
-    area: Rect,
-    state: &AppState,
-    theme: &rockbot_core::TuiThemeConfig,
-) {
+fn render_theme_preview(frame: &mut Frame, area: Rect, state: &AppState, theme: &TuiThemeConfig) {
     let active_token = ThemeToken::all()[state.selected_theme_token];
     let selected = active_token.value(theme);
     let selected_hex = format!(
@@ -970,7 +965,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{hsv_to_rgba, rgba_to_hsv};
-    use rockbot_core::RgbaColor;
+    use rockbot_config::RgbaColor;
 
     #[test]
     fn hsv_rgb_round_trip_stays_close() {

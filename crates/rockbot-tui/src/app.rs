@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use rockbot_core::{AnimationStyle, ColorTheme};
+use rockbot_config::{AnimationStyle, ColorTheme, RgbaColor, TuiConfig, TuiThemeConfig};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -134,8 +134,8 @@ fn build_command_registry() -> rockbot_chat::ChatCommandRegistry {
     crate::chat_commands::register_chat_commands(&mut reg);
     // Per-crate commands
     rockbot_credentials::chat_commands::register_chat_commands(&mut reg);
-    // rockbot-core re-exports its own cron commands
-    rockbot_core::chat_commands::register_chat_commands(&mut reg);
+    rockbot_config::chat_commands::register_chat_commands(&mut reg);
+    rockbot_agent::chat_commands::register_chat_commands(&mut reg);
     rockbot_editor::register_chat_commands(&mut reg);
     rockbot_shell::register_chat_commands(&mut reg);
     #[cfg(feature = "doctor-ai")]
@@ -196,7 +196,7 @@ impl App {
         if let Ok(content) = std::fs::read_to_string(&self.state.config_path) {
             if let Ok(table) = content.parse::<toml::Table>() {
                 if let Some(tui_val) = table.get("tui") {
-                    if let Ok(tui_cfg) = tui_val.clone().try_into::<rockbot_core::TuiConfig>() {
+                    if let Ok(tui_cfg) = tui_val.clone().try_into::<TuiConfig>() {
                         self.state.tui_config = tui_cfg;
                         self.effect_state
                             .set_animations_enabled(self.state.tui_config.animations);
@@ -243,7 +243,7 @@ impl App {
         self.state.settings_color_alpha = color.a;
     }
 
-    fn ensure_custom_theme(&mut self) -> rockbot_core::TuiThemeConfig {
+    fn ensure_custom_theme(&mut self) -> TuiThemeConfig {
         self.state
             .tui_config
             .theme
@@ -3411,7 +3411,7 @@ fn point_to_wheel_hs(x: u16, y: u16, rect: Rect) -> (f32, f32) {
     (hue, saturation)
 }
 
-fn write_rgba_token(target: &mut toml_edit::Item, value: rockbot_core::RgbaColor) {
+fn write_rgba_token(target: &mut toml_edit::Item, value: RgbaColor) {
     let mut table = toml_edit::InlineTable::new();
     table.insert("r", toml_edit::Value::from(i64::from(value.r)));
     table.insert("g", toml_edit::Value::from(i64::from(value.g)));
@@ -3420,10 +3420,7 @@ fn write_rgba_token(target: &mut toml_edit::Item, value: rockbot_core::RgbaColor
     *target = toml_edit::value(table);
 }
 
-fn save_tui_preferences_to_config(
-    config_path: &PathBuf,
-    tui: &rockbot_core::TuiConfig,
-) -> Result<()> {
+fn save_tui_preferences_to_config(config_path: &PathBuf, tui: &TuiConfig) -> Result<()> {
     let content = if config_path.exists() {
         std::fs::read_to_string(config_path)?
     } else {

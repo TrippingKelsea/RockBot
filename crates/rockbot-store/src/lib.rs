@@ -29,14 +29,37 @@ impl Store {
     /// Open a plaintext redb database at `path`.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let db = Database::create(path)?;
-        Ok(Self { db })
+        let store = Self { db };
+        store.initialize_tables()?;
+        Ok(store)
     }
 
     /// Open an encrypted redb database at `path` using the given 32-byte key.
     pub fn open_encrypted(path: &Path, key: [u8; 32]) -> anyhow::Result<Self> {
         let backend = EncryptedBackend::open(path, key)?;
         let db = Database::builder().create_with_backend(backend)?;
-        Ok(Self { db })
+        let store = Self { db };
+        store.initialize_tables()?;
+        Ok(store)
+    }
+
+    fn initialize_tables(&self) -> anyhow::Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let _ = write_txn.open_table(tables::ENDPOINTS)?;
+            let _ = write_txn.open_table(tables::CREDENTIALS)?;
+            let _ = write_txn.open_table(tables::PERMISSIONS)?;
+            let _ = write_txn.open_table(tables::KV_STORE)?;
+            let _ = write_txn.open_table(tables::SESSIONS)?;
+            let _ = write_txn.open_table(tables::SESSION_MESSAGES)?;
+            let _ = write_txn.open_table(tables::CRON_JOBS)?;
+            let _ = write_txn.open_table(tables::ROUTE_BINDINGS)?;
+            let _ = write_txn.open_table(tables::PKI_INDEX)?;
+            let _ = write_txn.open_table(tables::AGENTS)?;
+            let _ = write_txn.open_table(tables::VAULT_META)?;
+        }
+        write_txn.commit()?;
+        Ok(())
     }
 
     // -------------------------------------------------------------------------

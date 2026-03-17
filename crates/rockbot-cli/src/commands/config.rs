@@ -147,6 +147,8 @@ fn create_default_config() -> Config {
                 image: None,
             },
             capabilities: CapabilityConfig::default(),
+            storage: rockbot_config::config::StorageSecurityConfig::default(),
+            roles: rockbot_config::config::NodeRoleConfig::default(),
             noise: rockbot_config::config::NoiseTransportConfig::default(),
         },
         credentials: CredentialsConfig::default(),

@@ -4,9 +4,11 @@
 //! HTTP API endpoints, and coordinates agent execution.
 
 use rockbot_agent::agent::{Agent, AgentResponse};
-use rockbot_config::{Config, CredentialsConfig, GatewayConfig};
+use rockbot_config::{
+    Config, CredentialsConfig, GatewayConfig, StorageEncryptionMode, StorageKeySource,
+};
 use rockbot_credentials::{generate_salt, CredentialManager, MasterKey};
-use rockbot_pki::KeyBackend;
+use rockbot_pki::{KeyBackend, PkiManager};
 
 fn tool_locality_label(locality: &rockbot_agent::agent::ToolExecutionLocality) -> String {
     match locality {
@@ -705,6 +707,32 @@ impl Gateway {
                 (None, None, None, None)
             };
 
+        let cron_storage_key = if config.security.storage.enabled
+            && !matches!(
+                config.security.storage.mode,
+                StorageEncryptionMode::Disabled
+            )
+            && matches!(
+                config.security.storage.key_source,
+                StorageKeySource::PkiLocal
+            ) {
+            let pki_dir = config.gateway.pki.pki_dir.clone().unwrap_or_else(|| {
+                dirs::config_dir()
+                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+                    .join("rockbot")
+                    .join("pki")
+            });
+            match PkiManager::new(pki_dir).and_then(|mgr| mgr.ensure_local_storage_key("cron")) {
+                Ok(key) => Some(key),
+                Err(e) => {
+                    warn!("Could not ensure cron storage key: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             config: config.gateway,
             credentials_config: config.credentials,
@@ -732,7 +760,9 @@ impl Gateway {
                 if let Some(parent) = cron_db_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                match crate::cron::CronScheduler::new(&cron_db_path).await {
+                match crate::cron::CronScheduler::new_with_key(&cron_db_path, cron_storage_key)
+                    .await
+                {
                     Ok(scheduler) => {
                         info!("Cron scheduler initialized");
                         Arc::new(scheduler)

@@ -291,6 +291,11 @@ pub struct CronScheduler {
 impl CronScheduler {
     /// Create a new scheduler with redb persistence at `db_path`.
     pub async fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
+        Self::new_with_key(db_path, None).await
+    }
+
+    /// Create a new scheduler with an optional node-local storage key.
+    pub async fn new_with_key<P: AsRef<Path>>(db_path: P, key: Option<[u8; 32]>) -> Result<Self> {
         let path = if db_path.as_ref() == Path::new(":memory:") {
             std::env::temp_dir().join(format!("rockbot-cron-{}.redb", Uuid::new_v4()))
         } else {
@@ -299,7 +304,9 @@ impl CronScheduler {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let store = Arc::new(Store::open(&path).map_err(crate::error::RockBotError::from)?);
+        let store = Arc::new(
+            Store::open_with_optional_key(&path, key).map_err(crate::error::RockBotError::from)?,
+        );
 
         info!("Cron scheduler initialized with database at {:?}", path);
 

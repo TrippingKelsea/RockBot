@@ -173,11 +173,19 @@ impl Session {
 
 impl SessionManager {
     pub async fn new<P: AsRef<Path>>(db_path: P, max_sessions: usize) -> Result<Self> {
+        Self::new_with_key(db_path, max_sessions, None).await
+    }
+
+    pub async fn new_with_key<P: AsRef<Path>>(
+        db_path: P,
+        max_sessions: usize,
+        key: Option<[u8; 32]>,
+    ) -> Result<Self> {
         let path = db_path.as_ref();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let store = Arc::new(Store::open(path)?);
+        let store = Arc::new(Store::open_with_optional_key(path, key)?);
         info!("Session manager initialized with redb store at {:?}", path);
         Ok(Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),

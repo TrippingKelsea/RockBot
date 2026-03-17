@@ -8,6 +8,7 @@ use crate::error::{CredentialError, Result};
 use crate::storage::CredentialVault;
 use crate::types::{
     ApprovalStatus, AuditEntry, CredentialType, Endpoint, EndpointType, PermissionLevel,
+    RegisteredNodeKey, VaultGrantKind, VaultGrantRecord, VaultObjectRecord,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -666,6 +667,61 @@ impl CredentialManager {
     pub async fn list_endpoints(&self) -> Vec<Endpoint> {
         let vault = self.vault.read().await;
         vault.list_endpoints()
+    }
+
+    /// Register or update a distributed-vault node key.
+    pub async fn register_node_key(&self, node: RegisteredNodeKey) -> Result<()> {
+        let vault = self.vault.read().await;
+        vault.register_node_key(node)
+    }
+
+    /// List distributed-vault node key records.
+    pub async fn list_registered_node_keys(&self) -> Vec<RegisteredNodeKey> {
+        let vault = self.vault.read().await;
+        vault.list_registered_node_keys()
+    }
+
+    /// Create a logical distributed vault object.
+    pub async fn create_vault_object(
+        &self,
+        namespace: String,
+        name: String,
+        description: Option<String>,
+        created_by: Option<String>,
+    ) -> Result<VaultObjectRecord> {
+        let vault = self.vault.read().await;
+        vault.create_vault_object(namespace, name, description, created_by)
+    }
+
+    /// Issue a distributed vault grant to a provider or node.
+    pub async fn issue_vault_grant(
+        &self,
+        object_id: Uuid,
+        recipient_node_id: &str,
+        issued_by: Option<String>,
+        kind: VaultGrantKind,
+        plaintext_secret: &[u8],
+    ) -> Result<VaultGrantRecord> {
+        let vault = self.vault.read().await;
+        vault.issue_vault_grant(
+            object_id,
+            recipient_node_id,
+            issued_by,
+            kind,
+            plaintext_secret,
+        )
+    }
+
+    /// Decrypt a distributed vault grant with the recipient Age identity.
+    pub async fn decrypt_vault_grant(
+        &self,
+        object_id: Uuid,
+        recipient_node_id: &str,
+        kind: VaultGrantKind,
+        age_identity: &str,
+    ) -> Result<Vec<u8>> {
+        let vault = self.vault.read().await;
+        vault.decrypt_vault_grant(object_id, recipient_node_id, kind, age_identity)
     }
 
     /// Resolve a credential from a path string

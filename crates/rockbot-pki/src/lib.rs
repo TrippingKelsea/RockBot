@@ -36,4 +36,4 @@ pub use extensions::{
     build_extensions, parse_extensions, CertExtensions, OID_ROCKBOT_GROUPS, OID_ROCKBOT_ROLES,
 };
 pub use index::{CertEntry, CertRole, CertStatus, EnrollmentToken, PkiIndex};
-pub use manager::{CaInfo, ClientCertInfo, PkiManager};
+pub use manager::{CaInfo, ClientCertInfo, NodeVaultKeypairInfo, PkiManager};

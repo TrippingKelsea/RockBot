@@ -2,10 +2,14 @@
 
 use anyhow::Result;
 use rockbot_agent::{Agent, VaultCredentialAccessor};
-use rockbot_config::{config::AgentInstance, Config};
+use rockbot_config::{
+    config::{AgentInstance, StorageEncryptionMode, StorageKeySource},
+    Config,
+};
 use rockbot_gateway::{convert_security_config, convert_tool_config, Gateway};
 use rockbot_llm::LlmProviderRegistry;
 use rockbot_memory::MemoryManager;
+use rockbot_pki::PkiManager;
 use rockbot_security::SecurityManager;
 use rockbot_session::SessionManager;
 use rockbot_tools::ToolRegistry;
@@ -85,7 +89,10 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         .join("sessions.redb");
 
     tokio::fs::create_dir_all(db_path.parent().unwrap()).await?;
-    let session_manager = Arc::new(SessionManager::new(&db_path, 1000).await?);
+    let pki_manager = open_pki_for_storage(&config);
+    let session_key = storage_key_for_label(&config, pki_manager.as_ref(), "sessions");
+    let session_manager =
+        Arc::new(SessionManager::new_with_key(&db_path, 1000, session_key).await?);
 
     // Create gateway
     let mut gateway = Gateway::new(config.clone(), session_manager.clone()).await?;
@@ -164,7 +171,8 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     // Open vault store for agent persistence (if vault is available)
     if vault_result.is_some() {
         let store_path = vault_path.join("agents.redb");
-        match rockbot_store::Store::open(&store_path) {
+        let store_key = storage_key_for_label(&config, pki_manager.as_ref(), "agents");
+        match rockbot_store::Store::open_with_optional_key(&store_path, store_key) {
             Ok(store) => {
                 let store = std::sync::Arc::new(store);
                 gateway.set_store(store);
@@ -289,6 +297,74 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     gateway.start().await?;
 
     Ok(())
+}
+
+fn open_pki_for_storage(config: &Config) -> Option<PkiManager> {
+    if !config.security.storage.enabled {
+        return None;
+    }
+    if matches!(
+        config.security.storage.mode,
+        StorageEncryptionMode::Disabled
+    ) {
+        return None;
+    }
+    if !matches!(
+        config.security.storage.key_source,
+        StorageKeySource::PkiLocal
+    ) {
+        return None;
+    }
+
+    let pki_dir = config
+        .gateway
+        .pki
+        .pki_dir
+        .clone()
+        .unwrap_or_else(default_pki_dir);
+    match PkiManager::new(pki_dir) {
+        Ok(manager) => Some(manager),
+        Err(e) => {
+            warn!("Could not open PKI manager for storage keys: {}", e);
+            None
+        }
+    }
+}
+
+fn storage_key_for_label(
+    config: &Config,
+    pki_manager: Option<&PkiManager>,
+    label: &str,
+) -> Option<[u8; 32]> {
+    if !config.security.storage.enabled {
+        return None;
+    }
+    if matches!(
+        config.security.storage.mode,
+        StorageEncryptionMode::Disabled
+    ) {
+        return None;
+    }
+
+    match config.security.storage.key_source {
+        StorageKeySource::PkiLocal => {
+            pki_manager.and_then(|mgr| match mgr.ensure_local_storage_key(label) {
+                Ok(key) => Some(key),
+                Err(e) => {
+                    warn!("Could not ensure storage key for '{}': {}", label, e);
+                    None
+                }
+            })
+        }
+        StorageKeySource::DataLocal | StorageKeySource::External => None,
+    }
+}
+
+fn default_pki_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+        .join("rockbot")
+        .join("pki")
 }
 
 /// Get the service name based on whether it's user or system level

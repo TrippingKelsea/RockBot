@@ -164,10 +164,26 @@ allowed_commands = ["git", "cargo", "npm"]
 blocked_commands = ["rm", "dd"]
 max_execution_time = 60
 
+[security.storage]
+enabled = true                # Encrypt supported redb stores by default
+mode = "encrypted_by_default" # "disabled", "preferred", "encrypted_by_default"
+key_source = "pki_local"      # "pki_local", "data_local", "external"
+legacy_plaintext_fallback = false
+
+[security.roles]
+gateway = true
+vault_provider = false
+client = true
+admin = false
+
 [security.noise]
 websocket_mode = "disabled"   # "disabled", "preferred", "required"
 stream_mode = "disabled"      # "disabled", "preferred", "required"
 ```
+
+[security.storage]` controls the local redb at-rest encryption policy. The
+first implementation uses PKI-managed node-local storage keys when
+`key_source = "pki_local"`.
 
 `[security.noise]` is transport-policy scaffolding for future hardening. It
 does not yet wrap the main WebSocket or streaming channels in Noise transport,

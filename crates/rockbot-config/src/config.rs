@@ -626,9 +626,93 @@ pub struct SecurityConfig {
     /// Capability restrictions
     #[serde(default)]
     pub capabilities: CapabilityConfig,
+    /// Local encrypted storage policy and key-source settings.
+    #[serde(default)]
+    pub storage: StorageSecurityConfig,
+    /// Logical node-role intent for this process.
+    #[serde(default)]
+    pub roles: NodeRoleConfig,
     /// Noise transport policy for future secure WS/stream encapsulation.
     #[serde(default)]
     pub noise: NoiseTransportConfig,
+}
+
+/// Policy for local at-rest storage encryption.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageEncryptionMode {
+    /// Disable storage encryption and use plaintext stores.
+    Disabled,
+    /// Prefer encrypted storage when available.
+    Preferred,
+    /// Encrypt supported redb stores by default.
+    #[default]
+    EncryptedByDefault,
+}
+
+/// Source of node-local storage keys.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageKeySource {
+    /// Use the PKI directory as the local key source.
+    #[default]
+    PkiLocal,
+    /// Use per-data-directory local key files.
+    DataLocal,
+    /// External source; application does not auto-generate.
+    External,
+}
+
+/// Local at-rest storage settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageSecurityConfig {
+    /// Whether encrypted local storage is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Encryption policy mode.
+    #[serde(default)]
+    pub mode: StorageEncryptionMode,
+    /// Where local storage keys are sourced from.
+    #[serde(default)]
+    pub key_source: StorageKeySource,
+    /// Allow plaintext fallback while migrating older deployments.
+    #[serde(default)]
+    pub legacy_plaintext_fallback: bool,
+}
+
+impl Default for StorageSecurityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: StorageEncryptionMode::EncryptedByDefault,
+            key_source: StorageKeySource::PkiLocal,
+            legacy_plaintext_fallback: false,
+        }
+    }
+}
+
+/// Intended role set for this node/process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeRoleConfig {
+    #[serde(default = "default_true")]
+    pub gateway: bool,
+    #[serde(default)]
+    pub vault_provider: bool,
+    #[serde(default = "default_true")]
+    pub client: bool,
+    #[serde(default)]
+    pub admin: bool,
+}
+
+impl Default for NodeRoleConfig {
+    fn default() -> Self {
+        Self {
+            gateway: true,
+            vault_provider: false,
+            client: true,
+            admin: false,
+        }
+    }
 }
 
 /// Policy for layering an application stream over Noise transport.

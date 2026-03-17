@@ -27,6 +27,11 @@ pub fn policy_for(table_name: &str) -> SyncPolicy {
         n if n == tables::SESSION_MESSAGES.name() => SyncPolicy::Eventual,
         n if n == tables::CRON_JOBS.name() => SyncPolicy::Eventual,
         n if n == tables::AGENTS.name() => SyncPolicy::Eventual,
+        n if n == tables::NODE_KEYS.name() => SyncPolicy::Eager,
+        n if n == tables::VAULT_OBJECTS.name() => SyncPolicy::Eager,
+        n if n == tables::VAULT_PROVIDER_GRANTS.name() => SyncPolicy::Eager,
+        n if n == tables::VAULT_NODE_GRANTS.name() => SyncPolicy::Eager,
+        n if n == tables::VAULT_POLICIES.name() => SyncPolicy::Eager,
         _ => SyncPolicy::LocalOnly,
     }
 }
@@ -45,6 +50,11 @@ pub fn all_policies() -> Vec<(&'static str, SyncPolicy)> {
         (tables::SESSION_MESSAGES.name(), SyncPolicy::Eventual),
         (tables::CRON_JOBS.name(), SyncPolicy::Eventual),
         (tables::AGENTS.name(), SyncPolicy::Eventual),
+        (tables::NODE_KEYS.name(), SyncPolicy::Eager),
+        (tables::VAULT_OBJECTS.name(), SyncPolicy::Eager),
+        (tables::VAULT_PROVIDER_GRANTS.name(), SyncPolicy::Eager),
+        (tables::VAULT_NODE_GRANTS.name(), SyncPolicy::Eager),
+        (tables::VAULT_POLICIES.name(), SyncPolicy::Eager),
     ]
 }
 

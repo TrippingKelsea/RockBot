@@ -13,3 +13,12 @@ pub const ROUTE_BINDINGS: TableDefinition<'static, &str, &[u8]> =
     TableDefinition::new("route_bindings");
 pub const PKI_INDEX: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("pki_index");
 pub const AGENTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("agents");
+pub const NODE_KEYS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("node_keys");
+pub const VAULT_OBJECTS: TableDefinition<'static, &str, &[u8]> =
+    TableDefinition::new("vault_objects");
+pub const VAULT_PROVIDER_GRANTS: TableDefinition<'static, &str, &[u8]> =
+    TableDefinition::new("vault_provider_grants");
+pub const VAULT_NODE_GRANTS: TableDefinition<'static, &str, &[u8]> =
+    TableDefinition::new("vault_node_grants");
+pub const VAULT_POLICIES: TableDefinition<'static, &str, &[u8]> =
+    TableDefinition::new("vault_policies");

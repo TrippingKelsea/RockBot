@@ -1,6 +1,8 @@
 //! High-level PKI manager — the main entry point for all PKI operations.
 
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -17,6 +19,17 @@ const INDEX_FILE: &str = "index.json";
 const CERTS_DIR: &str = "certs";
 const KEYS_DIR: &str = "keys";
 const CRL_FILE: &str = "crl.pem";
+const STORAGE_KEYS_DIR: &str = "storage";
+const VAULT_KEYS_DIR: &str = "vault";
+
+/// Result of ensuring a node-local vault keypair.
+#[derive(Debug, Clone)]
+pub struct NodeVaultKeypairInfo {
+    pub node_label: String,
+    pub identity_path: PathBuf,
+    pub public_key_path: PathBuf,
+    pub public_key: String,
+}
 
 /// Information about the CA certificate.
 #[derive(Debug, Clone)]
@@ -71,6 +84,8 @@ impl PkiManager {
         fs::create_dir_all(&pki_dir)?;
         fs::create_dir_all(pki_dir.join(CERTS_DIR))?;
         fs::create_dir_all(pki_dir.join(KEYS_DIR))?;
+        fs::create_dir_all(pki_dir.join(STORAGE_KEYS_DIR))?;
+        fs::create_dir_all(pki_dir.join(VAULT_KEYS_DIR))?;
 
         let keys_dir = pki_dir.join(KEYS_DIR);
         let backend = Box::new(FileBackend::new(keys_dir));
@@ -86,6 +101,90 @@ impl PkiManager {
     /// Return the PKI directory path.
     pub fn pki_dir(&self) -> &Path {
         &self.pki_dir
+    }
+
+    /// Return the managed storage-key path for a logical store label.
+    pub fn storage_key_path(&self, label: &str) -> PathBuf {
+        self.pki_dir
+            .join(STORAGE_KEYS_DIR)
+            .join(format!("{label}.storage.key"))
+    }
+
+    /// Ensure a node-local 32-byte storage key exists and return it.
+    pub fn ensure_local_storage_key(&self, label: &str) -> anyhow::Result<[u8; 32]> {
+        let path = self.storage_key_path(label);
+        if path.exists() {
+            let bytes = fs::read(&path)?;
+            if bytes.len() != 32 {
+                anyhow::bail!(
+                    "Storage key at {} has wrong length: expected 32 bytes, got {}",
+                    path.display(),
+                    bytes.len()
+                );
+            }
+            return Ok(bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Invalid storage key length"))?);
+        }
+
+        let rng = ring::rand::SystemRandom::new();
+        let mut key = [0u8; 32];
+        ring::rand::SecureRandom::fill(&rng, &mut key)
+            .map_err(|_| anyhow::anyhow!("Failed to generate storage key"))?;
+
+        let mut file = fs::File::create(&path)?;
+        file.write_all(&key)?;
+        let mut perms = file.metadata()?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&path, perms)?;
+        Ok(key)
+    }
+
+    /// Ensure a node-local Age keypair exists for vault grant decryption.
+    pub fn ensure_vault_keypair(&self, node_label: &str) -> anyhow::Result<NodeVaultKeypairInfo> {
+        let identity_path = self
+            .pki_dir
+            .join(VAULT_KEYS_DIR)
+            .join(format!("{node_label}.vault.agekey"));
+        let public_key_path = self
+            .pki_dir
+            .join(VAULT_KEYS_DIR)
+            .join(format!("{node_label}.vault.pub"));
+
+        let public_key = if identity_path.exists() {
+            let identity_text = fs::read_to_string(&identity_path)?;
+            let identity = identity_text
+                .trim()
+                .parse::<age::x25519::Identity>()
+                .map_err(|e| anyhow::anyhow!("Failed to parse vault identity: {e}"))?;
+            identity.to_public().to_string()
+        } else {
+            use age::secrecy::ExposeSecret;
+
+            let identity = age::x25519::Identity::generate();
+            let identity_text = identity.to_string();
+            let public_key = identity.to_public().to_string();
+
+            let mut file = fs::File::create(&identity_path)?;
+            file.write_all(identity_text.expose_secret().as_bytes())?;
+            let mut perms = file.metadata()?.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&identity_path, perms)?;
+            fs::write(&public_key_path, format!("{public_key}\n"))?;
+
+            public_key
+        };
+
+        if !public_key_path.exists() {
+            fs::write(&public_key_path, format!("{public_key}\n"))?;
+        }
+
+        Ok(NodeVaultKeypairInfo {
+            node_label: node_label.to_string(),
+            identity_path,
+            public_key_path,
+            public_key,
+        })
     }
 
     /// Persist the in-memory index to disk.

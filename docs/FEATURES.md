@@ -85,6 +85,9 @@ This document tracks feature implementation status and helps identify gaps betwe
 | redb storage backend | ✅ | Replaced flat JSON files; auto-migration of legacy data |
 | Generic KV store | ✅ | Namespaced key-value storage in vault |
 | ChaCha20 storage encryption | ✅ | Block-level encryption via `redb::StorageBackend` |
+| Distributed vault node registry | ✅ | `node_keys` table + manager APIs |
+| Distributed vault object metadata | ✅ | `vault_objects` table |
+| Per-node/provider vault grants | ✅ | Age-encrypted `vault_node_grants` / `vault_provider_grants` |
 | OpenRaft replication | 🚧 | Feature-gated (`replication`); log store + state machine implemented, network stubs |
 
 ### Endpoint Types

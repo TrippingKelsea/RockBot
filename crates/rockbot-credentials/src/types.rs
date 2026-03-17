@@ -263,6 +263,71 @@ impl std::fmt::Display for PermissionLevel {
     }
 }
 
+/// Replicated cluster role used for distributed vault authority decisions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterNodeRole {
+    Gateway,
+    VaultProvider,
+    Client,
+    Admin,
+}
+
+/// Registered node vault-key record replicated across the cluster.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegisteredNodeKey {
+    pub node_id: String,
+    pub identity_fingerprint: Option<String>,
+    pub vault_public_key: String,
+    #[serde(default)]
+    pub roles: Vec<ClusterNodeRole>,
+    #[serde(default = "default_true_bool")]
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+    pub rotated_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Logical vault object metadata. Secret material is distributed via grants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VaultObjectRecord {
+    pub id: Uuid,
+    pub namespace: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub version: u64,
+}
+
+/// Kind of vault grant recipient.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum VaultGrantKind {
+    Provider,
+    Node,
+}
+
+/// Per-recipient encrypted grant for a distributed vault object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VaultGrantRecord {
+    pub object_id: Uuid,
+    pub recipient_node_id: String,
+    pub issued_by: Option<String>,
+    pub grant_kind: VaultGrantKind,
+    pub algorithm: String,
+    pub key_id: Option<String>,
+    /// Base64-encoded age ciphertext.
+    pub ciphertext: String,
+    pub version: u64,
+    pub created_at: DateTime<Utc>,
+}
+
+fn default_true_bool() -> bool {
+    true
+}
+
 /// Hash type for SHA-256 hashes (32 bytes).
 pub type Hash256 = [u8; 32];
 

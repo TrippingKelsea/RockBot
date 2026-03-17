@@ -317,11 +317,23 @@ impl RoutingEngine {
         default_agent_id: impl Into<String>,
         default_session_scope: SessionScope,
     ) -> Result<Self> {
+        Self::new_with_key(db_path, default_agent_id, default_session_scope, None).await
+    }
+
+    /// Create a new routing engine with an optional node-local storage key.
+    pub async fn new_with_key<P: AsRef<Path>>(
+        db_path: P,
+        default_agent_id: impl Into<String>,
+        default_session_scope: SessionScope,
+        key: Option<[u8; 32]>,
+    ) -> Result<Self> {
         let path = db_path.as_ref();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let store = Arc::new(Store::open(path).map_err(crate::error::RockBotError::from)?);
+        let store = Arc::new(
+            Store::open_with_optional_key(path, key).map_err(crate::error::RockBotError::from)?,
+        );
 
         let engine = Self {
             bindings: Arc::new(RwLock::new(HashMap::new())),

@@ -22,7 +22,10 @@ use crate::crypto::{
     decrypt, encrypt, generate_nonce, generate_salt, MasterKey, KEY_SIZE, NONCE_SIZE,
 };
 use crate::error::{CredentialError, Result};
-use crate::types::{hex_decode, hex_encode, Credential, CredentialType, Endpoint, EndpointType};
+use crate::types::{
+    hex_decode, hex_encode, Credential, CredentialType, Endpoint, EndpointType, RegisteredNodeKey,
+    VaultGrantKind, VaultGrantRecord, VaultObjectRecord,
+};
 
 use rockbot_store::tables;
 use rockbot_store::Store;
@@ -107,6 +110,74 @@ fn unwrap_key_with_age(wrapped_key: &str, identity_str: &str) -> Result<Vec<u8>>
             KEY_SIZE,
             decrypted.len()
         )));
+    }
+
+    Ok(decrypted)
+}
+
+/// Encrypt arbitrary data for an Age recipient public key and return a
+/// base64-encoded ciphertext.
+fn encrypt_for_age_recipient(data: &[u8], public_key: &str) -> Result<String> {
+    use age::Encryptor;
+    use std::io::Write;
+
+    let recipient: Box<dyn age::Recipient + Send> = public_key
+        .parse::<age::x25519::Recipient>()
+        .map(|r| Box::new(r) as Box<dyn age::Recipient + Send>)
+        .map_err(|e| CredentialError::ValidationFailed(format!("Invalid Age public key: {e}")))?;
+
+    let encryptor = Encryptor::with_recipients(vec![recipient]).ok_or_else(|| {
+        CredentialError::Internal("No recipients provided for Age encryption".to_string())
+    })?;
+
+    let mut encrypted = vec![];
+    let mut writer = encryptor
+        .wrap_output(&mut encrypted)
+        .map_err(|e| CredentialError::Internal(format!("Age wrap error: {e}")))?;
+    writer
+        .write_all(data)
+        .map_err(|e| CredentialError::Internal(format!("Age write error: {e}")))?;
+    writer
+        .finish()
+        .map_err(|e| CredentialError::Internal(format!("Age finish error: {e}")))?;
+
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    Ok(STANDARD.encode(&encrypted))
+}
+
+/// Decrypt a base64-encoded Age ciphertext with a node identity.
+fn decrypt_with_age_identity(ciphertext: &str, identity_str: &str) -> Result<Vec<u8>> {
+    use age::Decryptor;
+    use std::io::Read;
+
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let encrypted = STANDARD
+        .decode(ciphertext)
+        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?;
+
+    let identity: Box<dyn age::Identity> = identity_str
+        .parse::<age::x25519::Identity>()
+        .map(|i| Box::new(i) as Box<dyn age::Identity>)
+        .map_err(|e| CredentialError::ValidationFailed(format!("Invalid Age identity: {e}")))?;
+
+    let decryptor = Decryptor::new(&encrypted[..])
+        .map_err(|e| CredentialError::Internal(format!("Age decryptor error: {e}")))?;
+
+    let mut decrypted = vec![];
+    match decryptor {
+        Decryptor::Recipients(d) => {
+            let mut reader = d
+                .decrypt(std::iter::once(&*identity as &dyn age::Identity))
+                .map_err(|_| CredentialError::InvalidPassword)?;
+            reader
+                .read_to_end(&mut decrypted)
+                .map_err(|e| CredentialError::Internal(format!("Age read error: {e}")))?;
+        }
+        _ => {
+            return Err(CredentialError::Internal(
+                "Unexpected Age decryptor type".to_string(),
+            ))
+        }
     }
 
     Ok(decrypted)
@@ -807,6 +878,140 @@ impl CredentialVault {
         Ok(credentials)
     }
 
+    fn store_get_node_key(&self, node_id: &str) -> Result<Option<RegisteredNodeKey>> {
+        let bytes = self
+            .store
+            .get(tables::NODE_KEYS, node_id)
+            .map_err(|e| CredentialError::Internal(format!("Store get error: {e}")))?;
+        match bytes {
+            Some(b) => {
+                Ok(Some(serde_json::from_slice(&b).map_err(|e| {
+                    CredentialError::DeserializationError(e.to_string())
+                })?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn store_put_node_key(&self, node: &RegisteredNodeKey) -> Result<()> {
+        let json = serde_json::to_vec(node)
+            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
+        self.store
+            .put(tables::NODE_KEYS, &node.node_id, &json)
+            .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
+        Ok(())
+    }
+
+    fn store_list_node_keys(&self) -> Result<Vec<RegisteredNodeKey>> {
+        let entries = self
+            .store
+            .list(tables::NODE_KEYS)
+            .map_err(|e| CredentialError::Internal(format!("Store list error: {e}")))?;
+        entries
+            .into_iter()
+            .map(|(_, bytes)| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|e| CredentialError::DeserializationError(e.to_string()))
+            })
+            .collect()
+    }
+
+    fn store_get_vault_object(&self, object_id: Uuid) -> Result<Option<VaultObjectRecord>> {
+        let bytes = self
+            .store
+            .get(tables::VAULT_OBJECTS, &object_id.to_string())
+            .map_err(|e| CredentialError::Internal(format!("Store get error: {e}")))?;
+        match bytes {
+            Some(b) => {
+                Ok(Some(serde_json::from_slice(&b).map_err(|e| {
+                    CredentialError::DeserializationError(e.to_string())
+                })?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn store_put_vault_object(&self, object: &VaultObjectRecord) -> Result<()> {
+        let json = serde_json::to_vec(object)
+            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
+        self.store
+            .put(tables::VAULT_OBJECTS, &object.id.to_string(), &json)
+            .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
+        Ok(())
+    }
+
+    fn store_list_vault_objects(&self) -> Result<Vec<VaultObjectRecord>> {
+        let entries = self
+            .store
+            .list(tables::VAULT_OBJECTS)
+            .map_err(|e| CredentialError::Internal(format!("Store list error: {e}")))?;
+        entries
+            .into_iter()
+            .map(|(_, bytes)| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|e| CredentialError::DeserializationError(e.to_string()))
+            })
+            .collect()
+    }
+
+    fn grant_table(
+        kind: VaultGrantKind,
+    ) -> rockbot_store::TableDefinition<'static, &'static str, &'static [u8]> {
+        match kind {
+            VaultGrantKind::Provider => tables::VAULT_PROVIDER_GRANTS,
+            VaultGrantKind::Node => tables::VAULT_NODE_GRANTS,
+        }
+    }
+
+    fn grant_row_key(object_id: Uuid, recipient_node_id: &str) -> String {
+        format!("{object_id}\0{recipient_node_id}")
+    }
+
+    fn store_get_grant(
+        &self,
+        object_id: Uuid,
+        recipient_node_id: &str,
+        kind: VaultGrantKind,
+    ) -> Result<Option<VaultGrantRecord>> {
+        let key = Self::grant_row_key(object_id, recipient_node_id);
+        let bytes = self
+            .store
+            .get(Self::grant_table(kind), &key)
+            .map_err(|e| CredentialError::Internal(format!("Store get error: {e}")))?;
+        match bytes {
+            Some(b) => {
+                Ok(Some(serde_json::from_slice(&b).map_err(|e| {
+                    CredentialError::DeserializationError(e.to_string())
+                })?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn store_put_grant(&self, grant: &VaultGrantRecord) -> Result<()> {
+        let json = serde_json::to_vec(grant)
+            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
+        let key = Self::grant_row_key(grant.object_id, &grant.recipient_node_id);
+        self.store
+            .put(Self::grant_table(grant.grant_kind), &key, &json)
+            .map_err(|e| CredentialError::Internal(format!("Store put error: {e}")))?;
+        Ok(())
+    }
+
+    fn store_list_grants(&self, kind: VaultGrantKind) -> Result<Vec<VaultGrantRecord>> {
+        let entries = self
+            .store
+            .list(Self::grant_table(kind))
+            .map_err(|e| CredentialError::Internal(format!("Store list error: {e}")))?;
+        entries
+            .into_iter()
+            .map(|(_, bytes)| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|e| CredentialError::DeserializationError(e.to_string()))
+            })
+            .collect()
+    }
+
     // === Endpoint Operations ===
 
     /// Creates a new endpoint.
@@ -1010,6 +1215,110 @@ impl CredentialVault {
     /// Lists all credentials.
     pub fn list_credentials(&self) -> Vec<Credential> {
         self.store_list_credentials().unwrap_or_default()
+    }
+
+    // === Distributed Vault Operations ===
+
+    /// Register or update a node's vault public key and role metadata.
+    pub fn register_node_key(&self, node: RegisteredNodeKey) -> Result<()> {
+        self.store_put_node_key(&node)
+    }
+
+    /// Get a registered node key record.
+    pub fn get_registered_node_key(&self, node_id: &str) -> Result<RegisteredNodeKey> {
+        self.store_get_node_key(node_id)?.ok_or_else(|| {
+            CredentialError::ValidationFailed(format!("node '{node_id}' is not registered"))
+        })
+    }
+
+    /// List all registered node key records.
+    pub fn list_registered_node_keys(&self) -> Vec<RegisteredNodeKey> {
+        self.store_list_node_keys().unwrap_or_default()
+    }
+
+    /// Create a logical distributed vault object. Secret material is shared via grants.
+    pub fn create_vault_object(
+        &self,
+        namespace: String,
+        name: String,
+        description: Option<String>,
+        created_by: Option<String>,
+    ) -> Result<VaultObjectRecord> {
+        let now = Utc::now();
+        let object = VaultObjectRecord {
+            id: Uuid::new_v4(),
+            namespace,
+            name,
+            description,
+            created_by,
+            created_at: now,
+            updated_at: now,
+            version: 1,
+        };
+        self.store_put_vault_object(&object)?;
+        Ok(object)
+    }
+
+    /// List distributed vault objects.
+    pub fn list_vault_objects(&self) -> Vec<VaultObjectRecord> {
+        self.store_list_vault_objects().unwrap_or_default()
+    }
+
+    /// Issue a per-recipient encrypted grant for an existing object.
+    pub fn issue_vault_grant(
+        &self,
+        object_id: Uuid,
+        recipient_node_id: &str,
+        issued_by: Option<String>,
+        kind: VaultGrantKind,
+        plaintext_secret: &[u8],
+    ) -> Result<VaultGrantRecord> {
+        let object = self.store_get_vault_object(object_id)?.ok_or_else(|| {
+            CredentialError::ValidationFailed(format!("vault object '{object_id}' not found"))
+        })?;
+        let node = self.get_registered_node_key(recipient_node_id)?;
+        let ciphertext = encrypt_for_age_recipient(plaintext_secret, &node.vault_public_key)?;
+        let grant = VaultGrantRecord {
+            object_id,
+            recipient_node_id: recipient_node_id.to_string(),
+            issued_by,
+            grant_kind: kind,
+            algorithm: "age_x25519".to_string(),
+            key_id: Some(node.vault_public_key.clone()),
+            ciphertext,
+            version: object.version,
+            created_at: Utc::now(),
+        };
+        self.store_put_grant(&grant)?;
+        Ok(grant)
+    }
+
+    /// Get a vault grant for a specific object and recipient.
+    pub fn get_vault_grant(
+        &self,
+        object_id: Uuid,
+        recipient_node_id: &str,
+        kind: VaultGrantKind,
+    ) -> Result<VaultGrantRecord> {
+        self.store_get_grant(object_id, recipient_node_id, kind)?
+            .ok_or_else(|| CredentialError::ValidationFailed("vault grant not found".to_string()))
+    }
+
+    /// List grants by type.
+    pub fn list_vault_grants(&self, kind: VaultGrantKind) -> Vec<VaultGrantRecord> {
+        self.store_list_grants(kind).unwrap_or_default()
+    }
+
+    /// Decrypt a vault grant with the recipient Age identity.
+    pub fn decrypt_vault_grant(
+        &self,
+        object_id: Uuid,
+        recipient_node_id: &str,
+        kind: VaultGrantKind,
+        age_identity: &str,
+    ) -> Result<Vec<u8>> {
+        let grant = self.get_vault_grant(object_id, recipient_node_id, kind)?;
+        decrypt_with_age_identity(&grant.ciphertext, age_identity)
     }
 
     // === KV Store Operations ===
@@ -1401,5 +1710,83 @@ mod tests {
         let endpoints = vault.list_endpoints();
         assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].name, "Legacy Endpoint");
+    }
+
+    #[test]
+    fn test_distributed_vault_node_registration_and_grants() {
+        use age::secrecy::ExposeSecret;
+
+        let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
+        let vault = CredentialVault::open(dir.path()).unwrap();
+
+        let provider_identity = age::x25519::Identity::generate();
+        let node_identity = age::x25519::Identity::generate();
+
+        vault
+            .register_node_key(RegisteredNodeKey {
+                node_id: "provider-a".to_string(),
+                identity_fingerprint: Some("fp-provider".to_string()),
+                vault_public_key: provider_identity.to_public().to_string(),
+                roles: vec![crate::types::ClusterNodeRole::VaultProvider],
+                active: true,
+                created_at: Utc::now(),
+                rotated_at: None,
+                revoked_at: None,
+            })
+            .unwrap();
+        vault
+            .register_node_key(RegisteredNodeKey {
+                node_id: "node-b".to_string(),
+                identity_fingerprint: Some("fp-node".to_string()),
+                vault_public_key: node_identity.to_public().to_string(),
+                roles: vec![crate::types::ClusterNodeRole::Client],
+                active: true,
+                created_at: Utc::now(),
+                rotated_at: None,
+                revoked_at: None,
+            })
+            .unwrap();
+
+        let object = vault
+            .create_vault_object(
+                "prod".to_string(),
+                "anthropic_api_key".to_string(),
+                Some("Primary Anthropic credential".to_string()),
+                Some("provider-a".to_string()),
+            )
+            .unwrap();
+
+        let provider_grant = vault
+            .issue_vault_grant(
+                object.id,
+                "provider-a",
+                Some("provider-a".to_string()),
+                VaultGrantKind::Provider,
+                b"secret-value",
+            )
+            .unwrap();
+        assert_eq!(provider_grant.grant_kind, VaultGrantKind::Provider);
+
+        let node_grant = vault
+            .issue_vault_grant(
+                object.id,
+                "node-b",
+                Some("provider-a".to_string()),
+                VaultGrantKind::Node,
+                b"secret-value",
+            )
+            .unwrap();
+        assert_eq!(node_grant.recipient_node_id, "node-b");
+
+        let decrypted = vault
+            .decrypt_vault_grant(
+                object.id,
+                "node-b",
+                VaultGrantKind::Node,
+                node_identity.to_string().expose_secret(),
+            )
+            .unwrap();
+        assert_eq!(decrypted, b"secret-value");
     }
 }

@@ -12,10 +12,11 @@ pub use config::{
     AgentConfig, AgentDefaults, AgentInstance, AgentToolConfig, AnimationStyle,
     AnthropicProviderConfig, BedrockProviderConfig, CapabilityConfig, ColorTheme, Config,
     ConfigWatcher, CredentialsConfig, EdgeCondition, FilesystemCapabilities, GatewayConfig,
-    McpServerEntry, NetworkCapabilities, OllamaProviderConfig, OpenAiProviderConfig, PkiConfig,
-    ProcessCapabilities, ProvidersConfig, RgbaColor, SandboxConfig, SecurityConfig,
-    SeedModelConfig, ToolConfig, TuiConfig, TuiFontPreferences, TuiThemeConfig, WorkflowDefinition,
-    WorkflowEdge, WorkflowNode,
+    McpServerEntry, NetworkCapabilities, NodeRoleConfig, OllamaProviderConfig,
+    OpenAiProviderConfig, PkiConfig, ProcessCapabilities, ProvidersConfig, RgbaColor,
+    SandboxConfig, SecurityConfig, SeedModelConfig, StorageEncryptionMode, StorageKeySource,
+    StorageSecurityConfig, ToolConfig, TuiConfig, TuiFontPreferences, TuiThemeConfig,
+    WorkflowDefinition, WorkflowEdge, WorkflowNode,
 };
 
 pub use error::{

@@ -132,6 +132,11 @@ fn bytes_table_def(
         "route_bindings" => Ok(tables::ROUTE_BINDINGS),
         "pki_index" => Ok(tables::PKI_INDEX),
         "agents" => Ok(tables::AGENTS),
+        "node_keys" => Ok(tables::NODE_KEYS),
+        "vault_objects" => Ok(tables::VAULT_OBJECTS),
+        "vault_provider_grants" => Ok(tables::VAULT_PROVIDER_GRANTS),
+        "vault_node_grants" => Ok(tables::VAULT_NODE_GRANTS),
+        "vault_policies" => Ok(tables::VAULT_POLICIES),
         other => Err(io::Error::other(format!("unknown table: {other}"))),
     }
 }

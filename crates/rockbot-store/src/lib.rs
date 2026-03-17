@@ -43,6 +43,15 @@ impl Store {
         Ok(store)
     }
 
+    /// Open a store using encrypted storage when a key is available, otherwise
+    /// use the plaintext backend.
+    pub fn open_with_optional_key(path: &Path, key: Option<[u8; 32]>) -> anyhow::Result<Self> {
+        match key {
+            Some(key) => Self::open_encrypted(path, key),
+            None => Self::open(path),
+        }
+    }
+
     fn initialize_tables(&self) -> anyhow::Result<()> {
         let write_txn = self.db.begin_write()?;
         {
@@ -56,6 +65,11 @@ impl Store {
             let _ = write_txn.open_table(tables::ROUTE_BINDINGS)?;
             let _ = write_txn.open_table(tables::PKI_INDEX)?;
             let _ = write_txn.open_table(tables::AGENTS)?;
+            let _ = write_txn.open_table(tables::NODE_KEYS)?;
+            let _ = write_txn.open_table(tables::VAULT_OBJECTS)?;
+            let _ = write_txn.open_table(tables::VAULT_PROVIDER_GRANTS)?;
+            let _ = write_txn.open_table(tables::VAULT_NODE_GRANTS)?;
+            let _ = write_txn.open_table(tables::VAULT_POLICIES)?;
             let _ = write_txn.open_table(tables::VAULT_META)?;
         }
         write_txn.commit()?;

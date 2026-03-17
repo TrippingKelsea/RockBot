@@ -11,6 +11,23 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 ## [Unreleased]
 
 ### Added
+- **Config**: `[security.storage]` and `[security.roles]` for encrypted local
+  storage policy, PKI-backed local key sourcing, and explicit gateway /
+  vault-provider deployment intent
+- **PKI**: Node-local key helpers in `rockbot-pki`
+  - PKI-managed local storage keys via `ensure_local_storage_key()`
+  - Age-based node vault keypairs via `ensure_vault_keypair()`
+- **Store**: Distributed vault tables and replication policy coverage
+  - `node_keys`
+  - `vault_objects`
+  - `vault_provider_grants`
+  - `vault_node_grants`
+  - `vault_policies`
+- **Credentials**: Initial distributed vault primitives
+  - Registered node vault-key records
+  - Logical vault objects separate from grant payloads
+  - Per-recipient Age-encrypted provider and node grants
+  - Grant decryption helpers and async manager wrappers
 - **Config**: `[security.noise]` transport policy scaffolding for future
   `ws-over-noise` and `stream-over-noise` enforcement modes
 - **Gateway API**: `GET /api/executors` for listing connected remote executors,
@@ -47,6 +64,8 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   - Automatic save of `[tui]`, `[tui.theme]`, and `[tui.fonts]` changes to `rockbot.toml`
 
 ### Fixed
+- **Gateway startup**: Session, cron, and agent-persistence stores can now use
+  PKI-managed node-local storage keys through encrypted redb open paths
 - **Gateway WebSocket**: agent messages no longer block the connection read loop,
   allowing remote tool responses to be processed immediately instead of timing
   out and arriving later as unknown request IDs

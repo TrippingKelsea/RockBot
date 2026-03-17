@@ -68,8 +68,9 @@ pub mod types;
 // Re-export commonly used types at crate root
 pub use error::{CredentialError, ErrorCode, Result};
 pub use types::{
-    ApprovalRequest, ApprovalStatus, AuditEntry, Credential, CredentialType, Endpoint,
-    EndpointType, Hash256, HttpMethod, Permission, PermissionLevel, ResultStatus, ZERO_HASH,
+    ApprovalRequest, ApprovalStatus, AuditEntry, ClusterNodeRole, Credential, CredentialType,
+    Endpoint, EndpointType, Hash256, HttpMethod, Permission, PermissionLevel, RegisteredNodeKey,
+    ResultStatus, VaultGrantKind, VaultGrantRecord, VaultObjectRecord, ZERO_HASH,
 };
 
 // Re-export hex utilities

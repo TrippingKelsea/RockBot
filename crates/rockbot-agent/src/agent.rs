@@ -1416,7 +1416,13 @@ impl Agent {
 
             let effective_workspace = self.resolve_workspace(context);
             let (tool_results, tool_messages, handoff_signal) = self
-                .execute_tool_calls(session_id, &current_response, &effective_workspace, context)
+                .execute_tool_calls(
+                    session_id,
+                    &current_response,
+                    &effective_workspace,
+                    context,
+                    &None,
+                )
                 .await?;
 
             // If handoff detected in streaming path, break immediately
@@ -2846,7 +2852,13 @@ The user wants me to explore the codebase. I should start by listing the directo
 
             let effective_workspace = self.resolve_workspace(context);
             let (tool_results, tool_messages, handoff_signal) = self
-                .execute_tool_calls(session_id, &current_response, &effective_workspace, context)
+                .execute_tool_calls(
+                    session_id,
+                    &current_response,
+                    &effective_workspace,
+                    context,
+                    progress_tx,
+                )
                 .await?;
 
             // Notify progress listener of completed tool calls with output
@@ -3483,6 +3495,7 @@ The user wants me to explore the codebase. I should start by listing the directo
         llm_response: &ChatCompletionResponse,
         workspace: &std::path::Path,
         _context: &ProcessingContext,
+        progress_tx: &Option<ProgressSender>,
     ) -> Result<(
         Vec<ToolExecutionResult>,
         Vec<Message>,
@@ -3677,11 +3690,15 @@ The user wants me to explore the codebase. I should start by listing the directo
                     };
 
                     #[cfg(feature = "remote-exec")]
+                    let remote_output_locality =
+                        remote_result.as_ref().map(|(_, locality)| locality.clone());
+
+                    #[cfg(feature = "remote-exec")]
                     let remote_output_forwarder =
-                        if let (Some((_, mut output_rx)), Some(progress), Some((_, locality))) = (
+                        if let (Some((_, mut output_rx)), Some(progress), Some(locality)) = (
                             remote_output_channel,
                             progress_tx.clone(),
-                            remote_result.as_ref(),
+                            remote_output_locality,
                         ) {
                             let tool_name = tool_call.function.name.clone();
                             Some(tokio::spawn(async move {

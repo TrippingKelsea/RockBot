@@ -29,7 +29,7 @@ butler = ["dep:rockbot-butler"]
 # Noise handshake and transport primitives
 noise = ["dep:snow", "rockbot-client/noise"]
 # Remote tool execution builds on the Noise transport
-remote-exec = ["noise", "rockbot-client/remote-exec"]
+remote-exec = ["noise", "rockbot-client/remote-exec", "rockbot-agent/remote-exec"]
 # S3 CA distribution + Route53 DNS
 bedrock-deploy = ["bedrock", "dep:rockbot-deploy", "rockbot-deploy/bedrock"]
 # Allow plain-text HTTP/WS connections (insecure; default requires TLS)

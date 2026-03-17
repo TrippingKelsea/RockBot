@@ -15,7 +15,7 @@ path = "src/main.rs"
 default = ["conservative"]
 # Meta profiles
 conservative = ["bedrock", "telegram", "signal", "tools-credentials", "tools-mcp", "tools-markdown"]
-enhanced = ["conservative", "overseer", "doctor-ai", "butler", "vault-replication"]
+enhanced = ["conservative", "overseer", "doctor-ai", "butler", "vault-replication", "remote-exec"]
 experimental = ["enhanced", "otel", "bedrock-deploy"]
 enshitify = ["discord"]
 # LLM providers

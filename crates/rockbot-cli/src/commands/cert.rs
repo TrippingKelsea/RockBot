@@ -781,14 +781,14 @@ async fn run_enroll(command: &EnrollCommands, config_path: &PathBuf) -> Result<(
             psk,
             name,
             role,
-        } => cmd_enroll_submit(config_path, gateway, psk, name, role).await,
+        } => cmd_enroll_submit(config_path, gateway.as_deref(), psk, name, role).await,
     }
 }
 
 /// Enroll with a remote gateway — generate key + CSR, send to /api/cert/sign, save result.
 async fn cmd_enroll_submit(
     config_path: &Path,
-    gateway: &str,
+    gateway: Option<&str>,
     psk: &str,
     name: &str,
     role_str: &str,
@@ -806,6 +806,19 @@ async fn cmd_enroll_submit(
     let csr_pem = rockbot_pki::ca::generate_csr(&key_handle, name)?;
 
     // Send to gateway
+    let configured_gateway = rockbot_config::Config::from_file(config_path)
+        .await
+        .ok()
+        .map(|config| format!("https://{}:{}", config.client.gateway_host, config.client.https_port));
+    let gateway = gateway
+        .map(ToOwned::to_owned)
+        .or(configured_gateway)
+        .ok_or_else(|| anyhow::anyhow!("No gateway provided and no [client] bootstrap target configured"))?;
+    let gateway = if gateway.contains("://") {
+        gateway
+    } else {
+        format!("https://{gateway}")
+    };
     let url = format!("{}/api/cert/sign", gateway.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)

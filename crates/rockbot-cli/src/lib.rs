@@ -353,9 +353,9 @@ pub enum EnrollCommands {
     },
     /// Enroll this client with a remote gateway using a PSK
     Submit {
-        /// Gateway address (e.g. https://host:port)
+        /// Gateway address (e.g. https://host:port). Defaults to [client].gateway_host:[client].https_port from config.
         #[arg(long)]
-        gateway: String,
+        gateway: Option<String>,
         /// Pre-shared enrollment key
         #[arg(long)]
         psk: String,

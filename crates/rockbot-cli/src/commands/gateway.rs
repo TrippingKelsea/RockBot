@@ -100,7 +100,12 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         Arc::new(SessionManager::new_with_key(&db_path, 1000, session_key).await?);
 
     // Create gateway
-    let mut gateway = Gateway::new(config.clone(), session_manager.clone()).await?;
+    let mut gateway = Gateway::new(
+        config.clone(),
+        session_manager.clone(),
+        vault_result.as_ref().map(|result| result.manager.clone()),
+    )
+    .await?;
     gateway.set_config_path(config_path.clone());
 
     // Initialize other components

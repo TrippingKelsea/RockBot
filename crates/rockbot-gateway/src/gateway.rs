@@ -572,11 +572,17 @@ pub fn convert_security_config(
 
 impl Gateway {
     /// Create a new gateway with the given configuration
-    pub async fn new(config: Config, session_manager: Arc<SessionManager>) -> Result<Self> {
+    pub async fn new(
+        config: Config,
+        session_manager: Arc<SessionManager>,
+        credential_manager_override: Option<Arc<CredentialManager>>,
+    ) -> Result<Self> {
         let (shutdown_tx, _) = broadcast::channel(1);
 
         // Initialize credential manager if enabled
-        let credential_manager = if config.credentials.enabled {
+        let credential_manager = if let Some(manager) = credential_manager_override {
+            Some(manager)
+        } else if config.credentials.enabled {
             // Check if vault exists first
             if !rockbot_credentials::CredentialVault::exists(&config.credentials.vault_path) {
                 info!(
@@ -6140,12 +6146,6 @@ impl Gateway {
 
         let ca_cert_path = pki_dir.join("ca.crt");
         let ca_key_path = pki_dir.join("ca.key");
-        if !ca_cert_path.exists() || !ca_key_path.exists() {
-            return Ok(Self::json_error(
-                "PKI not initialized. Run 'rockbot cert ca generate' first.",
-                StatusCode::SERVICE_UNAVAILABLE,
-            ));
-        }
 
         // Parse request body
         let body = match req.collect().await {
@@ -6222,8 +6222,8 @@ impl Gateway {
             Ok(s) => s,
             Err(e) => {
                 return Ok(Self::json_error(
-                    &format!("Failed to read CA cert: {e}"),
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("PKI not initialized: failed to read CA cert: {e}"),
+                    StatusCode::SERVICE_UNAVAILABLE,
                 ));
             }
         };
@@ -6233,8 +6233,8 @@ impl Gateway {
             Ok(k) => k,
             Err(e) => {
                 return Ok(Self::json_error(
-                    &format!("Failed to load CA key: {e}"),
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("PKI not initialized: failed to load CA key: {e}"),
+                    StatusCode::SERVICE_UNAVAILABLE,
                 ));
             }
         };
@@ -6719,7 +6719,7 @@ mod tests {
             seed_model: Default::default(),
         };
 
-        Gateway::new(config, session_manager).await.unwrap()
+        Gateway::new(config, session_manager, None).await.unwrap()
     }
 
     #[tokio::test]

@@ -433,13 +433,6 @@ async fn cmd_sign(
 
 async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
     let dir = resolve_pki_dir_from_config(config_path).await?;
-    let mgr = open_pki(dir.clone())?;
-
-    // Verify the client exists
-    let entry = mgr
-        .client_info(name)
-        .with_context(|| format!("No certificate found for '{name}'"))?;
-
     let cert_path = dir.join("certs").join(format!("{name}.crt"));
     let key_path = dir.join("keys").join(format!("{name}.key"));
     let ca_path = dir.join("ca.crt");
@@ -450,6 +443,27 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
     if !key_path.exists() {
         anyhow::bail!("Key file not found: {}", key_path.display());
     }
+
+    let mut mgr = open_pki(dir.clone())?;
+    let role = match mgr.client_info(name) {
+        Ok(entry) => entry.role,
+        Err(_) => {
+            let config = rockbot_config::Config::from_file(config_path)
+                .await
+                .with_context(|| format!("Failed to load config: {}", config_path.display()))?;
+            let inferred_role = if config.security.roles.gateway {
+                CertRole::Gateway
+            } else {
+                CertRole::Tui
+            };
+            let cert_pem = tokio::fs::read_to_string(&cert_path)
+                .await
+                .with_context(|| format!("Failed to read certificate: {}", cert_path.display()))?;
+            mgr.import_signed_client(name, inferred_role, &cert_pem)
+                .with_context(|| format!("Failed to import certificate '{name}' into local PKI index"))?;
+            inferred_role
+        }
+    };
 
     // Read and patch the TOML config
     let content = tokio::fs::read_to_string(config_path)
@@ -473,7 +487,7 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
     doc["gateway"]["pki_dir"] = toml_edit::value(dir.to_string_lossy().as_ref());
 
     // Set require_client_cert based on role
-    if entry.role == CertRole::Gateway {
+    if role == CertRole::Gateway {
         // Gateway certs: enable mTLS by default
         doc["gateway"]["require_client_cert"] = toml_edit::value(true);
     }
@@ -482,7 +496,7 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
 
     println!(
         "Installed certificate '{name}' (role: {}) into config:",
-        entry.role
+        role
     );
     println!("  tls_cert: {}", cert_path.display());
     println!("  tls_key:  {}", key_path.display());
@@ -491,7 +505,7 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
     }
     println!("  pki_dir:  {}", dir.display());
 
-    if entry.role == CertRole::Gateway {
+    if role == CertRole::Gateway {
         println!("  require_client_cert: true");
     }
 

@@ -3393,11 +3393,8 @@ impl App {
     fn handle_chat_input(&mut self, key: KeyEvent) -> Result<()> {
         use crate::keybindings::TuiAction;
 
-        // Shift+Enter or Alt+Enter inserts a newline (up to 10 lines) — checked before lookup
-        if key.code == KeyCode::Enter
-            && (key.modifiers.contains(KeyModifiers::SHIFT)
-                || key.modifiers.contains(KeyModifiers::ALT))
-        {
+        // Shift+Enter inserts a newline (up to 10 lines) — checked before lookup
+        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
             self.insert_chat_newline();
             return Ok(());
         }
@@ -3558,7 +3555,7 @@ impl App {
                     .agents
                     .get(self.state.selected_agent)
                     .map(|a| a.id.clone()),
-                active_session_key: self.state.active_session_key().map(|s| s.to_string()),
+                active_session_key: self.state.active_session_key(),
             };
             match self.command_registry.dispatch(&message, &ctx) {
                 rockbot_chat::CommandResult::Handled(text) => {
@@ -3811,9 +3808,14 @@ impl App {
     /// Spawn an async task to send a chat message via the gateway
     fn spawn_chat_request(&self, user_message: String) {
         let tx = self.state.tx.clone();
-        let session_key = self.state.active_session_key().unwrap_or("").to_string();
-        // Resolve agent_id from chat_agent_id or the selected session's agent_id
-        let agent_id = self.state.chat_agent_id.clone().or_else(|| {
+        let session_key = self.state.active_session_key().unwrap_or_default();
+        // Resolve agent_id: chat_target > chat_agent_id > selected session's agent
+        let agent_id = match &self.state.chat_target {
+            ChatTarget::Agent(id) => Some(id.clone()),
+            _ => None,
+        }
+        .or_else(|| self.state.chat_agent_id.clone())
+        .or_else(|| {
             self.state
                 .sessions
                 .get(self.state.selected_session)

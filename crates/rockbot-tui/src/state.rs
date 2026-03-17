@@ -2959,7 +2959,7 @@ impl AppState {
             }
 
             Message::ChatResponse(session_key, content) => {
-                let chat = self.session_chats.entry(session_key).or_default();
+                let chat = self.chat_for_key(&session_key);
                 // If streaming already created an assistant message, finalize it
                 // instead of creating a duplicate
                 let has_streamed = chat
@@ -2979,7 +2979,7 @@ impl AppState {
                 chat.thinking = ThinkingState::default();
             }
             Message::ChatAgentResponse(session_key, content, tool_calls) => {
-                let chat = self.session_chats.entry(session_key).or_default();
+                let chat = self.chat_for_key(&session_key);
                 let has_streamed = chat
                     .messages
                     .last()
@@ -2999,7 +2999,7 @@ impl AppState {
                 chat.thinking = ThinkingState::default();
             }
             Message::ChatError(session_key, err) => {
-                let chat = self.session_chats.entry(session_key).or_default();
+                let chat = self.chat_for_key(&session_key);
                 chat.messages
                     .push(ChatMessage::system(format!("Error: {err}")));
                 chat.loading = false;
@@ -3008,10 +3008,7 @@ impl AppState {
             Message::ChatStreamChunk(chunk) => {
                 // Handle streaming chunks for incremental display
                 if let Some((session_key, text)) = chunk.split_once(':') {
-                    let chat = self
-                        .session_chats
-                        .entry(session_key.to_string())
-                        .or_default();
+                    let chat = self.chat_for_key(session_key);
                     // Append to last assistant message, or create a new one
                     if let Some(last) = chat.messages.last_mut() {
                         if last.role == ChatRole::Assistant && chat.loading {
@@ -3031,7 +3028,7 @@ impl AppState {
                 total_tokens: _,
                 cumulative_total,
             } => {
-                let chat = self.session_chats.entry(session_key).or_default();
+                let chat = self.chat_for_key(&session_key);
                 chat.thinking.prompt_tokens = prompt_tokens;
                 chat.thinking.completion_tokens = completion_tokens;
                 chat.thinking.cumulative_total = cumulative_total;
@@ -3045,7 +3042,7 @@ impl AppState {
                 tool_name,
                 iteration,
             } => {
-                let chat = self.session_chats.entry(session_key).or_default();
+                let chat = self.chat_for_key(&session_key);
                 chat.thinking.phase = phase;
                 chat.thinking.tool_name = tool_name;
                 chat.thinking.iteration = iteration;
@@ -3177,22 +3174,36 @@ impl AppState {
     }
 
     /// Get the currently selected session's key (ID)
-    pub fn active_session_key(&self) -> Option<&str> {
-        self.sessions
-            .get(self.selected_session)
-            .map(|s| s.key.as_str())
+    pub fn active_session_key(&self) -> Option<String> {
+        match &self.chat_target {
+            ChatTarget::Butler => Some("butler".to_string()),
+            ChatTarget::Session(key) => Some(key.clone()),
+            ChatTarget::Agent(id) => Some(format!("agent:{id}")),
+        }
     }
 
-    /// Get the chat state for the currently selected session
+    /// Get the chat state for the current chat target
     pub fn active_chat(&self) -> Option<&SessionChatState> {
-        self.active_session_key()
-            .and_then(|key| self.session_chats.get(key))
+        match &self.chat_target {
+            ChatTarget::Butler => Some(&self.butler_chat),
+            ChatTarget::Session(key) => self.session_chats.get(key),
+            ChatTarget::Agent(id) => self.session_chats.get(&format!("agent:{id}")),
+        }
     }
 
-    /// Get mutable chat state for the currently selected session, creating if needed
+    /// Get mutable chat state for the current chat target, creating if needed
     pub fn active_chat_mut(&mut self) -> Option<&mut SessionChatState> {
-        let key = self.sessions.get(self.selected_session)?.key.clone();
-        Some(self.session_chats.entry(key).or_default())
+        match &self.chat_target {
+            ChatTarget::Butler => Some(&mut self.butler_chat),
+            ChatTarget::Session(key) => {
+                let key = key.clone();
+                Some(self.session_chats.entry(key).or_default())
+            }
+            ChatTarget::Agent(id) => {
+                let key = format!("agent:{id}");
+                Some(self.session_chats.entry(key).or_default())
+            }
+        }
     }
 
     /// Convenience: chat messages for active session
@@ -3213,6 +3224,16 @@ impl AppState {
     /// Convenience: chat auto-scroll for active session
     pub fn chat_auto_scroll(&self) -> bool {
         self.active_chat().map_or(true, |c| c.auto_scroll)
+    }
+
+    /// Resolve a session key to the corresponding chat state.
+    /// Routes "butler" to `butler_chat`, everything else to `session_chats`.
+    pub fn chat_for_key(&mut self, key: &str) -> &mut SessionChatState {
+        if key == "butler" {
+            &mut self.butler_chat
+        } else {
+            self.session_chats.entry(key.to_string()).or_default()
+        }
     }
 
     /// Toggle expand/collapse on all tool calls in the active chat

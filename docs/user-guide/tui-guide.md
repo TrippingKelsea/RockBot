@@ -71,7 +71,7 @@ Press `c` to focus the chat input. In chat mode:
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Alt+Enter` | Insert newline |
+| `Shift+Enter` | Insert newline (Ctrl+J fallback) |
 | `PgUp/PgDn` | Scroll history |
 | `Ctrl+R` | Retry last message |
 | `Esc` | Exit chat mode |

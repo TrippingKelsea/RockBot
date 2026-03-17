@@ -101,8 +101,8 @@ pub use rockbot_agent::trajectory::{Trajectory, TrajectoryEntry, TrajectoryEvent
 pub use rockbot_config::{
     AgentConfig, AnimationStyle, AnthropicProviderConfig, BedrockProviderConfig, ColorTheme,
     Config, EdgeCondition, GatewayConfig, McpServerEntry, OllamaProviderConfig,
-    OpenAiProviderConfig, PkiConfig, ProvidersConfig, SeedModelConfig, TuiConfig,
-    WorkflowDefinition, WorkflowEdge, WorkflowNode,
+    OpenAiProviderConfig, PkiConfig, ProvidersConfig, RgbaColor, SeedModelConfig, TuiConfig,
+    TuiFontPreferences, TuiThemeConfig, WorkflowDefinition, WorkflowEdge, WorkflowNode,
 };
 pub use rockbot_config::{ContentPart, Message, MessageContent, MessageMetadata};
 pub use rockbot_gateway::{CronExecutor, CronJob, CronPayload, CronSchedule, CronScheduler};

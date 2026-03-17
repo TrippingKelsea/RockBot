@@ -11,6 +11,12 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 ## [Unreleased]
 
 ### Added
+- **Config**: Rich TUI theme token configuration via `[tui.theme]`
+  - RGBA token overrides for border, text, AI/thinking/tool text, accents, graphs, and backgrounds
+  - Backward-compatible preset resolution from legacy `color_theme`
+- **Config**: Stored font preference stubs via `[tui.fonts]`
+  - Interface, user, AI, thinking, and tool font family/size preferences persisted in config
+  - Terminal TUI stores these preferences for future richer renderers such as the Web UI
 - **TUI**: WebSocket connection monitoring — RTT latency sampling, reconnect/disconnect counters,
   live sparkline graph on Client dashboard card and detail panel
 - **TUI**: `active_connections` field parsed from gateway health status and displayed in Client detail

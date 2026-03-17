@@ -65,9 +65,17 @@ pub struct TuiConfig {
     /// Color theme for the TUI
     #[serde(default)]
     pub color_theme: ColorTheme,
+    /// Optional custom theme token overrides. When absent, `color_theme`
+    /// determines the resolved palette.
+    #[serde(default)]
+    pub theme: Option<TuiThemeConfig>,
     /// Animation style for modal transitions
     #[serde(default)]
     pub animation_style: AnimationStyle,
+    /// Font preferences stored for future richer renderers (for example the Web UI).
+    /// The terminal TUI persists these preferences but cannot enforce terminal fonts.
+    #[serde(default)]
+    pub fonts: TuiFontPreferences,
 }
 
 impl Default for TuiConfig {
@@ -76,9 +84,223 @@ impl Default for TuiConfig {
             floating_bar: true,
             animations: true,
             color_theme: ColorTheme::default(),
+            theme: None,
             animation_style: AnimationStyle::default(),
+            fonts: TuiFontPreferences::default(),
         }
     }
+}
+
+impl TuiConfig {
+    pub fn resolved_theme(&self) -> TuiThemeConfig {
+        self.theme
+            .clone()
+            .unwrap_or_else(|| TuiThemeConfig::preset(&self.color_theme))
+    }
+}
+
+/// RGBA color token used by configurable TUI theme settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RgbaColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    #[serde(default = "default_alpha_u8")]
+    pub a: u8,
+}
+
+impl RgbaColor {
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+}
+
+impl Default for RgbaColor {
+    fn default() -> Self {
+        Self::rgba(255, 255, 255, 255)
+    }
+}
+
+fn default_alpha_u8() -> u8 {
+    255
+}
+
+/// Richer TUI theme token configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TuiThemeConfig {
+    pub border: RgbaColor,
+    pub text_primary: RgbaColor,
+    pub text_secondary: RgbaColor,
+    pub ai_text_color: RgbaColor,
+    pub thinking_text_color: RgbaColor,
+    pub tool_text_color: RgbaColor,
+    pub accent_primary: RgbaColor,
+    pub accent_secondary: RgbaColor,
+    pub accent_tertiary: RgbaColor,
+    pub graph_primary: RgbaColor,
+    pub graph_secondary: RgbaColor,
+    pub bg_primary: RgbaColor,
+    pub bg_secondary: RgbaColor,
+    pub bg_overlay: RgbaColor,
+}
+
+impl TuiThemeConfig {
+    pub fn preset(theme: &ColorTheme) -> Self {
+        match theme {
+            ColorTheme::Purple => Self {
+                border: RgbaColor::rgba(147, 112, 219, 255),
+                text_primary: RgbaColor::rgba(245, 240, 255, 255),
+                text_secondary: RgbaColor::rgba(165, 155, 185, 255),
+                ai_text_color: RgbaColor::rgba(235, 222, 255, 255),
+                thinking_text_color: RgbaColor::rgba(191, 169, 239, 255),
+                tool_text_color: RgbaColor::rgba(255, 214, 153, 255),
+                accent_primary: RgbaColor::rgba(147, 112, 219, 255),
+                accent_secondary: RgbaColor::rgba(186, 85, 211, 255),
+                accent_tertiary: RgbaColor::rgba(218, 112, 214, 255),
+                graph_primary: RgbaColor::rgba(190, 140, 255, 255),
+                graph_secondary: RgbaColor::rgba(120, 215, 255, 255),
+                bg_primary: RgbaColor::rgba(14, 10, 22, 255),
+                bg_secondary: RgbaColor::rgba(24, 18, 38, 255),
+                bg_overlay: RgbaColor::rgba(10, 8, 18, 220),
+            },
+            ColorTheme::Blue => Self {
+                border: RgbaColor::rgba(65, 105, 225, 255),
+                text_primary: RgbaColor::rgba(235, 245, 255, 255),
+                text_secondary: RgbaColor::rgba(145, 165, 195, 255),
+                ai_text_color: RgbaColor::rgba(224, 238, 255, 255),
+                thinking_text_color: RgbaColor::rgba(150, 190, 255, 255),
+                tool_text_color: RgbaColor::rgba(255, 221, 168, 255),
+                accent_primary: RgbaColor::rgba(65, 105, 225, 255),
+                accent_secondary: RgbaColor::rgba(100, 149, 237, 255),
+                accent_tertiary: RgbaColor::rgba(135, 206, 250, 255),
+                graph_primary: RgbaColor::rgba(88, 158, 255, 255),
+                graph_secondary: RgbaColor::rgba(120, 230, 255, 255),
+                bg_primary: RgbaColor::rgba(10, 14, 24, 255),
+                bg_secondary: RgbaColor::rgba(16, 24, 40, 255),
+                bg_overlay: RgbaColor::rgba(8, 10, 18, 220),
+            },
+            ColorTheme::Green => Self {
+                border: RgbaColor::rgba(46, 204, 113, 255),
+                text_primary: RgbaColor::rgba(236, 255, 244, 255),
+                text_secondary: RgbaColor::rgba(146, 188, 161, 255),
+                ai_text_color: RgbaColor::rgba(220, 255, 230, 255),
+                thinking_text_color: RgbaColor::rgba(136, 226, 164, 255),
+                tool_text_color: RgbaColor::rgba(255, 221, 163, 255),
+                accent_primary: RgbaColor::rgba(46, 204, 113, 255),
+                accent_secondary: RgbaColor::rgba(80, 220, 140, 255),
+                accent_tertiary: RgbaColor::rgba(144, 238, 144, 255),
+                graph_primary: RgbaColor::rgba(92, 235, 142, 255),
+                graph_secondary: RgbaColor::rgba(120, 255, 215, 255),
+                bg_primary: RgbaColor::rgba(10, 22, 16, 255),
+                bg_secondary: RgbaColor::rgba(16, 36, 26, 255),
+                bg_overlay: RgbaColor::rgba(6, 16, 12, 220),
+            },
+            ColorTheme::Rose => Self {
+                border: RgbaColor::rgba(219, 112, 147, 255),
+                text_primary: RgbaColor::rgba(255, 240, 245, 255),
+                text_secondary: RgbaColor::rgba(200, 155, 170, 255),
+                ai_text_color: RgbaColor::rgba(255, 228, 236, 255),
+                thinking_text_color: RgbaColor::rgba(255, 170, 196, 255),
+                tool_text_color: RgbaColor::rgba(255, 224, 170, 255),
+                accent_primary: RgbaColor::rgba(219, 112, 147, 255),
+                accent_secondary: RgbaColor::rgba(255, 105, 180, 255),
+                accent_tertiary: RgbaColor::rgba(255, 182, 193, 255),
+                graph_primary: RgbaColor::rgba(255, 132, 170, 255),
+                graph_secondary: RgbaColor::rgba(255, 196, 138, 255),
+                bg_primary: RgbaColor::rgba(24, 10, 18, 255),
+                bg_secondary: RgbaColor::rgba(40, 18, 30, 255),
+                bg_overlay: RgbaColor::rgba(18, 8, 14, 220),
+            },
+            ColorTheme::Amber => Self {
+                border: RgbaColor::rgba(255, 191, 0, 255),
+                text_primary: RgbaColor::rgba(255, 248, 231, 255),
+                text_secondary: RgbaColor::rgba(200, 180, 132, 255),
+                ai_text_color: RgbaColor::rgba(255, 240, 210, 255),
+                thinking_text_color: RgbaColor::rgba(255, 204, 102, 255),
+                tool_text_color: RgbaColor::rgba(255, 223, 160, 255),
+                accent_primary: RgbaColor::rgba(255, 191, 0, 255),
+                accent_secondary: RgbaColor::rgba(255, 165, 0, 255),
+                accent_tertiary: RgbaColor::rgba(255, 215, 0, 255),
+                graph_primary: RgbaColor::rgba(255, 200, 48, 255),
+                graph_secondary: RgbaColor::rgba(255, 234, 120, 255),
+                bg_primary: RgbaColor::rgba(24, 18, 8, 255),
+                bg_secondary: RgbaColor::rgba(38, 28, 12, 255),
+                bg_overlay: RgbaColor::rgba(18, 12, 4, 220),
+            },
+            ColorTheme::Mono => Self {
+                border: RgbaColor::rgba(180, 180, 180, 255),
+                text_primary: RgbaColor::rgba(240, 240, 240, 255),
+                text_secondary: RgbaColor::rgba(155, 155, 155, 255),
+                ai_text_color: RgbaColor::rgba(225, 225, 225, 255),
+                thinking_text_color: RgbaColor::rgba(190, 190, 190, 255),
+                tool_text_color: RgbaColor::rgba(215, 215, 215, 255),
+                accent_primary: RgbaColor::rgba(180, 180, 180, 255),
+                accent_secondary: RgbaColor::rgba(200, 200, 200, 255),
+                accent_tertiary: RgbaColor::rgba(220, 220, 220, 255),
+                graph_primary: RgbaColor::rgba(210, 210, 210, 255),
+                graph_secondary: RgbaColor::rgba(160, 160, 160, 255),
+                bg_primary: RgbaColor::rgba(16, 16, 16, 255),
+                bg_secondary: RgbaColor::rgba(28, 28, 28, 255),
+                bg_overlay: RgbaColor::rgba(10, 10, 10, 220),
+            },
+        }
+    }
+}
+
+impl Default for TuiThemeConfig {
+    fn default() -> Self {
+        Self::preset(&ColorTheme::default())
+    }
+}
+
+/// Font preferences persisted for richer clients such as the Web UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TuiFontPreferences {
+    #[serde(default = "default_font_family")]
+    pub interface_font_family: String,
+    #[serde(default = "default_font_size")]
+    pub interface_font_size: u16,
+    #[serde(default = "default_font_family")]
+    pub user_font_family: String,
+    #[serde(default = "default_font_size")]
+    pub user_font_size: u16,
+    #[serde(default = "default_font_family")]
+    pub ai_font_family: String,
+    #[serde(default = "default_font_size")]
+    pub ai_font_size: u16,
+    #[serde(default = "default_font_family")]
+    pub thinking_font_family: String,
+    #[serde(default = "default_font_size")]
+    pub thinking_font_size: u16,
+    #[serde(default = "default_font_family")]
+    pub tool_font_family: String,
+    #[serde(default = "default_font_size")]
+    pub tool_font_size: u16,
+}
+
+impl Default for TuiFontPreferences {
+    fn default() -> Self {
+        Self {
+            interface_font_family: default_font_family(),
+            interface_font_size: default_font_size(),
+            user_font_family: default_font_family(),
+            user_font_size: default_font_size(),
+            ai_font_family: default_font_family(),
+            ai_font_size: default_font_size(),
+            thinking_font_family: default_font_family(),
+            thinking_font_size: default_font_size(),
+            tool_font_family: default_font_family(),
+            tool_font_size: default_font_size(),
+        }
+    }
+}
+
+fn default_font_family() -> String {
+    "terminal-default".to_string()
+}
+
+fn default_font_size() -> u16 {
+    14
 }
 
 /// Color theme for the TUI accent colors.

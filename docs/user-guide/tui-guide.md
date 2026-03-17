@@ -112,11 +112,12 @@ Application configuration with four tab sections: General, Paths, About, Theme.
 | `r` | Restart gateway |
 | `Esc` | Close overlay |
 
-**Theme section** — change color theme and animation style live:
+**Theme section** — currently supports preset theme + animation controls, with
+custom token editing and persisted font preferences available in config:
 
 | Key | Action |
 |-----|--------|
-| `Up/Down` | Select field (color theme / animation style) |
+| `Up/Down` | Select field (current lightweight controls) |
 | `]` | Next value |
 | `[` | Previous value |
 
@@ -183,14 +184,23 @@ When accessing credentials with a locked vault:
 
 ## Color Themes
 
-Color themes and animation styles can be changed live in the **Settings overlay** (Alt+S) under the **Theme** tab. Changes apply immediately.
+Color themes and animation styles can be changed live in the **Settings overlay** (Alt+S) under the **Theme** tab. Richer token-level theme configuration and stored font preferences live under `[tui.theme]` and `[tui.fonts]` in `rockbot.toml`.
 
 You can also configure defaults in `rockbot.toml`:
 
 ```toml
 [tui]
-color_theme = "Purple"       # Purple, Blue, Green, Rose, Amber, Mono
+color_theme = "Purple"        # Purple, Blue, Green, Rose, Amber, Mono
 animation_style = "Coalesce"  # Coalesce, Fade, Slide, None
+
+[tui.theme]
+ai_text_color = { r = 235, g = 222, b = 255, a = 255 }
+thinking_text_color = { r = 191, g = 169, b = 239, a = 255 }
+tool_text_color = { r = 255, g = 214, b = 153, a = 255 }
+
+[tui.fonts]
+ai_font_family = "terminal-default"
+ai_font_size = 14
 ```
 
 ## Tips

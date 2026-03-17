@@ -13,8 +13,9 @@ pub use config::{
     AnthropicProviderConfig, BedrockProviderConfig, CapabilityConfig, ColorTheme, Config,
     ConfigWatcher, CredentialsConfig, EdgeCondition, FilesystemCapabilities, GatewayConfig,
     McpServerEntry, NetworkCapabilities, OllamaProviderConfig, OpenAiProviderConfig, PkiConfig,
-    ProcessCapabilities, ProvidersConfig, SandboxConfig, SecurityConfig, SeedModelConfig,
-    ToolConfig, TuiConfig, WorkflowDefinition, WorkflowEdge, WorkflowNode,
+    ProcessCapabilities, ProvidersConfig, RgbaColor, SandboxConfig, SecurityConfig,
+    SeedModelConfig, ToolConfig, TuiConfig, TuiFontPreferences, TuiThemeConfig, WorkflowDefinition,
+    WorkflowEdge, WorkflowNode,
 };
 
 pub use error::{

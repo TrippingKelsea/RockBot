@@ -311,14 +311,77 @@ floating_bar = true         # Show top bar as floating overlay (default: true)
 animations = true           # Enable animated transitions and effects (default: true)
 color_theme = "Purple"      # Color theme: Purple, Blue, Green, Rose, Amber, Mono
 animation_style = "Coalesce" # Animation style: Coalesce, Fade, Slide, None
+
+[tui.theme]
+border = { r = 147, g = 112, b = 219, a = 255 }
+text_primary = { r = 245, g = 240, b = 255, a = 255 }
+text_secondary = { r = 165, g = 155, b = 185, a = 255 }
+ai_text_color = { r = 235, g = 222, b = 255, a = 255 }
+thinking_text_color = { r = 191, g = 169, b = 239, a = 255 }
+tool_text_color = { r = 255, g = 214, b = 153, a = 255 }
+accent_primary = { r = 147, g = 112, b = 219, a = 255 }
+accent_secondary = { r = 186, g = 85, b = 211, a = 255 }
+accent_tertiary = { r = 218, g = 112, b = 214, a = 255 }
+graph_primary = { r = 190, g = 140, b = 255, a = 255 }
+graph_secondary = { r = 120, g = 215, b = 255, a = 255 }
+bg_primary = { r = 14, g = 10, b = 22, a = 255 }
+bg_secondary = { r = 24, g = 18, b = 38, a = 255 }
+bg_overlay = { r = 10, g = 8, b = 18, a = 220 }
+
+[tui.fonts]
+interface_font_family = "terminal-default"
+interface_font_size = 14
+user_font_family = "terminal-default"
+user_font_size = 14
+ai_font_family = "terminal-default"
+ai_font_size = 14
+thinking_font_family = "terminal-default"
+thinking_font_size = 14
+tool_font_family = "terminal-default"
+tool_font_size = 14
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `floating_bar` | bool | `true` | Render the top navigation bar as a floating overlay above page content |
 | `animations` | bool | `true` | Enable tachyonfx-powered transitions (modal open/close, page transitions, glow) |
-| `color_theme` | string | `"Purple"` | Accent color theme. Options: `Purple`, `Blue`, `Green`, `Rose`, `Amber`, `Mono` |
+| `color_theme` | string | `"Purple"` | Preset palette source. Options: `Purple`, `Blue`, `Green`, `Rose`, `Amber`, `Mono` |
+| `theme` | table | preset-derived | Optional per-token color overrides for borders, text, accents, graphs, and backgrounds |
 | `animation_style` | string | `"Coalesce"` | Modal transition style. Options: `Coalesce`, `Fade`, `Slide`, `None` |
+| `fonts` | table | terminal-default / 14 | Stored font preferences for richer renderers such as the Web UI; the terminal TUI persists these but cannot force terminal fonts |
+
+### `[tui.theme]`
+
+Each color token is an RGBA object:
+
+```toml
+accent_primary = { r = 147, g = 112, b = 219, a = 255 }
+```
+
+Available tokens:
+
+- `border`
+- `text_primary`
+- `text_secondary`
+- `ai_text_color`
+- `thinking_text_color`
+- `tool_text_color`
+- `accent_primary`
+- `accent_secondary`
+- `accent_tertiary`
+- `graph_primary`
+- `graph_secondary`
+- `bg_primary`
+- `bg_secondary`
+- `bg_overlay`
+
+When `[tui.theme]` is omitted, RockBot derives these values from `color_theme`.
+
+### `[tui.fonts]`
+
+These preferences are persisted now so future richer clients can apply them
+directly. The terminal TUI stores them but does not control the terminal
+emulator’s actual font rendering.
 
 ## `[seed_model]`
 

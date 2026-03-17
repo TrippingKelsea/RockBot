@@ -35,6 +35,8 @@ This document tracks feature implementation status and helps identify gaps betwe
 | Environment variable expansion | ✅ | `${VAR}` syntax |
 | Hot-reload via file watcher | ✅ | notify crate |
 | Config validation | ✅ | |
+| Rich TUI theme token config | ✅ | `[tui.theme]` supports RGBA token overrides |
+| Stored font preferences | ✅ | `[tui.fonts]` persisted for future richer clients |
 | Config migration | 📋 | |
 
 ### Session Management

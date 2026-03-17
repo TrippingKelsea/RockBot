@@ -71,27 +71,16 @@ pub fn render_error(frame: &mut Frame, area: Rect, error: &str) {
 }
 
 /// Render status bar at bottom of screen
-pub fn render_status_bar(
-    frame: &mut Frame,
-    area: Rect,
-    message: Option<&(String, bool)>,
-    help_text: &str,
-) {
-    let (text, style) = match message {
-        Some((msg, is_error)) => {
-            let style = if *is_error {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Green)
-            };
-            (msg.clone(), style)
-        }
-        None => (help_text.to_string(), Style::default().fg(Color::DarkGray)),
-    };
-
-    let status = Paragraph::new(format!(" {text}")).style(style);
-
-    frame.render_widget(status, area);
+pub fn render_status_bar(frame: &mut Frame, area: Rect, message: Option<&(String, bool)>) {
+    if let Some((msg, is_error)) = message {
+        let style = if *is_error {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        let status = Paragraph::new(format!(" {msg}")).style(style);
+        frame.render_widget(status, area);
+    }
 }
 
 /// Create a centered rectangle for modals

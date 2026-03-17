@@ -107,24 +107,66 @@ pub fn render_settings_overlay(
     state: &AppState,
     _effect_state: &EffectState,
 ) {
+    use crate::effects::palette;
+
     let area = centered_rect(80, 85, full);
     frame.render_widget(Clear, area);
+
+    let primary = palette::theme_primary(&state.tui_config.color_theme);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(primary))
         .title(Span::styled(
             " Settings ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(primary)
                 .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    super::settings::render_settings_detail(frame, inner, state);
+    // Tab bar + body
+    let section_labels = ["General", "Paths", "About", "Theme"];
+    let titles: Vec<Line<'_>> = section_labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            if i == state.selected_settings_card {
+                Line::from(Span::styled(
+                    *label,
+                    Style::default()
+                        .fg(primary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    *label,
+                    Style::default().fg(Color::DarkGray),
+                ))
+            }
+        })
+        .collect();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Fill(1)])
+        .split(inner);
+
+    let tabs = Tabs::new(titles)
+        .select(state.selected_settings_card)
+        .style(Style::default().fg(Color::DarkGray))
+        .highlight_style(
+            Style::default()
+                .fg(primary)
+                .add_modifier(Modifier::BOLD),
+        )
+        .divider("│");
+    frame.render_widget(tabs, chunks[0]);
+
+    super::settings::render_settings_detail(frame, chunks[1], state);
 }
 
 /// Render the models overlay (Alt+M) — 80%x85% centered.

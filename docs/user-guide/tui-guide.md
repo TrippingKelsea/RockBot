@@ -18,7 +18,7 @@ The TUI is **chat-first**: the chat interface is always visible in the main cont
 Row 0: SlottedCardBar (top)  -- chat target selector (Dashboard/Agents/Sessions/Cron)
 Row 1: Status strip          -- global: gateway / agents / sessions / vault status
 Row 2: Chat area (fill)      -- ALWAYS renders chat (butler, session, or agent)
-Row 3: Status bar            -- help text / errors
+Row 3: Status bar            -- error / success messages (blank otherwise)
 ```
 
 Switching between modes changes **what you're chatting with**, not the content area.
@@ -102,15 +102,23 @@ Manage your secure credential vault. Has four tabs:
 
 ### Settings (Alt+S)
 
-Application configuration with sub-sections: General, Paths, About.
+Application configuration with four tab sections: General, Paths, About, Theme.
 
 | Key | Action |
 |-----|--------|
+| `Left/Right` or `Tab` | Switch section |
 | `s` | Start gateway |
 | `S` | Stop gateway |
 | `r` | Restart gateway |
-| `Up/Down` | Select section |
 | `Esc` | Close overlay |
+
+**Theme section** — change color theme and animation style live:
+
+| Key | Action |
+|-----|--------|
+| `Up/Down` | Select field (color theme / animation style) |
+| `]` | Next value |
+| `[` | Previous value |
 
 ### Models (Alt+M)
 
@@ -175,7 +183,9 @@ When accessing credentials with a locked vault:
 
 ## Color Themes
 
-Configure the color theme in `rockbot.toml`:
+Color themes and animation styles can be changed live in the **Settings overlay** (Alt+S) under the **Theme** tab. Changes apply immediately.
+
+You can also configure defaults in `rockbot.toml`:
 
 ```toml
 [tui]

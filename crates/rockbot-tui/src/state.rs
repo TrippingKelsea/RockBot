@@ -952,8 +952,10 @@ pub struct AppState {
     // History buffers for sparkline widgets
     pub gateway_load_history: std::collections::VecDeque<u64>,
     pub client_msg_history: std::collections::VecDeque<u64>,
-    // Settings card selection (General=0, Paths=1, About=2)
+    // Settings card selection (General=0, Paths=1, About=2, Theme=3)
     pub selected_settings_card: usize,
+    // Theme section field (0=color_theme, 1=animation_style)
+    pub selected_settings_field: usize,
 
     // Credential schemas (from gateway — drives Credentials->Providers forms)
     pub credential_schemas: Vec<CredentialSchemaInfo>,
@@ -2805,6 +2807,7 @@ impl AppState {
             gateway_load_history: std::collections::VecDeque::new(),
             client_msg_history: std::collections::VecDeque::new(),
             selected_settings_card: 0,
+            selected_settings_field: 0,
             credential_schemas: Vec::new(),
 
             alerts: Vec::new(),

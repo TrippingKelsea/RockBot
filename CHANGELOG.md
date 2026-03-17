@@ -10,6 +10,14 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 
 ## [Unreleased]
 
+### Fixed
+- **TUI**: Chat input box now always visible (was missing on Dashboard/Butler and agent welcome screens)
+- **TUI**: Bottom status bar no longer shows persistent help text — only displays errors/success messages
+
+### Added
+- **TUI**: Settings overlay tab bar (General | Paths | About | Theme) with Left/Right/Tab navigation
+- **TUI**: Theme picker in Settings — change color theme and animation style live with `[`/`]` keys
+
 ### Changed
 - **Chat-first TUI architecture**: Chat is always visible; other views are overlays
   - Main content area always renders chat (butler, session, or agent)

@@ -1075,13 +1075,41 @@ impl App {
             KeyCode::Char('r') => {
                 self.handle_refresh_action();
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Left | KeyCode::BackTab => {
                 self.state.selected_settings_card =
                     self.state.selected_settings_card.saturating_sub(1);
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.state.selected_settings_card < 2 {
+            KeyCode::Right | KeyCode::Tab => {
+                if self.state.selected_settings_card < 3 {
                     self.state.selected_settings_card += 1;
+                }
+            }
+            // Theme section: Up/Down to switch field, [/] to cycle values
+            KeyCode::Up | KeyCode::Char('k') if self.state.selected_settings_card == 3 => {
+                self.state.selected_settings_field =
+                    self.state.selected_settings_field.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.state.selected_settings_card == 3 => {
+                if self.state.selected_settings_field < 1 {
+                    self.state.selected_settings_field += 1;
+                }
+            }
+            KeyCode::Char(']') if self.state.selected_settings_card == 3 => {
+                if self.state.selected_settings_field == 0 {
+                    self.state.tui_config.color_theme = self.state.tui_config.color_theme.next();
+                } else {
+                    let next = self.state.tui_config.animation_style.next();
+                    self.state.tui_config.animation_style = next.clone();
+                    self.effect_state.animation_style = next;
+                }
+            }
+            KeyCode::Char('[') if self.state.selected_settings_card == 3 => {
+                if self.state.selected_settings_field == 0 {
+                    self.state.tui_config.color_theme = self.state.tui_config.color_theme.prev();
+                } else {
+                    let prev = self.state.tui_config.animation_style.prev();
+                    self.state.tui_config.animation_style = prev.clone();
+                    self.effect_state.animation_style = prev;
                 }
             }
             _ => {}
@@ -3893,13 +3921,7 @@ impl App {
             .render_page_transition(frame.buffer_mut(), detail_area, elapsed);
 
         // Status bar
-        let help_text = self.get_help_text();
-        render_status_bar(
-            frame,
-            status_area,
-            self.state.status_message.as_ref(),
-            &help_text,
-        );
+        render_status_bar(frame, status_area, self.state.status_message.as_ref());
 
         // Render modals on top (with background dimming and effects)
         self.render_modals(frame, elapsed);
@@ -4055,58 +4077,13 @@ impl App {
     /// Render the unified chat area based on current chat_target.
     ///
     /// Chat is always visible — butler, session, or agent ad-hoc.
+    /// Input box renders unconditionally at the bottom.
     fn render_unified_chat(&self, frame: &mut Frame, area: Rect) {
-        match &self.state.chat_target {
-            ChatTarget::Butler => {
-                render_butler_main(frame, area, &self.state, &self.effect_state);
-            }
-            ChatTarget::Session(key) => {
-                if let Some(chat) = self.state.session_chats.get(key) {
-                    self.render_session_chat(frame, area, chat);
-                } else {
-                    render_butler_main(frame, area, &self.state, &self.effect_state);
-                }
-            }
-            ChatTarget::Agent(id) => {
-                let agent_key = format!("agent:{id}");
-                if let Some(chat) = self.state.session_chats.get(&agent_key) {
-                    self.render_session_chat(frame, area, chat);
-                } else {
-                    // Show agent welcome screen
-                    let lines = vec![
-                        Line::from(""),
-                        Line::from(""),
-                        Line::from(Span::styled(
-                            format!("@{id}"),
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        )),
-                        Line::from(""),
-                        Line::from(Span::styled(
-                            "Press 'c' to start chatting with this agent.",
-                            Style::default().fg(Color::DarkGray),
-                        )),
-                    ];
-                    let welcome = Paragraph::new(lines).alignment(Alignment::Center);
-                    frame.render_widget(welcome, area);
-                }
-            }
-        }
-    }
-
-    /// Render a session chat (messages + input box) in the given area.
-    fn render_session_chat(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        chat: &crate::state::SessionChatState,
-    ) {
-        use super::components::{render_chat_input, render_chat_messages};
+        use super::components::render_chat_input;
 
         let is_chat_mode = matches!(self.state.input_mode, InputMode::ChatInput);
 
-        // Calculate input height
+        // Calculate input height from wrapping
         let inner_width = area.width.saturating_sub(3).max(1) as usize;
         let visual_lines: usize = self
             .state
@@ -4125,10 +4102,62 @@ impl App {
             .constraints([Constraint::Fill(1), Constraint::Length(input_height)])
             .split(area);
 
+        // Messages area — dispatch per target
+        match &self.state.chat_target {
+            ChatTarget::Butler => {
+                render_butler_main(frame, chunks[0], &self.state, &self.effect_state);
+            }
+            ChatTarget::Session(key) => {
+                if let Some(chat) = self.state.session_chats.get(key) {
+                    self.render_session_messages(frame, chunks[0], chat);
+                } else {
+                    render_butler_main(frame, chunks[0], &self.state, &self.effect_state);
+                }
+            }
+            ChatTarget::Agent(id) => {
+                let agent_key = format!("agent:{id}");
+                if let Some(chat) = self.state.session_chats.get(&agent_key) {
+                    self.render_session_messages(frame, chunks[0], chat);
+                } else {
+                    // Show agent welcome screen
+                    let lines = vec![
+                        Line::from(""),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            format!("@{id}"),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "Type a message below to start chatting.",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ];
+                    let welcome = Paragraph::new(lines).alignment(Alignment::Center);
+                    frame.render_widget(welcome, chunks[0]);
+                }
+            }
+        }
+
+        // Input box — always visible
+        render_chat_input(frame, chunks[1], &self.state, is_chat_mode);
+    }
+
+    /// Render session messages (without input box) into the given area.
+    fn render_session_messages(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        chat: &crate::state::SessionChatState,
+    ) {
+        use super::components::render_chat_messages;
+
         if !chat.messages.is_empty() || chat.loading {
             render_chat_messages(
                 frame,
-                chunks[0],
+                area,
                 &self.state,
                 &chat.messages,
                 chat.loading,
@@ -4144,10 +4173,8 @@ impl App {
                 )),
             ])
             .alignment(Alignment::Center);
-            frame.render_widget(hint, chunks[0]);
+            frame.render_widget(hint, area);
         }
-
-        render_chat_input(frame, chunks[1], &self.state, is_chat_mode);
     }
 
     /// Render the global persistent status strip between the card bar and main content.
@@ -4661,75 +4688,6 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    fn get_help_text(&self) -> String {
-        match &self.state.input_mode {
-            InputMode::Normal => {
-                match self.state.menu_item {
-                    MenuItem::Dashboard => {
-                        "Alt+←→:Cards │ c:Chat │ Alt+V:Vault │ Alt+S:Settings │ 1-4:Jump"
-                            .to_string()
-                    }
-                    MenuItem::Agents => {
-                        "Alt+←→:Agent │ c:Chat │ a:Add │ e:Edit │ f:Files │ Alt+Enter:Detail"
-                            .to_string()
-                    }
-                    MenuItem::Sessions => {
-                        "Alt+←→:Session │ c:Chat │ n:New │ k:Kill │ Alt+Enter:Detail".to_string()
-                    }
-                    MenuItem::CronJobs => {
-                        "Alt+C:Manage │ Alt+←→:Job │ e:Toggle │ d:Delete".to_string()
-                    }
-                    // Legacy modes (shouldn't appear, but handle gracefully)
-                    _ => "Alt+V:Vault │ Alt+S:Settings │ Alt+M:Models │ Alt+C:Cron".to_string(),
-                }
-            }
-            InputMode::PasswordInput { .. } => "Enter:Submit │ Esc:Cancel".to_string(),
-            InputMode::AddCredential(_) => {
-                "↑↓/Tab:Navigate │ ←→:Type │ Enter:Submit │ Esc:Cancel".to_string()
-            }
-            InputMode::Confirm { .. } => "y:Yes │ n:No │ Esc:Cancel".to_string(),
-            InputMode::ChatInput => {
-                "Enter:Send │ Ctrl+J:Newline │ PgUp/Dn:Scroll │ Ctrl+R:Retry │ Esc:Close"
-                    .to_string()
-            }
-            InputMode::EditCredential(_) => {
-                "↑↓/Tab:Navigate │ Enter:Submit │ Esc:Cancel".to_string()
-            }
-            InputMode::EditProvider(_) => {
-                "↑↓/Tab:Navigate │ ←→:Auth Type │ Enter:Save │ Esc:Cancel".to_string()
-            }
-            InputMode::AddAgent(_) | InputMode::EditAgent(_) => {
-                "↑↓/Tab:Navigate │ ←→:Cycle Model │ Ctrl+S:Save │ Esc:Cancel".to_string()
-            }
-            InputMode::CreateSession(_) => {
-                "↑↓/Tab:Navigate │ ←→:Cycle │ Enter:Create │ Esc:Cancel".to_string()
-            }
-            InputMode::ViewSession { .. } => "Esc/Enter:Close".to_string(),
-            InputMode::ViewEndpoint { .. } => "e:Edit │ Esc:Close".to_string(),
-            InputMode::ViewProvider { .. } => "e:Configure │ Esc:Close".to_string(),
-            InputMode::ViewModelList { .. } => "↑↓:Scroll │ Esc:Close".to_string(),
-            InputMode::ViewPermission { .. } => {
-                "e:Edit │ +/-:Reorder │ d:Delete │ Esc:Close".to_string()
-            }
-            InputMode::EditPermission(_) => {
-                "↑↓:Field │ ←→:Cycle │ Enter/Ctrl+S:Save │ Esc:Cancel".to_string()
-            }
-            InputMode::ViewContextFiles(_) => "↑↓:Select │ Enter:Edit │ Esc:Close".to_string(),
-            InputMode::EditContextFile(_) => "Ctrl+S:Save │ ↑↓←→:Move │ Esc:Back".to_string(),
-            InputMode::ContextMenu(_) => "↑↓/jk:Navigate │ Enter:Select │ Esc:Close".to_string(),
-            InputMode::CardDetail(_) => "↑↓:Scroll │ Esc/Alt+Enter:Close".to_string(),
-            InputMode::VaultOverlay => {
-                "Tab:Section │ a:Add │ d:Delete │ Enter:View │ Esc:Close".to_string()
-            }
-            InputMode::SettingsOverlay => "s:Start │ S:Stop │ r:Restart │ Esc:Close".to_string(),
-            InputMode::ModelsOverlay { .. } => {
-                "←→:Provider │ Enter:Models │ e:Configure │ Esc:Close".to_string()
-            }
-            InputMode::CronOverlay { .. } => {
-                "Tab:Filter │ ↑↓:Select │ e:Toggle │ d:Delete │ t:Trigger │ Esc:Close".to_string()
-            }
-        }
-    }
 }
 
 /// Add a credential to the vault based on form state (standalone to avoid borrow issues)

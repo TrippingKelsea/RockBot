@@ -8,7 +8,7 @@ use rockbot_config::{
     Config, CredentialsConfig, GatewayConfig, StorageEncryptionMode, StorageKeySource,
 };
 use rockbot_credentials::{generate_salt, CredentialManager, MasterKey};
-use rockbot_pki::{KeyBackend, PkiManager};
+use rockbot_pki::PkiManager;
 
 fn tool_locality_label(locality: &rockbot_agent::agent::ToolExecutionLocality) -> String {
     match locality {
@@ -6145,7 +6145,6 @@ impl Gateway {
         };
 
         let ca_cert_path = pki_dir.join("ca.crt");
-        let ca_key_path = pki_dir.join("ca.key");
 
         // Parse request body
         let body = match req.collect().await {
@@ -6228,8 +6227,16 @@ impl Gateway {
             }
         };
 
-        let backend = rockbot_pki::FileBackend::new(pki_dir.clone());
-        let ca_key = match backend.load(&ca_key_path) {
+        let pki_manager = match rockbot_pki::PkiManager::new(pki_dir.clone()) {
+            Ok(manager) => manager,
+            Err(e) => {
+                return Ok(Self::json_error(
+                    &format!("PKI not initialized: failed to open PKI manager: {e}"),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ));
+            }
+        };
+        let ca_key = match pki_manager.ca_key_handle() {
             Ok(k) => k,
             Err(e) => {
                 return Ok(Self::json_error(

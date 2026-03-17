@@ -30,7 +30,7 @@ pub async fn run(command: &GatewayCommands, config_path: &PathBuf) -> Result<()>
         GatewayCommands::Start => start_service().await,
         GatewayCommands::Stop => stop_service().await,
         GatewayCommands::Restart => restart_service().await,
-        GatewayCommands::Status => show_status().await,
+        GatewayCommands::Status => show_status(config_path).await,
         GatewayCommands::Install { system, name } => {
             install_service(*system, name, config_path).await
         }
@@ -526,7 +526,7 @@ async fn restart_service() -> Result<()> {
 }
 
 /// Show gateway service status
-async fn show_status() -> Result<()> {
+async fn show_status(config_path: &Path) -> Result<()> {
     println!("Checking gateway service status...\n");
 
     // Check user service
@@ -542,8 +542,12 @@ async fn show_status() -> Result<()> {
 
     // Also try to hit the health endpoint
     println!("\n=== Gateway Health ===");
-    match reqwest::Client::new()
-        .get("http://127.0.0.1:18080/health")
+    let config = Config::from_file(config_path).await.unwrap_or_default();
+    let gateway_url = format!("https://127.0.0.1:{}", config.gateway.port);
+    match reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()?
+        .get(format!("{gateway_url}/health"))
         .timeout(std::time::Duration::from_secs(2))
         .send()
         .await
@@ -577,7 +581,7 @@ async fn show_status() -> Result<()> {
             println!("Gateway responded with status: {}", resp.status());
         }
         Err(_) => {
-            println!("Gateway is not responding on http://127.0.0.1:18080");
+            println!("Gateway is not responding on {gateway_url}");
         }
     }
 

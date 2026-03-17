@@ -99,6 +99,12 @@ type GatewayBody = http_body_util::Either<
     >,
 >;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ListenerKind {
+    Public,
+    Client,
+}
+
 /// Shared transport state map for Noise Protocol handshakes (remote-exec feature).
 ///
 /// After the 3-step Noise handshake completes, the transport is stored here keyed by
@@ -1273,7 +1279,7 @@ impl Gateway {
 
     /// Load a TLS acceptor from the configured cert/key paths.
     /// Supports optional mTLS when `tls_ca` is configured.
-    fn load_tls_acceptor(&self) -> Result<Option<tokio_rustls::TlsAcceptor>> {
+    fn load_tls_acceptor(&self, listener_kind: ListenerKind) -> Result<Option<tokio_rustls::TlsAcceptor>> {
         let (cert_path, key_path) = match (&self.config.pki.tls_cert, &self.config.pki.tls_key) {
             (Some(c), Some(k)) => (Self::expand_tilde(c), Self::expand_tilde(k)),
             _ => return Ok(None),
@@ -1335,23 +1341,36 @@ impl Gateway {
                     .map_err(|e| tls_config_err(format!("Invalid CA certificate: {e}")))?;
             }
 
-            let verifier = if self.config.pki.require_client_cert {
-                info!(
-                    "mTLS enabled: requiring client certificates (CA: {})",
-                    ca_path.display()
-                );
-                rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
-                    .build()
-                    .map_err(|e| tls_config_err(format!("Client cert verifier error: {e}")))?
-            } else {
-                info!(
-                    "mTLS enabled: accepting optional client certificates (CA: {})",
-                    ca_path.display()
-                );
-                rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
-                    .allow_unauthenticated()
-                    .build()
-                    .map_err(|e| tls_config_err(format!("Client cert verifier error: {e}")))?
+            let verifier = match listener_kind {
+                ListenerKind::Client if self.config.pki.require_client_cert => {
+                    info!(
+                        "Client listener mTLS enabled: requiring client certificates (CA: {})",
+                        ca_path.display()
+                    );
+                    rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                        .build()
+                        .map_err(|e| tls_config_err(format!("Client cert verifier error: {e}")))?
+                }
+                ListenerKind::Client => {
+                    info!(
+                        "Client listener TLS enabled: accepting optional client certificates (CA: {})",
+                        ca_path.display()
+                    );
+                    rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                        .allow_unauthenticated()
+                        .build()
+                        .map_err(|e| tls_config_err(format!("Client cert verifier error: {e}")))?
+                }
+                ListenerKind::Public => {
+                    info!(
+                        "Public listener TLS enabled: server-auth only (client certs not required) (CA: {})",
+                        ca_path.display()
+                    );
+                    rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                        .allow_unauthenticated()
+                        .build()
+                        .map_err(|e| tls_config_err(format!("Client cert verifier error: {e}")))?
+                }
             };
 
             rustls::ServerConfig::builder()
@@ -1370,33 +1389,104 @@ impl Gateway {
 
     /// Start the gateway server
     pub async fn start(&self) -> Result<()> {
-        let addr = format!("{}:{}", self.config.bind_host, self.config.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|_| GatewayError::BindFailed {
-                host: self.config.bind_host.clone(),
-                port: self.config.port,
-            })?;
+        let listener_hosts = self.config.listener_hosts();
+        let mut public_listeners = Vec::new();
+        let mut client_listeners = Vec::new();
+        for host in &listener_hosts {
+            let public_addr = format!("{host}:{}", self.config.port);
+            public_listeners.push((
+                public_addr.clone(),
+                TcpListener::bind(&public_addr)
+                    .await
+                    .map_err(|_| GatewayError::BindFailed {
+                        host: host.clone(),
+                        port: self.config.port,
+                    })?,
+            ));
 
-        let tls_acceptor = self.load_tls_acceptor()?;
+            let client_addr = format!("{host}:{}", self.config.client_port);
+            client_listeners.push((
+                client_addr.clone(),
+                TcpListener::bind(&client_addr)
+                    .await
+                    .map_err(|_| GatewayError::BindFailed {
+                        host: host.clone(),
+                        port: self.config.client_port,
+                    })?,
+            ));
+        }
 
-        match &tls_acceptor {
-            Some(_) => info!("Gateway server listening on {addr} (TLS)"),
+        let public_tls_acceptor = self.load_tls_acceptor(ListenerKind::Public)?;
+        let client_tls_acceptor = self.load_tls_acceptor(ListenerKind::Client)?;
+
+        match &public_tls_acceptor {
+            Some(_) => {
+                for (addr, _) in &public_listeners {
+                    info!("Gateway public listener on {addr} (TLS)");
+                }
+            }
             None => {
                 #[cfg(not(feature = "http-insecure"))]
                 {
                     warn!(
                         "No TLS cert configured and http-insecure not enabled. \
-                           Run `rockbot config init` to generate a self-signed cert, \
+                           Run `rockbot config init gateway` to generate a self-signed cert, \
                            or set tls_cert/tls_key in config."
                     );
                 }
-                info!("Gateway server listening on {addr} (plain HTTP)");
+                for (addr, _) in &public_listeners {
+                    info!("Gateway public listener on {addr} (plain HTTP)");
+                }
+            }
+        }
+        match &client_tls_acceptor {
+            Some(_) => {
+                for (addr, _) in &client_listeners {
+                    info!("Gateway client listener on {addr} (TLS/mTLS)");
+                }
+            }
+            None => {
+                for (addr, _) in &client_listeners {
+                    info!("Gateway client listener on {addr} (plain HTTP)");
+                }
             }
         }
 
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        for (_, listener) in public_listeners {
+            let gateway = self.clone();
+            let tls_acceptor = public_tls_acceptor.clone();
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                gateway
+                    .accept_loop(listener, tls_acceptor, ListenerKind::Public, &mut shutdown_rx)
+                    .await;
+            });
+        }
+        for (_, listener) in client_listeners {
+            let gateway = self.clone();
+            let tls_acceptor = client_tls_acceptor.clone();
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                gateway
+                    .accept_loop(listener, tls_acceptor, ListenerKind::Client, &mut shutdown_rx)
+                    .await;
+            });
+        }
 
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let _ = shutdown_rx.recv().await;
+        info!("Gateway shutdown requested");
+
+        Ok(())
+    }
+
+    async fn accept_loop(
+        &self,
+        listener: TcpListener,
+        tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+        listener_kind: ListenerKind,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) {
         loop {
             tokio::select! {
                 result = listener.accept() => {
@@ -1408,7 +1498,7 @@ impl Gateway {
                                 tokio::spawn(async move {
                                     match acceptor.accept(stream).await {
                                         Ok(tls_stream) => {
-                                            if let Err(e) = gateway.handle_tls_connection(tls_stream, addr).await {
+                                            if let Err(e) = gateway.handle_tls_connection(tls_stream, addr, listener_kind).await {
                                                 error!("TLS connection error: {e}");
                                             }
                                         }
@@ -1419,7 +1509,7 @@ impl Gateway {
                                 });
                             } else {
                                 tokio::spawn(async move {
-                                    if let Err(e) = gateway.handle_connection(stream, addr).await {
+                                    if let Err(e) = gateway.handle_connection(stream, addr, listener_kind).await {
                                         error!("Connection error: {e}");
                                     }
                                 });
@@ -1431,13 +1521,10 @@ impl Gateway {
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    info!("Gateway shutdown requested");
                     break;
                 }
             }
         }
-
-        Ok(())
     }
 
     /// Handle a TLS-wrapped TCP connection
@@ -1445,6 +1532,7 @@ impl Gateway {
         &self,
         stream: tokio_rustls::server::TlsStream<TcpStream>,
         addr: SocketAddr,
+        listener_kind: ListenerKind,
     ) -> Result<()> {
         debug!("New TLS connection from {addr}");
 
@@ -1453,7 +1541,7 @@ impl Gateway {
         let gateway = self.clone();
         let service = service_fn(move |req| {
             let gateway = gateway.clone();
-            async move { gateway.handle_request(req).await }
+            async move { gateway.handle_request(req, listener_kind).await }
         });
 
         if let Err(err) = http1::Builder::new()
@@ -1473,7 +1561,12 @@ impl Gateway {
     }
 
     /// Handle a new TCP connection
-    async fn handle_connection(&self, stream: TcpStream, addr: SocketAddr) -> Result<()> {
+    async fn handle_connection(
+        &self,
+        stream: TcpStream,
+        addr: SocketAddr,
+        listener_kind: ListenerKind,
+    ) -> Result<()> {
         debug!("New connection from {}", addr);
 
         let io = TokioIo::new(stream);
@@ -1481,7 +1574,7 @@ impl Gateway {
         let gateway = self.clone();
         let service = service_fn(move |req| {
             let gateway = gateway.clone();
-            async move { gateway.handle_request(req).await }
+            async move { gateway.handle_request(req, listener_kind).await }
         });
 
         if let Err(err) = http1::Builder::new()
@@ -1506,13 +1599,22 @@ impl Gateway {
     async fn handle_request(
         &self,
         req: Request<IncomingBody>,
+        listener_kind: ListenerKind,
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let path = req.uri().path().to_string();
 
         match (req.method(), path.as_str()) {
             // Web UI
             (&Method::GET, "/") | (&Method::GET, "/index.html") => self.handle_web_ui().await,
-            (&Method::GET, "/ws") => self.handle_websocket_upgrade(req).await,
+            (&Method::GET, "/ws") => match listener_kind {
+                ListenerKind::Client => self.handle_websocket_upgrade(req).await,
+                ListenerKind::Public => Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(GatewayBody::Left(Full::new(
+                        "WebSocket connections are only available on the client listener".into(),
+                    )))
+                    .unwrap()),
+            },
             // A2A Protocol
             (&Method::GET, "/.well-known/agent.json") => self.handle_agent_card().await,
             (&Method::POST, "/a2a") => self.handle_a2a_request(req).await,

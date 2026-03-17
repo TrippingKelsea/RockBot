@@ -9,7 +9,7 @@
 ```bash
 git clone https://github.com/TrippingKelsea/rockbot.git
 cd rockbot
-cargo build --release
+cargo build --release -F enhanced
 ```
 
 The binary is at `./target/release/rockbot`.
@@ -25,16 +25,17 @@ feature bundles are available when you need more providers or infrastructure.
 
 ## Initial Setup
 
-### Generate Config
+### Generate Gateway Config
 
 ```bash
-rockbot config init
+rockbot config init gateway --https-port 18181 --client-port 18182
 # Creates ~/.config/rockbot/rockbot.toml
 # Generates TLS certificate at ~/.config/rockbot/gateway.{crt,key}
 ```
 
-This creates a default configuration with one agent (`main`) using AWS
-Bedrock, and a self-signed TLS certificate for the gateway.
+This creates a bootstrap-only gateway config and a self-signed TLS
+certificate. Runtime entities such as agents should live in the replicated
+store, not in the TOML file.
 
 ### Minimal Configuration
 
@@ -43,18 +44,15 @@ Bedrock, and a self-signed TLS certificate for the gateway.
 
 [gateway]
 bind_host = "0.0.0.0"
-port = 18080
+port = 18181
+client_port = 18182
 tls_cert = "/home/you/.config/rockbot/gateway.crt"
 tls_key = "/home/you/.config/rockbot/gateway.key"
 
-[agents.defaults]
-model = "anthropic/claude-sonnet-4-20250514"
-
-[[agents.list]]
-id = "main"
-
-[tools]
-profile = "standard"
+[client]
+gateway_host = "127.0.0.1"
+https_port = 18181
+client_port = 18182
 ```
 
 ## Running
@@ -63,7 +61,8 @@ profile = "standard"
 
 ```bash
 rockbot gateway run
-# INFO Gateway server listening on 0.0.0.0:18080 (TLS)
+# INFO Gateway public listener on 0.0.0.0:18181 (TLS)
+# INFO Gateway client listener on 0.0.0.0:18182 (TLS/mTLS)
 ```
 
 ### Connect with the TUI
@@ -75,10 +74,12 @@ rockbot tui
 
 From another machine on the network:
 ```bash
-rockbot tui -g 192.168.1.10:18080
+rockbot config init client --gateway-ip 192.168.1.10 --https-port 18181 --client-port 18182
+rockbot tui
 ```
 
-The `-g` flag accepts bare `host:port` — no need to specify `https://`.
+The client bootstrap config points the TUI at the dedicated client listener.
+You can still override it with `-g host:port` when needed.
 
 ### Credential Management UI
 
@@ -91,7 +92,10 @@ rockbot credentials ui
 
 ### Open the Web UI
 
-Navigate to `https://localhost:18080` in your browser. Accept the
+self-signed certificate when prompted.
+Navigate to `https://localhost:18181` in your browser. Accept the
+self-signed certificate when prompted. The browser uses the public listener,
+not the mTLS client listener.
 self-signed certificate when prompted.
 
 ## Mutual TLS (mTLS)
@@ -117,6 +121,9 @@ rockbot cert client generate --name my-tui --role tui --days 365
 ```
 
 ### Enroll a Remote Client
+
+Enrollment happens over the public HTTPS listener, so you do not need to
+temporarily disable client-certificate enforcement for the client listener.
 
 If you need to provision a client on a different machine:
 

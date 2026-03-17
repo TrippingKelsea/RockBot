@@ -18,12 +18,16 @@ pub type Result<T> = std::result::Result<T, ConfigError>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Gateway server configuration
+    #[serde(default)]
     pub gateway: GatewayConfig,
     /// Agent configurations
+    #[serde(default)]
     pub agents: AgentConfig,
     /// Tool configurations
+    #[serde(default)]
     pub tools: ToolConfig,
     /// Security settings
+    #[serde(default)]
     pub security: SecurityConfig,
     /// Credential management settings
     #[serde(default)]
@@ -51,6 +55,28 @@ pub struct Config {
     /// coordinates across components.
     #[serde(default)]
     pub seed_model: SeedModelConfig,
+    /// Client bootstrap settings used by TUI and other non-gateway nodes.
+    #[serde(default)]
+    pub client: ClientBootstrapConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            gateway: GatewayConfig::default(),
+            agents: AgentConfig::default(),
+            tools: ToolConfig::default(),
+            security: SecurityConfig::default(),
+            credentials: CredentialsConfig::default(),
+            providers: ProvidersConfig::default(),
+            overseer: None,
+            doctor: None,
+            deploy: None,
+            tui: TuiConfig::default(),
+            seed_model: SeedModelConfig::default(),
+            client: ClientBootstrapConfig::default(),
+        }
+    }
 }
 
 /// TUI display preferences
@@ -446,9 +472,15 @@ pub struct GatewayConfig {
     /// Host to bind to (default: 127.0.0.1)
     #[serde(default = "default_bind_host")]
     pub bind_host: String,
+    /// Explicit IPs to bind listeners on. When set, these take precedence over `bind_host`.
+    #[serde(default)]
+    pub listen_ips: Vec<String>,
     /// Port to bind to (default: 18080)
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Dedicated client/mTLS listener port (default: 18081)
+    #[serde(default = "default_client_port")]
+    pub client_port: u16,
     /// Maximum concurrent connections
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
@@ -463,10 +495,29 @@ pub struct GatewayConfig {
     pub pki: PkiConfig,
 }
 
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            bind_host: default_bind_host(),
+            listen_ips: Vec::new(),
+            port: default_port(),
+            client_port: default_client_port(),
+            max_connections: default_max_connections(),
+            request_timeout: default_request_timeout(),
+            require_api_key: None,
+            pki: PkiConfig::default(),
+        }
+    }
+}
+
 impl GatewayConfig {
     /// Check if this gateway binds to localhost only
     pub fn is_localhost(&self) -> bool {
-        matches!(self.bind_host.as_str(), "127.0.0.1" | "localhost" | "::1")
+        let hosts = self.listener_hosts();
+        !hosts.is_empty()
+            && hosts
+                .iter()
+                .all(|host| matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1"))
     }
 
     /// Check if API key authentication is required
@@ -477,6 +528,15 @@ impl GatewayConfig {
     /// Check if mTLS client verification is configured (delegates to `pki`).
     pub fn has_mtls(&self) -> bool {
         self.pki.has_mtls()
+    }
+
+    /// Return the set of listener hosts this gateway should bind.
+    pub fn listener_hosts(&self) -> Vec<String> {
+        if self.listen_ips.is_empty() {
+            vec![self.bind_host.clone()]
+        } else {
+            self.listen_ips.clone()
+        }
     }
 }
 
@@ -493,6 +553,20 @@ pub struct AgentConfig {
     /// future version.
     #[serde(default)]
     pub list: Vec<AgentInstance>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            defaults: AgentDefaults {
+                workspace: default_workspace(),
+                model: default_model(),
+                heartbeat_interval: default_heartbeat_interval(),
+                max_context_tokens: default_max_context_tokens(),
+            },
+            list: Vec::new(),
+        }
+    }
 }
 
 /// Default agent settings
@@ -618,6 +692,16 @@ pub struct ToolConfig {
     pub configs: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            profile: default_tool_profile(),
+            deny: Vec::new(),
+            configs: HashMap::new(),
+        }
+    }
+}
+
 /// Security configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
@@ -635,6 +719,43 @@ pub struct SecurityConfig {
     /// Noise transport policy for future secure WS/stream encapsulation.
     #[serde(default)]
     pub noise: NoiseTransportConfig,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            sandbox: SandboxConfig {
+                mode: default_sandbox_mode(),
+                scope: default_sandbox_scope(),
+                image: None,
+            },
+            capabilities: CapabilityConfig::default(),
+            storage: StorageSecurityConfig::default(),
+            roles: NodeRoleConfig::default(),
+            noise: NoiseTransportConfig::default(),
+        }
+    }
+}
+
+/// Client bootstrap settings for non-gateway nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientBootstrapConfig {
+    #[serde(default = "default_client_gateway_host")]
+    pub gateway_host: String,
+    #[serde(default = "default_port")]
+    pub https_port: u16,
+    #[serde(default = "default_client_port")]
+    pub client_port: u16,
+}
+
+impl Default for ClientBootstrapConfig {
+    fn default() -> Self {
+        Self {
+            gateway_host: default_client_gateway_host(),
+            https_port: default_port(),
+            client_port: default_client_port(),
+        }
+    }
 }
 
 /// Policy for local at-rest storage encryption.
@@ -1065,8 +1186,28 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if self.gateway.port == 0 {
             return Err(ConfigError::Invalid {
-                message: "Gateway port cannot be 0".to_string(),
+                message: "Gateway HTTPS port cannot be 0".to_string(),
             });
+        }
+
+        if self.gateway.client_port == 0 {
+            return Err(ConfigError::Invalid {
+                message: "Gateway client port cannot be 0".to_string(),
+            });
+        }
+
+        if self.gateway.port == self.gateway.client_port {
+            return Err(ConfigError::Invalid {
+                message: "Gateway HTTPS and client ports must differ".to_string(),
+            });
+        }
+
+        for listen_ip in &self.gateway.listen_ips {
+            if listen_ip.parse::<std::net::IpAddr>().is_err() {
+                return Err(ConfigError::Invalid {
+                    message: format!("Invalid gateway listen IP: {listen_ip}"),
+                });
+            }
         }
 
         let mut agent_ids = std::collections::HashSet::new();
@@ -1189,6 +1330,14 @@ fn default_bind_host() -> String {
 
 fn default_port() -> u16 {
     18080
+}
+
+fn default_client_port() -> u16 {
+    18081
+}
+
+fn default_client_gateway_host() -> String {
+    "127.0.0.1".to_string()
 }
 
 fn default_max_connections() -> usize {
@@ -1381,7 +1530,9 @@ mod tests {
         let mut config = Config {
             gateway: GatewayConfig {
                 bind_host: "127.0.0.1".to_string(),
+                listen_ips: Vec::new(),
                 port: 8080,
+                client_port: 8081,
                 max_connections: 1000,
                 request_timeout: 30,
                 require_api_key: None,
@@ -1408,8 +1559,11 @@ mod tests {
                     image: None,
                 },
                 capabilities: CapabilityConfig::default(),
+                storage: StorageSecurityConfig::default(),
+                roles: NodeRoleConfig::default(),
                 noise: NoiseTransportConfig::default(),
             },
+            client: ClientBootstrapConfig::default(),
             credentials: CredentialsConfig::default(),
             providers: ProvidersConfig::default(),
             overseer: None,

@@ -135,15 +135,15 @@ Session updated with new messages
 
 ### TLS and Connection Security
 
-By default, the gateway serves HTTPS/WSS. `rockbot config init` generates
+By default, the gateway serves a public HTTPS listener and a dedicated client
+listener. `rockbot config init gateway` generates
 a self-signed certificate for quick bootstrap. For production use, the
 built-in PKI system (`rockbot-pki`) provides a full certificate authority:
 
 - **CA management** — `rockbot cert ca generate` creates a local CA
 - **Client certificates** — issued per role (gateway, agent, tui)
-- **Mutual TLS** — when `tls_ca` is configured, the gateway verifies client
-  certificates using `WebPkiClientVerifier`; `require_client_cert = true`
-  enforces mandatory mTLS
+- **Mutual TLS** — the dedicated client listener can enforce mTLS without
+  blocking browser access or enrollment on the public listener
 - **Remote enrollment** — `POST /api/cert/sign` with a pre-shared key lets
   new clients obtain certificates without direct CA access
 - **Revocation** — `rockbot cert client revoke` updates the CRL

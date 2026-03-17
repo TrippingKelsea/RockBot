@@ -11,6 +11,14 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 ## [Unreleased]
 
 ### Added
+- **Gateway bootstrap**: deterministic role-targeted bootstrap config commands
+  - `rockbot config init gateway --https-port ... --client-port ...`
+  - `rockbot config init client --gateway-ip ... --https-port ... --client-port ...`
+- **Gateway networking**: split public and client listeners
+  - Public HTTPS listener for Web UI, health, and certificate enrollment
+  - Dedicated client listener for TUI, WebSocket, and mTLS client traffic
+- **Config**: new `[client]` bootstrap section for gateway host, public port,
+  and dedicated client port
 - **Config**: `[security.storage]` and `[security.roles]` for encrypted local
   storage policy, PKI-backed local key sourcing, and explicit gateway /
   vault-provider deployment intent
@@ -68,6 +76,12 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   - Automatic save of `[tui]`, `[tui.theme]`, and `[tui.fonts]` changes to `rockbot.toml`
 
 ### Fixed
+- **Bootstrap workflow**: generated config no longer seeds agent definitions by
+  default; bootstrap TOML is now connection-focused instead of embedding runtime
+  agent state
+- **Web and enrollment access**: browser access and client enrollment no longer
+  depend on weakening client-certificate requirements for the dedicated client
+  listener
 - **Gateway startup**: Session, cron, and agent-persistence stores can now use
   PKI-managed node-local storage keys through encrypted redb open paths
 - **Gateway WebSocket**: agent messages no longer block the connection read loop,

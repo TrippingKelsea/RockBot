@@ -82,8 +82,8 @@ pub enum Commands {
     /// Interactive TUI dashboard
     Tui {
         /// Gateway address (e.g. 172.30.200.146:18181, https://host:port)
-        #[arg(short, long, default_value = "127.0.0.1:18080")]
-        gateway: String,
+        #[arg(short, long)]
+        gateway: Option<String>,
     },
 
     /// Migration from OpenClaw
@@ -144,12 +144,52 @@ pub enum ConfigCommands {
     Validate,
     /// Generate default configuration
     Init {
+        #[command(subcommand)]
+        command: ConfigInitCommands,
+    },
+}
+
+/// Targeted bootstrap configuration generation
+#[derive(Subcommand)]
+pub enum ConfigInitCommands {
+    /// Generate bootstrap config for a gateway node
+    Gateway {
         /// Output file path
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Overwrite existing file
         #[arg(short, long)]
         force: bool,
+        /// Public HTTPS/Web UI port
+        #[arg(long, default_value_t = 18181)]
+        https_port: u16,
+        /// Dedicated client/mTLS port
+        #[arg(long, default_value_t = 18182)]
+        client_port: u16,
+        /// Host/interface to bind to
+        #[arg(long, default_value = "0.0.0.0")]
+        bind_host: String,
+        /// Explicit listener IP to bind on. Repeat to bind selectively on multiple IPs.
+        #[arg(long = "listen-ip")]
+        listen_ips: Vec<String>,
+    },
+    /// Generate bootstrap config for a client node
+    Client {
+        /// Output file path
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Overwrite existing file
+        #[arg(short, long)]
+        force: bool,
+        /// Gateway hostname or IP
+        #[arg(long)]
+        gateway_ip: String,
+        /// Gateway public HTTPS/Web UI port
+        #[arg(long, default_value_t = 18181)]
+        https_port: u16,
+        /// Gateway dedicated client/mTLS port
+        #[arg(long, default_value_t = 18182)]
+        client_port: u16,
     },
 }
 
@@ -404,8 +444,8 @@ pub enum AgentCommands {
         /// Agent ID to interact with
         agent_id: String,
         /// Gateway address (e.g. 172.30.200.146:18181, https://host:port)
-        #[arg(short, long, default_value = "127.0.0.1:18080")]
-        gateway: String,
+        #[arg(short, long)]
+        gateway: Option<String>,
         /// Register as remote tool executor
         #[arg(long)]
         exec: bool,
@@ -688,7 +728,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         Commands::Tui { gateway } => {
             // Load config to get vault path
             let config = load_config(&config_path).await?;
-            let gateway_url = rockbot_client::normalize_gateway_url(gateway);
+            let gateway_target = gateway.clone().unwrap_or_else(|| {
+                format!("{}:{}", config.client.gateway_host, config.client.client_port)
+            });
+            let gateway_url = rockbot_client::normalize_gateway_url(&gateway_target);
             rockbot_tui::run_app(
                 config_path.clone(),
                 config.credentials.vault_path,

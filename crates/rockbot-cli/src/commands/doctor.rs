@@ -24,9 +24,9 @@ pub async fn run(command: &Option<DoctorCommands>, config_path: &PathBuf) -> Res
             run_migrate(path).await
         }
         #[cfg(feature = "doctor-ai")]
-        Some(DoctorCommands::Storage { config, with_ai }) => {
+        Some(DoctorCommands::Storage { config, no_ai }) => {
             let path = config.as_ref().unwrap_or(config_path);
-            run_storage(path, *with_ai).await
+            run_storage(path, !*no_ai).await
         }
         #[cfg(feature = "doctor-ai")]
         Some(DoctorCommands::Download) => run_download().await,
@@ -235,37 +235,43 @@ async fn run_storage(config_path: &PathBuf, with_ai: bool) -> Result<()> {
     println!("Doctor AI: Inspecting storage state...\n");
     let report = inspect_storage(config_path);
     let summary = summarize_report(&report);
+    let actions = recommended_actions(&report);
+
+    let analysis = if with_ai {
+        let raw_toml = tokio::fs::read_to_string(config_path).await.unwrap_or_default();
+        let doctor_config = try_parse_doctor_config_from_raw(&raw_toml);
+        let doctor = DoctorAi::init(doctor_config).await?;
+        Some(
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                doctor.diagnose_storage_report(&report),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+
     println!("{summary}");
     println!("Recommended next steps:");
-    for action in recommended_actions(&report) {
+    for action in actions {
         println!("- {action}");
     }
     println!();
 
-    if !with_ai {
-        println!("Doctor AI Assessment:\n");
-        println!("Skipped. Re-run with `--with-ai` to ask the embedded model for an additional explanation.");
-        return Ok(());
-    }
-
-    let raw_toml = tokio::fs::read_to_string(config_path).await.unwrap_or_default();
-    let doctor_config = try_parse_doctor_config_from_raw(&raw_toml);
-    let doctor = DoctorAi::init(doctor_config).await?;
-    let analysis = tokio::time::timeout(
-        Duration::from_secs(10),
-        doctor.diagnose_storage_report(&report),
-    )
-    .await;
-
     match analysis {
-        Ok(text) if !text.trim().is_empty() => {
+        Some(Ok(text)) if !text.trim().is_empty() => {
             println!("Doctor AI Assessment:\n");
             println!("{text}");
         }
-        Ok(_) => {}
-        Err(_) => {
+        Some(Ok(_)) => {}
+        Some(Err(_)) => {
             println!("Doctor AI Assessment:\n");
             println!("The deterministic storage report is complete, but the AI explanation timed out after 10 seconds.");
+        }
+        None => {
+            println!("Doctor AI Assessment:\n");
+            println!("Skipped. Re-run without `--no-ai` to include the embedded model review.");
         }
     }
 

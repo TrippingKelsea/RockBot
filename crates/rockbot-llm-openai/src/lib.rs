@@ -763,7 +763,7 @@ mod tests {
 
     #[test]
     fn test_convert_message_with_image() {
-        use crate::ImageContent;
+        use rockbot_llm::ImageContent;
         let provider = OpenAiProvider {
             client: reqwest::Client::new(),
             api_key: "test".to_string(),

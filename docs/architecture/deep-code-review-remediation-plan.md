@@ -10,6 +10,11 @@ some are only partially true, and some are stale against the current codebase.
 
 ## Validation Summary
 
+This document was re-checked after the `rockbot.data` virtual-disk foundation
+landed in `d54ee5c`. The storage refactor did not materially change the review
+findings below; the remaining work is still concentrated in security
+boundaries, provider correctness, and long-running resource behavior.
+
 ### Still-Live Critical Findings
 
 The following review findings were validated directly against the current code:
@@ -195,10 +200,10 @@ These are the highest-risk live issues.
 2. UTF-8 truncation
 3. gateway `assert!` removal
 4. TUI secret exposure fixes
-5. capability `"."` semantics
-6. sandbox parameter-key fix
+5. capability `"."` semantics and path canonicalization
+6. sandbox parameter-key fix and command/path extraction hardening
 7. SSH vault redesign
-8. credential tool fix or removal
+8. credential tool fix
 9. allowed/blocked commands enforcement
 10. WS backpressure
 11. sandbox kill-on-timeout
@@ -212,6 +217,39 @@ These are the highest-risk live issues.
 19. CRL fixes
 20. config expansion + `set_var` removal
 21. CLI vault unlock correction
+
+## Current Execution Batches
+
+The implementation work should be landed in these checkpoint batches:
+
+1. Crash/correctness and secret-exposure fixes
+   - OpenAI test import
+   - UTF-8-safe truncation
+   - gateway `assert!` replacement
+   - remove `/tmp/rockbot_debug.log`
+   - mask Age identities
+2. Filesystem and process-boundary fixes
+   - capability `"."` semantics
+   - canonical path enforcement
+   - tool sandbox parameter extraction
+   - `allowed_commands` / `blocked_commands` enforcement
+3. Vault and credential fixes
+   - stop public-key-derived SSH wrapping
+   - fix credential tool return payload
+   - fix CLI unlock-method assumptions
+4. Resource and runtime hardening
+   - WS backpressure
+   - MCP cleanup
+   - sandbox kill-on-timeout
+   - remove async `set_var`
+5. Provider correctness fixes
+   - Bedrock integer conversion
+   - Anthropic message structure
+   - compaction timeout / streaming guardrails
+6. PKI and config hardening
+   - key-file creation race
+   - config env expansion
+   - remaining enrollment / CRL fixes
 
 ## Verification Checklist
 

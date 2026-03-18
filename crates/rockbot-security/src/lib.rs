@@ -62,6 +62,7 @@ pub struct SecurityRestrictions {
     pub max_file_size: Option<usize>,
     pub max_execution_time: Option<std::time::Duration>,
     pub allowed_executables: Option<HashSet<String>>,
+    pub blocked_executables: HashSet<String>,
     pub forbidden_paths: HashSet<PathBuf>,
 }
 
@@ -171,19 +172,21 @@ impl Capabilities {
     pub fn has_capability(&self, capability: &Capability) -> bool {
         match capability {
             Capability::FilesystemRead(path) => {
+                let requested_path = resolve_capability_path(path);
                 // Check if we have read access to this path or a parent path
                 self.capabilities.iter().any(|cap| match cap {
                     Capability::FilesystemRead(allowed_path) => {
-                        path.starts_with(allowed_path) || allowed_path == &PathBuf::from(".")
+                        requested_path.starts_with(resolve_capability_root(allowed_path))
                     }
                     _ => false,
                 })
             }
             Capability::FilesystemWrite(path) => {
+                let requested_path = resolve_capability_path(path);
                 // Check if we have write access to this path or a parent path
                 self.capabilities.iter().any(|cap| match cap {
                     Capability::FilesystemWrite(allowed_path) => {
-                        path.starts_with(allowed_path) || allowed_path == &PathBuf::from(".")
+                        requested_path.starts_with(resolve_capability_root(allowed_path))
                     }
                     _ => false,
                 })
@@ -256,7 +259,7 @@ impl SecurityManager {
             session_id: session_id.to_string(),
             capabilities,
             sandbox_enabled: self.config.sandbox.mode != "disabled",
-            restrictions: SecurityRestrictions::default(),
+            restrictions: build_restrictions(&self.config),
         };
 
         // Store context
@@ -305,12 +308,14 @@ pub fn enforce_path(
     path: &std::path::Path,
     restrictions: &SecurityRestrictions,
 ) -> EnforcementResult {
+    let requested_path = resolve_capability_path(path);
     for forbidden in &restrictions.forbidden_paths {
-        if path.starts_with(forbidden) || path == forbidden {
+        let forbidden_path = resolve_capability_path(forbidden);
+        if requested_path.starts_with(&forbidden_path) || requested_path == forbidden_path {
             return EnforcementResult::Denied {
                 reason: format!(
                     "Path '{}' is forbidden by security restrictions",
-                    path.display()
+                    requested_path.display()
                 ),
             };
         }
@@ -323,6 +328,11 @@ pub fn enforce_path(
 /// If `allowed_executables` is `None` or empty, all executables are allowed.
 /// If set, only listed executables may be run.
 pub fn enforce_executable(cmd: &str, restrictions: &SecurityRestrictions) -> EnforcementResult {
+    if restrictions.blocked_executables.contains(cmd) {
+        return EnforcementResult::Denied {
+            reason: format!("Executable '{cmd}' is blocked by security restrictions"),
+        };
+    }
     if let Some(ref allowed) = restrictions.allowed_executables {
         if !allowed.is_empty() && !allowed.contains(cmd) {
             return EnforcementResult::Denied {
@@ -382,6 +392,53 @@ impl MockSecurityManager {
     pub async fn get_session_context(&self, _session_id: &str) -> Result<SecurityContext> {
         Ok(self.default_context.clone())
     }
+}
+
+fn build_restrictions(config: &SecurityConfig) -> SecurityRestrictions {
+    let mut restrictions = SecurityRestrictions::default();
+
+    if let Some(fs) = &config.capabilities.filesystem {
+        restrictions
+            .forbidden_paths
+            .extend(fs.forbidden_paths.iter().map(|path| resolve_capability_path(path)));
+    }
+
+    if let Some(process) = &config.capabilities.process {
+        if !process.allowed_commands.is_empty() {
+            restrictions.allowed_executables =
+                Some(process.allowed_commands.iter().cloned().collect());
+        }
+        restrictions
+            .blocked_executables
+            .extend(process.blocked_commands.iter().cloned());
+        restrictions.max_execution_time =
+            process.max_execution_time.map(std::time::Duration::from_secs);
+    }
+
+    restrictions
+}
+
+fn resolve_capability_root(path: &std::path::Path) -> PathBuf {
+    if path == std::path::Path::new(".") {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        resolve_capability_path(path)
+    }
+}
+
+fn resolve_capability_path(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        path.parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .map(|parent| {
+                if let Some(name) = path.file_name() {
+                    parent.join(name)
+                } else {
+                    parent
+                }
+            })
+            .unwrap_or_else(|| path.to_path_buf())
+    })
 }
 
 #[cfg(test)]
@@ -466,6 +523,25 @@ mod tests {
             enforce_executable("rm", &restrictions),
             EnforcementResult::Denied { .. }
         ));
+    }
+
+    #[test]
+    fn test_enforce_executable_blocked() {
+        let mut restrictions = SecurityRestrictions::default();
+        restrictions.blocked_executables.insert("rm".to_string());
+        assert!(matches!(
+            enforce_executable("rm", &restrictions),
+            EnforcementResult::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn test_dot_capability_resolves_to_current_directory() {
+        let mut caps = Capabilities::new();
+        let current_dir = std::env::current_dir().unwrap();
+        caps.add(Capability::FilesystemRead(PathBuf::from(".")));
+        assert!(caps.has_capability(&Capability::FilesystemRead(current_dir.join("Cargo.toml"))));
+        assert!(!caps.has_capability(&Capability::FilesystemRead(PathBuf::from("/etc/passwd"))));
     }
 
     #[test]

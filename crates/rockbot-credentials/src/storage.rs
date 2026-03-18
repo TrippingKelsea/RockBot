@@ -183,108 +183,22 @@ fn decrypt_with_age_identity(ciphertext: &str, identity_str: &str) -> Result<Vec
     Ok(decrypted)
 }
 
-/// Wraps a master key with an SSH public key.
-/// Uses the public key to encrypt via hybrid encryption.
 fn wrap_key_with_ssh(key_bytes: &[u8], public_key_path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    use ssh_key::PublicKey;
-
-    // Read and parse the public key
-    let pubkey_content = fs::read_to_string(public_key_path)?;
-    let pubkey = PublicKey::from_openssh(&pubkey_content)
-        .map_err(|e| CredentialError::ValidationFailed(format!("Invalid SSH public key: {e}")))?;
-
-    let pubkey_bytes = pubkey
-        .to_bytes()
-        .map_err(|e| CredentialError::Internal(format!("Failed to serialize public key: {e}")))?;
-
-    // Create a deterministic wrapping key from the public key
-    let mut hasher = Sha256::new();
-    hasher.update(&pubkey_bytes);
-    hasher.update(b"rockbot-ssh-wrap-v1");
-    let wrap_key_bytes: [u8; 32] = hasher.finalize().into();
-
-    let wrap_key = MasterKey::from_bytes(&wrap_key_bytes)?;
-
-    // Encrypt the master key
-    let nonce = generate_nonce();
-    let encrypted = encrypt(&wrap_key, &nonce, key_bytes)?;
-
-    // Combine nonce + ciphertext and encode
-    let mut combined = nonce.to_vec();
-    combined.extend(encrypted);
-
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    Ok(STANDARD.encode(&combined))
+    let _ = (key_bytes, public_key_path);
+    Err(CredentialError::ValidationFailed(
+        "SSH-key vault wrapping is disabled because the current design derives wrapping material from public key data and is not secure. Use age, password, or keyfile unlock instead.".to_string(),
+    ))
 }
 
-/// Unwraps a master key using an SSH private key.
 fn unwrap_key_with_ssh(
     wrapped_key: &str,
     private_key_path: &Path,
     passphrase: Option<&str>,
 ) -> Result<Vec<u8>> {
-    use sha2::{Digest, Sha256};
-    use ssh_key::PrivateKey;
-
-    // Read the private key
-    let privkey_content = fs::read_to_string(private_key_path)?;
-
-    // Parse private key (with optional passphrase)
-    let privkey = if let Some(pass) = passphrase {
-        PrivateKey::from_openssh(&privkey_content)
-            .and_then(|k| k.decrypt(pass.as_bytes()))
-            .map_err(|_e| CredentialError::InvalidPassword)?
-    } else {
-        PrivateKey::from_openssh(&privkey_content).map_err(|e| {
-            CredentialError::ValidationFailed(format!("Invalid SSH private key: {e}"))
-        })?
-    };
-
-    // Get the public key from the private key
-    let pubkey = privkey.public_key();
-    let pubkey_bytes = pubkey
-        .to_bytes()
-        .map_err(|e| CredentialError::Internal(format!("Failed to serialize public key: {e}")))?;
-
-    // Recreate the wrapping key
-    let mut hasher = Sha256::new();
-    hasher.update(&pubkey_bytes);
-    hasher.update(b"rockbot-ssh-wrap-v1");
-    let wrap_key_bytes: [u8; 32] = hasher.finalize().into();
-
-    let wrap_key = MasterKey::from_bytes(&wrap_key_bytes)?;
-
-    // Decode and split nonce + ciphertext
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let combined = STANDARD
-        .decode(wrapped_key)
-        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?;
-
-    if combined.len() < NONCE_SIZE {
-        return Err(CredentialError::DeserializationError(
-            "Wrapped key too short".to_string(),
-        ));
-    }
-
-    let (nonce_bytes, ciphertext) = combined.split_at(NONCE_SIZE);
-    let nonce: [u8; NONCE_SIZE] = nonce_bytes
-        .try_into()
-        .map_err(|_| CredentialError::DeserializationError("Invalid nonce".to_string()))?;
-
-    // Decrypt
-    let decrypted =
-        decrypt(&wrap_key, &nonce, ciphertext).map_err(|_| CredentialError::InvalidPassword)?;
-
-    if decrypted.len() != KEY_SIZE {
-        return Err(CredentialError::Internal(format!(
-            "Decrypted key has wrong size: expected {}, got {}",
-            KEY_SIZE,
-            decrypted.len()
-        )));
-    }
-
-    Ok(decrypted)
+    let _ = (wrapped_key, private_key_path, passphrase);
+    Err(CredentialError::ValidationFailed(
+        "SSH-key vault wrapping is disabled because the current design derives wrapping material from public key data and is not secure. Reinitialize the vault with age, password, or keyfile unlock.".to_string(),
+    ))
 }
 
 /// Vault metadata stored in meta.json

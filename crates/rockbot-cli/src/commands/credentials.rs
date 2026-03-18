@@ -230,11 +230,7 @@ async fn add_credential(
         anyhow::bail!("Vault not initialized. Run 'rockbot credentials init' first.");
     }
 
-    let manager = CredentialManager::new(&config.credentials.vault_path)?;
-
-    // Prompt for password to unlock
-    let password = prompt_password_hidden("Enter vault password: ")?;
-    manager.unlock_with_password(&password).await?;
+    let manager = unlock_manager_for_cli(config).await?;
 
     // Parse endpoint type
     let ep_type = match endpoint_type {
@@ -379,8 +375,9 @@ async fn handle_permissions(config: &Config, command: &PermissionsCommands) -> R
             }
         }
         PermissionsCommands::Remove { rule_id } => {
-            let permission_id = Uuid::parse_str(rule_id)
-                .map_err(|_| anyhow::anyhow!("Permission rule id must be a UUID, got '{rule_id}'"))?;
+            let permission_id = Uuid::parse_str(rule_id).map_err(|_| {
+                anyhow::anyhow!("Permission rule id must be a UUID, got '{rule_id}'")
+            })?;
             if manager.remove_permission(permission_id).await {
                 println!("✅ Removed permission rule: {permission_id}");
             } else {
@@ -559,6 +556,56 @@ async fn unlock_vault(
     println!("Note: Vault will lock when this process exits.");
 
     Ok(())
+}
+
+async fn unlock_manager_for_cli(config: &Config) -> Result<CredentialManager> {
+    use rockbot_credentials::UnlockMethod;
+
+    let manager = CredentialManager::new(&config.credentials.vault_path)?;
+    let vault = CredentialVault::open(&config.credentials.vault_path)?;
+    let unlock_method = vault
+        .unlock_method()
+        .ok_or_else(|| anyhow::anyhow!("Failed to read vault unlock method"))?;
+
+    match unlock_method {
+        UnlockMethod::Password { .. } => {
+            let password = prompt_password_hidden("Enter vault password: ")?;
+            manager.unlock_with_password(&password).await?;
+        }
+        UnlockMethod::Keyfile { path_hint } => {
+            let keyfile_path = path_hint
+                .as_deref()
+                .map(PathBuf::from)
+                .or_else(|| {
+                    let default_path = dirs::config_dir()
+                        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+                        .join("rockbot")
+                        .join("vault.key");
+                    default_path.exists().then_some(default_path)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "This vault uses a keyfile. Use `rockbot credentials unlock --keyfile <path>` or place the key at ~/.config/rockbot/vault.key."
+                    )
+                })?;
+            manager.unlock_with_keyfile(&keyfile_path).await?;
+        }
+        UnlockMethod::Age { public_key, .. } => {
+            anyhow::bail!(
+                "This vault uses Age encryption.\nUnlock with: rockbot credentials unlock --age AGE-SECRET-KEY-...\nPublic key: {}",
+                &public_key[..40.min(public_key.len())]
+            );
+        }
+        UnlockMethod::SshKey {
+            public_key_path, ..
+        } => {
+            anyhow::bail!(
+                "SSH-key vault unlock is currently disabled for security reasons. Reinitialize the vault with age, password, or keyfile unlock instead.\nConfigured public key: {public_key_path}"
+            );
+        }
+    }
+
+    Ok(manager)
 }
 
 /// Lock the vault

@@ -4072,13 +4072,14 @@ The user wants me to explore the codebase. I should start by listing the directo
 
     /// Truncate content to a maximum character count, appending a notice if truncated
     fn truncate_content(s: &str, max_chars: usize) -> String {
-        if s.len() <= max_chars {
+        let total_chars = s.chars().count();
+        if total_chars <= max_chars {
             s.to_string()
         } else {
-            let truncated = &s[..max_chars];
+            let truncated: String = s.chars().take(max_chars).collect();
             format!(
                 "{truncated}\n\n[... truncated — {total} total chars]",
-                total = s.len()
+                total = total_chars
             )
         }
     }

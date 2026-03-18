@@ -179,7 +179,13 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let security_manager =
         Arc::new(SecurityManager::new(convert_security_config(config.security.clone())).await?);
     let mut llm_registry = LlmProviderRegistry::new().await?;
-    register_compiled_llm_providers(&mut llm_registry).await?;
+    register_compiled_llm_providers(
+        &mut llm_registry,
+        vault_result
+            .as_ref()
+            .map(|result| &result.llm_credentials),
+    )
+    .await?;
     let llm_registry = Arc::new(llm_registry);
 
     // Create agent factory for hot reload
@@ -520,7 +526,11 @@ fn local_node_roles(config: &Config) -> Vec<ClusterNodeRole> {
     roles
 }
 
-async fn register_compiled_llm_providers(registry: &mut LlmProviderRegistry) -> Result<()> {
+async fn register_compiled_llm_providers(
+    registry: &mut LlmProviderRegistry,
+    #[allow(unused_variables)]
+    llm_credentials: Option<&std::collections::HashMap<String, String>>,
+) -> Result<()> {
     #[cfg(feature = "bedrock")]
     {
         match rockbot_llm_bedrock::BedrockProvider::from_env().await {
@@ -546,7 +556,12 @@ async fn register_compiled_llm_providers(registry: &mut LlmProviderRegistry) -> 
 
     #[cfg(feature = "openai")]
     {
-        if let Ok(provider) = rockbot_llm_openai::OpenAiProvider::new() {
+        let provider = llm_credentials
+            .and_then(|creds| creds.get("openai").cloned())
+            .map(rockbot_llm_openai::OpenAiProvider::with_api_key)
+            .map(Ok)
+            .unwrap_or_else(rockbot_llm_openai::OpenAiProvider::new);
+        if let Ok(provider) = provider {
             tracing::info!("Registered OpenAI provider");
             registry.register_provider(Arc::new(provider)).await;
         }

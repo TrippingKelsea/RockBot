@@ -217,7 +217,7 @@ async fn retrieve_llm_credentials(
     // Get all endpoints
     let endpoints = manager.list_endpoints().await;
 
-    for (provider_name, env_var_name) in known_llm_providers() {
+    for (provider_name, _env_var_name) in known_llm_providers() {
         // Look for endpoint with matching name
         if let Some(_endpoint) = endpoints.iter().find(|e| {
             e.name.to_lowercase() == *provider_name || e.name.to_lowercase().contains(provider_name)
@@ -235,10 +235,7 @@ async fn retrieve_llm_credentials(
                     if let Some(secret) = result.credential {
                         if let Ok(api_key) = String::from_utf8(secret) {
                             debug!("Retrieved {} API key from vault", provider_name);
-                            credentials.insert(provider_name.to_string(), api_key.clone());
-
-                            // Also set environment variable for providers that use it
-                            std::env::set_var(env_var_name, &api_key);
+                            credentials.insert(provider_name.to_string(), api_key);
                         }
                     }
                 }

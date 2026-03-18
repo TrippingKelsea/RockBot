@@ -49,6 +49,21 @@ pub fn has_claude_credentials() -> bool {
     }
 }
 
+fn debug_vault_log(message: &str) {
+    if std::env::var("ROCKBOT_TUI_DEBUG_VAULT").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/rockbot_debug.log")
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{message}");
+    }
+}
+
 /// Content tabs for views that have sub-tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CredentialsTab {
@@ -2159,21 +2174,10 @@ impl App {
     }
 
     fn handle_unlock_action(&mut self) {
-        // Debug: log unlock attempt
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/rockbot_debug.log")
-        {
-            use std::io::Write;
-            let _ = writeln!(
-                f,
-                "handle_unlock_action: initialized={}, locked={}, method={:?}",
-                self.state.vault.initialized,
-                self.state.vault.locked,
-                self.state.vault.unlock_method
-            );
-        }
+        debug_vault_log(&format!(
+            "handle_unlock_action: initialized={}, locked={}, method={:?}",
+            self.state.vault.initialized, self.state.vault.locked, self.state.vault.unlock_method
+        ));
 
         if !self.state.vault.initialized || !self.state.vault.locked {
             return;
@@ -2189,15 +2193,7 @@ impl App {
                 self.state.clear_input();
             }
             UnlockMethod::Keyfile { path } => {
-                // Debug: log keyfile unlock attempt
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/rockbot_debug.log")
-                {
-                    use std::io::Write;
-                    let _ = writeln!(f, "Keyfile unlock: path={path:?}");
-                }
+                debug_vault_log(&format!("Keyfile unlock: path={path:?}"));
 
                 // Auto-unlock with keyfile - no password needed
                 let keyfile_path = path.clone().or_else(|| {
@@ -2267,7 +2263,7 @@ impl App {
                 };
                 self.state.input_mode = InputMode::PasswordInput {
                     prompt,
-                    masked: false,
+                    masked: true,
                     action: PasswordAction::UnlockVault,
                 };
                 self.state.clear_input();
@@ -6967,26 +6963,11 @@ async fn load_agents(client: &rockbot_client::GatewayClient) -> Result<Vec<Agent
 async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     use rockbot_credentials::CredentialVault;
 
-    // Debug logging
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/rockbot_debug.log")
-    {
-        use std::io::Write;
-        let _ = writeln!(f, "check_vault_status: path={vault_path:?}");
-    }
+    debug_vault_log(&format!("check_vault_status: path={vault_path:?}"));
 
     let exists = CredentialVault::exists(vault_path);
 
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/rockbot_debug.log")
-    {
-        use std::io::Write;
-        let _ = writeln!(f, "check_vault_status: exists={exists}");
-    }
+    debug_vault_log(&format!("check_vault_status: exists={exists}"));
 
     if !exists {
         return Ok(VaultStatus {
@@ -7002,14 +6983,7 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
     let unlock_method = match CredentialVault::open(vault_path) {
         Ok(vault) => {
             let method = vault.unlock_method();
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/rockbot_debug.log")
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "check_vault_status: raw unlock_method={method:?}");
-            }
+            debug_vault_log(&format!("check_vault_status: raw unlock_method={method:?}"));
             match method {
                 Some(rockbot_credentials::UnlockMethod::Password { .. }) => UnlockMethod::Password,
                 Some(rockbot_credentials::UnlockMethod::Keyfile { path_hint }) => {
@@ -7031,29 +7005,14 @@ async fn check_vault_status(vault_path: &PathBuf) -> Result<VaultStatus> {
             }
         }
         Err(e) => {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/rockbot_debug.log")
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "check_vault_status: open error={e:?}");
-            }
+            debug_vault_log(&format!("check_vault_status: open error={e:?}"));
             UnlockMethod::Unknown
         }
     };
 
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/rockbot_debug.log")
-    {
-        use std::io::Write;
-        let _ = writeln!(
-            f,
-            "check_vault_status: final unlock_method={unlock_method:?}"
-        );
-    }
+    debug_vault_log(&format!(
+        "check_vault_status: final unlock_method={unlock_method:?}"
+    ));
 
     Ok(VaultStatus {
         enabled: true,

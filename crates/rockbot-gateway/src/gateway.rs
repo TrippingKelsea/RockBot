@@ -3592,13 +3592,18 @@ impl Gateway {
 
     /// Get the directory path for an agent
     #[allow(clippy::unused_self)]
-    fn agent_directory(&self, agent_id: &str) -> std::path::PathBuf {
-        assert!(Self::is_valid_agent_id(agent_id), "invalid agent id");
-        dirs::config_dir()
+    fn agent_directory(&self, agent_id: &str) -> Result<std::path::PathBuf> {
+        if !Self::is_valid_agent_id(agent_id) {
+            return Err(GatewayError::InvalidRequest {
+                message: "invalid agent id".to_string(),
+            }
+            .into());
+        }
+        Ok(dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
             .join("rockbot")
             .join("agents")
-            .join(agent_id)
+            .join(agent_id))
     }
 
     /// Initialize an agent's directory with default files
@@ -3698,7 +3703,10 @@ impl Gateway {
             return Self::json_error("Invalid path", StatusCode::BAD_REQUEST);
         };
 
-        let agent_dir = self.agent_directory(agent_id);
+        let agent_dir = match self.agent_directory(agent_id) {
+            Ok(path) => path,
+            Err(_) => return Self::json_error("Invalid agent id", StatusCode::BAD_REQUEST),
+        };
         let mut files: Vec<serde_json::Value> = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
@@ -3747,7 +3755,10 @@ impl Gateway {
             return Self::json_error("Invalid filename", StatusCode::BAD_REQUEST);
         }
 
-        let file_path = self.agent_directory(agent_id).join(filename);
+        let file_path = match self.agent_directory(agent_id) {
+            Ok(path) => path.join(filename),
+            Err(_) => return Self::json_error("Invalid agent id", StatusCode::BAD_REQUEST),
+        };
         match tokio::fs::read_to_string(&file_path).await {
             Ok(content) => {
                 let body = serde_json::json!({ "name": filename, "content": content }).to_string();
@@ -3792,7 +3803,10 @@ impl Gateway {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let agent_dir = self.agent_directory(agent_id);
+        let agent_dir = match self.agent_directory(agent_id) {
+            Ok(path) => path,
+            Err(_) => return Self::json_error("Invalid agent id", StatusCode::BAD_REQUEST),
+        };
         if let Err(e) = tokio::fs::create_dir_all(&agent_dir).await {
             return Self::json_error(
                 &format!("Failed to create agent directory: {e}"),
@@ -3828,7 +3842,10 @@ impl Gateway {
             );
         }
 
-        let file_path = self.agent_directory(agent_id).join(filename);
+        let file_path = match self.agent_directory(agent_id) {
+            Ok(path) => path.join(filename),
+            Err(_) => return Self::json_error("Invalid agent id", StatusCode::BAD_REQUEST),
+        };
         match tokio::fs::remove_file(&file_path).await {
             Ok(()) => {
                 let resp = serde_json::json!({ "deleted": true, "name": filename }).to_string();
@@ -5795,13 +5812,19 @@ impl Gateway {
         }
 
         // Create agent directory with SOUL.md and SYSTEM-PROMPT.md
-        let agent_dir = self.agent_directory(&config.id);
-        if let Err(e) = self
-            .initialize_agent_directory(&agent_dir, req.system_prompt.as_deref())
-            .await
-        {
-            error!("Failed to create agent directory: {}", e);
-            // Non-fatal — continue creating the agent
+        match self.agent_directory(&config.id) {
+            Ok(agent_dir) => {
+                if let Err(e) = self
+                    .initialize_agent_directory(&agent_dir, req.system_prompt.as_deref())
+                    .await
+                {
+                    error!("Failed to create agent directory: {}", e);
+                    // Non-fatal — continue creating the agent
+                }
+            }
+            Err(e) => {
+                return Ok(Self::json_error(&e.to_string(), StatusCode::BAD_REQUEST));
+            }
         }
 
         // Persist to vault store (preferred) or config file (fallback)
@@ -5957,9 +5980,10 @@ impl Gateway {
                     Some(system_prompt.clone())
                 };
                 // Also update SYSTEM-PROMPT.md in agent directory
-                let agent_dir = self.agent_directory(&agent_id);
-                let prompt_path = agent_dir.join("SYSTEM-PROMPT.md");
-                let _ = tokio::fs::write(&prompt_path, system_prompt).await;
+                if let Ok(agent_dir) = self.agent_directory(&agent_id) {
+                    let prompt_path = agent_dir.join("SYSTEM-PROMPT.md");
+                    let _ = tokio::fs::write(&prompt_path, system_prompt).await;
+                }
             }
             if let Some(enabled) = update.enabled {
                 cfg.enabled = enabled;

@@ -42,6 +42,8 @@ use tokio::sync::RwLock;
 
 pub mod builtin;
 
+const PATH_PARAM_KEYS: &[&str] = &["path", "file_path", "file", "workdir", "directory"];
+
 /// Result type for tool operations
 pub type Result<T> = std::result::Result<T, ToolError>;
 
@@ -639,12 +641,14 @@ impl ToolRegistry {
         let restrictions = &context.security_context.restrictions;
 
         // Check file path restrictions for file-related tools
-        if let Some(path_val) = params.get("path").and_then(|v| v.as_str()) {
-            let path = std::path::Path::new(path_val);
-            if let rockbot_security::EnforcementResult::Denied { reason } =
-                rockbot_security::enforce_path(path, restrictions)
-            {
-                return Err(ToolError::SecurityError { message: reason });
+        for key in PATH_PARAM_KEYS {
+            if let Some(path_val) = params.get(*key).and_then(|v| v.as_str()) {
+                let path = std::path::Path::new(path_val);
+                if let rockbot_security::EnforcementResult::Denied { reason } =
+                    rockbot_security::enforce_path(path, restrictions)
+                {
+                    return Err(ToolError::SecurityError { message: reason });
+                }
             }
         }
 

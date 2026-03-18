@@ -5,7 +5,10 @@
 
 use rockbot_credentials_schema::CredentialSchema;
 use rockbot_security::Capabilities;
-use rockbot_tools::{message::ToolResult, Tool, ToolError, ToolExecutionContext};
+use rockbot_tools::{
+    message::ToolResult, CredentialApplicationType, CredentialResult, Tool, ToolError,
+    ToolExecutionContext,
+};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -64,10 +67,30 @@ impl Tool for CredentialVaultTool {
 
             if let Some(accessor) = &context.credential_accessor {
                 match accessor.get_credential(path, &context.agent_id).await {
-                    Ok(_result) => Ok(ToolResult::json(serde_json::json!({
+                    Ok(CredentialResult::Granted {
+                        secret,
+                        credential_type,
+                    }) => Ok(ToolResult::json(serde_json::json!({
                         "status": "ok",
                         "path": path,
+                        "secret": String::from_utf8_lossy(&secret),
+                        "encoding": "utf8",
+                        "credential_type": credential_type_name(&credential_type),
                     }))),
+                    Ok(CredentialResult::Denied { reason }) => Ok(ToolResult::error(format!(
+                        "Credential access denied: {reason}"
+                    ))),
+                    Ok(CredentialResult::PendingApproval { request_id, message }) => {
+                        Ok(ToolResult::json(serde_json::json!({
+                            "status": "pending_approval",
+                            "path": path,
+                            "request_id": request_id,
+                            "message": message,
+                        })))
+                    }
+                    Ok(CredentialResult::NotFound { path }) => Ok(ToolResult::error(format!(
+                        "Credential not found: {path}"
+                    ))),
                     Err(e) => Ok(ToolResult::error(format!("Credential access failed: {e}"))),
                 }
             } else {
@@ -79,5 +102,14 @@ impl Tool for CredentialVaultTool {
     fn credential_schema(&self) -> Option<CredentialSchema> {
         // No external credentials needed — this accesses the local vault
         None
+    }
+}
+
+fn credential_type_name(kind: &CredentialApplicationType) -> &'static str {
+    match kind {
+        CredentialApplicationType::BearerToken => "bearer_token",
+        CredentialApplicationType::BasicAuth { .. } => "basic_auth",
+        CredentialApplicationType::ApiKey { .. } => "api_key",
+        CredentialApplicationType::Raw => "raw",
     }
 }

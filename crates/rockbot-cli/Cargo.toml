@@ -81,7 +81,6 @@ rustls-pemfile = { workspace = true }
 time = { workspace = true }
 rpassword = "7"
 getrandom = "0.2"
-atty = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

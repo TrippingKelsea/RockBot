@@ -21,7 +21,6 @@
 pub mod app;
 pub mod chat_commands;
 pub mod components;
-pub mod credentials;
 #[cfg(feature = "doctor-ai")]
 pub mod doctor_tui;
 pub mod effects;
@@ -32,7 +31,6 @@ pub mod state;
 pub mod ui;
 
 pub use app::{run_app, App};
-pub use credentials::CredentialsTui;
 pub use effects::{palette, EffectState};
 pub use keybindings::KeybindingConfig;
 pub use state::{AppState, Message};

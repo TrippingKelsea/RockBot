@@ -10,6 +10,8 @@ use rockbot_config::{
 };
 use rockbot_credentials::CredentialManager;
 use rockbot_pki::PkiManager;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 
 fn tool_locality_label(locality: &rockbot_agent::agent::ToolExecutionLocality) -> String {
     match locality {
@@ -21,56 +23,6 @@ fn tool_locality_label(locality: &rockbot_agent::agent::ToolExecutionLocality) -
     }
 }
 
-/// Simple base64 encoding (using standard alphabet)
-fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity((input.len() + 2) / 3 * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        output.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
-        output.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            output.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            output.push('=');
-        }
-        if chunk.len() > 2 {
-            output.push(ALPHABET[(triple & 0x3F) as usize] as char);
-        } else {
-            output.push('=');
-        }
-    }
-    output
-}
-
-/// Simple base64 decoding (using standard alphabet)
-fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, &'static str> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let input = input.trim_end_matches('=');
-    let mut output = Vec::with_capacity(input.len() * 3 / 4);
-    let mut buf = 0u32;
-    let mut bits = 0;
-
-    for c in input.bytes() {
-        let val = match ALPHABET.iter().position(|&b| b == c) {
-            Some(v) => v as u32,
-            None => return Err("invalid base64 character"),
-        };
-        buf = (buf << 6) | val;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push((buf >> bits) as u8);
-            buf &= (1 << bits) - 1;
-        }
-    }
-
-    Ok(output)
-}
 use crate::error::{GatewayError, Result};
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::Frame;
@@ -267,6 +219,8 @@ pub struct Gateway {
     deploy_init_error: Option<String>,
     /// Shutdown broadcast channel
     shutdown_tx: broadcast::Sender<()>,
+    /// Gateway process start time.
+    started_at: std::time::Instant,
 }
 
 /// Stable identity for a connected WebSocket client.
@@ -574,13 +528,18 @@ fn split_utf8_chunks(input: &str, max_chars: usize) -> Vec<String> {
         .collect()
 }
 
+fn json_string<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|e| {
+        error!("Failed to serialize JSON response: {e}");
+        "{}".to_string()
+    })
+}
+
 /// Gateway health status
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GatewayHealth {
     pub version: String,
     pub uptime_seconds: u64,
-    /// Alias for TUI compatibility (reads `uptime_secs`)
-    pub uptime_secs: u64,
     pub active_connections: usize,
     pub active_sessions: usize,
     pub pending_agents: usize,
@@ -591,8 +550,8 @@ pub struct GatewayHealth {
 /// Memory usage statistics
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemoryUsage {
-    pub allocated_bytes: usize,
-    pub heap_size_bytes: usize,
+    pub allocated_bytes: u64,
+    pub heap_size_bytes: u64,
 }
 
 // Conversion helpers — these live here (not in config.rs) because they reference
@@ -893,6 +852,7 @@ impl Gateway {
             #[cfg(feature = "bedrock-deploy")]
             deploy_init_error,
             shutdown_tx,
+            started_at: std::time::Instant::now(),
         })
     }
 
@@ -1913,7 +1873,7 @@ impl Gateway {
             })
             .collect();
 
-        let body = serde_json::to_string(&endpoint_list).unwrap();
+        let body = json_string(&endpoint_list);
         Ok(Self::json_response(&body, StatusCode::OK))
     }
 
@@ -1977,7 +1937,7 @@ impl Gateway {
             .await
         {
             Ok(endpoint) => {
-                let body = serde_json::to_string(&endpoint).unwrap();
+                let body = json_string(&endpoint);
                 Ok(Self::json_response(&body, StatusCode::CREATED))
             }
             Err(e) => Ok(Self::json_error(
@@ -2082,7 +2042,7 @@ impl Gateway {
         };
 
         // Decode base64 secret
-        let Ok(secret) = base64_decode(&request.secret) else {
+        let Ok(secret) = BASE64_STANDARD.decode(&request.secret) else {
             return Ok(Self::json_error(
                 "Invalid base64 secret",
                 StatusCode::BAD_REQUEST,
@@ -2117,7 +2077,7 @@ impl Gateway {
         };
 
         let approvals = manager.list_pending_approvals().await;
-        let body = serde_json::to_string(&approvals).unwrap();
+        let body = json_string(&approvals);
         Ok(Self::json_response(&body, StatusCode::OK))
     }
 
@@ -2432,7 +2392,7 @@ impl Gateway {
         };
 
         let permissions = manager.list_path_permissions().await;
-        let body = serde_json::to_string(&permissions).unwrap();
+        let body = json_string(&permissions);
         Ok(Self::json_response(&body, StatusCode::OK))
     }
 
@@ -2561,7 +2521,7 @@ impl Gateway {
             .unwrap_or(100); // Default to 100 entries
 
         let entries = manager.get_audit_entries(limit);
-        let body = serde_json::to_string(&entries).unwrap();
+        let body = json_string(&entries);
         Ok(Self::json_response(&body, StatusCode::OK))
     }
 
@@ -2739,9 +2699,7 @@ impl Gateway {
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .body(GatewayBody::Left(Full::new(
-                serde_json::to_string(&json).unwrap().into(),
-            )))
+            .body(GatewayBody::Left(Full::new(json_string(&json).into())))
             .unwrap())
     }
 
@@ -2782,9 +2740,7 @@ impl Gateway {
             Some(p) => Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
-                .body(GatewayBody::Left(Full::new(
-                    serde_json::to_string(&p).unwrap().into(),
-                )))
+                .body(GatewayBody::Left(Full::new(json_string(&p).into())))
                 .unwrap()),
             None => Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -3033,7 +2989,7 @@ impl Gateway {
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
                 .body(GatewayBody::Left(Full::new(
-                    serde_json::to_string(&response).unwrap().into(),
+                    json_string(&response).into(),
                 )))
                 .unwrap()),
             Err(e) => {
@@ -3131,9 +3087,7 @@ impl Gateway {
         Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/json")
-            .body(GatewayBody::Left(Full::new(
-                serde_json::to_string(&json).unwrap().into(),
-            )))
+            .body(GatewayBody::Left(Full::new(json_string(&json).into())))
             .unwrap())
     }
 
@@ -4270,7 +4224,7 @@ impl Gateway {
         let mut challenge = vec![0u8; 32];
         ring::rand::SecureRandom::fill(&rng, &mut challenge)
             .map_err(|_| anyhow::anyhow!("Failed to generate browser auth challenge"))?;
-        let challenge_b64 = base64_encode(&challenge);
+        let challenge_b64 = BASE64_STANDARD.encode(&challenge);
         let cert_name = entry.name.clone();
         let cert_role = entry.role.to_string();
 
@@ -4326,7 +4280,7 @@ impl Gateway {
         let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref())
             .map_err(|_| anyhow::anyhow!("Failed to parse certificate"))?;
         let spki = cert.tbs_certificate.subject_pki.raw.to_owned();
-        let signature = base64_decode(signature_b64)
+        let signature = BASE64_STANDARD.decode(signature_b64)
             .map_err(|e| anyhow::anyhow!("Invalid auth signature encoding: {e}"))?;
 
         let verifier =
@@ -5232,7 +5186,7 @@ impl Gateway {
         use rockbot_client::remote_exec;
 
         // Decode the incoming handshake payload
-        let payload = match base64_decode(payload_b64) {
+        let payload = match BASE64_STANDARD.decode(payload_b64) {
             Ok(p) => p,
             Err(e) => {
                 let resp = WsResponseType::Error {
@@ -5284,7 +5238,7 @@ impl Gateway {
                 // Write message 2 (server -> client)
                 match responder.write_message(&[], &mut buf) {
                     Ok(len) => {
-                        let response_b64 = base64_encode(&buf[..len]);
+                        let response_b64 = BASE64_STANDARD.encode(&buf[..len]);
                         let resp = WsResponseType::NoiseHandshake {
                             payload: response_b64,
                             step: 2,
@@ -5535,7 +5489,7 @@ impl Gateway {
         &self,
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let health = self.get_health_status().await;
-        let body = serde_json::to_string(&health).unwrap();
+        let body = json_string(&health);
 
         Ok(Response::builder()
             .status(StatusCode::OK)
@@ -5651,7 +5605,7 @@ impl Gateway {
             }
         }
 
-        let body = serde_json::to_string(&agent_list).unwrap();
+        let body = json_string(&agent_list);
 
         Ok(Response::builder()
             .status(StatusCode::OK)
@@ -6126,7 +6080,7 @@ impl Gateway {
         // Process message
         match self.process_agent_message(&agent_id, message_request).await {
             Ok(response) => {
-                let body = serde_json::to_string(&response).unwrap();
+                let body = json_string(&response);
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
@@ -6138,7 +6092,7 @@ impl Gateway {
                     error: e.to_string(),
                     code: None,
                 };
-                let body = serde_json::to_string(&error_response).unwrap();
+                let body = json_string(&error_response);
                 Ok(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("Content-Type", "application/json")
@@ -6343,20 +6297,32 @@ impl Gateway {
         );
 
         let pending = self.pending_agents.read().await;
+        let uptime_secs = self.started_at.elapsed().as_secs();
+        let memory_bytes = Self::current_process_memory_bytes().unwrap_or(0);
 
         GatewayHealth {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            uptime_seconds: 0, // TODO: Track actual uptime
-            uptime_secs: 0,
+            uptime_seconds: uptime_secs,
             active_connections: connections.len(),
             active_sessions: session_stats.active_sessions as usize,
             pending_agents: pending.len(),
             agents: agent_health,
             memory_usage: MemoryUsage {
-                allocated_bytes: 0, // TODO: Get actual memory usage
-                heap_size_bytes: 0,
+                allocated_bytes: memory_bytes,
+                heap_size_bytes: memory_bytes,
             },
         }
+    }
+
+    fn current_process_memory_bytes() -> Option<u64> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+        let kb = line
+            .split_whitespace()
+            .nth(1)?
+            .parse::<u64>()
+            .ok()?;
+        Some(kb * 1024)
     }
 
     /// Shutdown the gateway
@@ -7025,6 +6991,7 @@ impl Clone for Gateway {
             #[cfg(feature = "bedrock-deploy")]
             deploy_init_error: self.deploy_init_error.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
+            started_at: self.started_at,
         }
     }
 }

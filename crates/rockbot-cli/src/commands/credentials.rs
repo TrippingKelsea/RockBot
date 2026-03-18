@@ -75,8 +75,9 @@ pub async fn run(command: &CredentialsCommands, config_path: &PathBuf) -> Result
         }
         CredentialsCommands::Lock => lock_vault(&config).await,
         CredentialsCommands::Ui => {
-            rockbot_tui::credentials::run_credentials_tui(config.credentials.vault_path.clone())
-                .await
+            anyhow::bail!(
+                "The standalone credentials UI was removed. Use `rockbot tui` and open the Credentials view."
+            )
         }
     }
 }
@@ -313,9 +314,11 @@ async fn remove_endpoint(config: &Config, endpoint: &str) -> Result<()> {
         anyhow::bail!("Credential management is not enabled in configuration");
     }
 
-    // TODO: Implement when delete_endpoint is added to CredentialManager
-    println!("❌ Remove endpoint not yet implemented");
-    println!("   Endpoint to remove: {endpoint}");
+    let manager = CredentialManager::new(&config.credentials.vault_path)?;
+    let endpoint_id = Uuid::parse_str(endpoint)
+        .map_err(|_| anyhow::anyhow!("Endpoint must be a UUID, got '{endpoint}'"))?;
+    manager.delete_endpoint(endpoint_id).await?;
+    println!("✅ Removed endpoint: {endpoint_id}");
 
     Ok(())
 }
@@ -354,14 +357,35 @@ async fn handle_permissions(config: &Config, command: &PermissionsCommands) -> R
             println!("   Rule ID: {}", permission.id);
         }
         PermissionsCommands::List => {
-            // TODO: Add list_permissions to CredentialManager
-            println!("Permission rules are stored in memory during runtime.");
-            println!("Persistent permission rules will be added in a future update.");
+            let permissions = manager.list_path_permissions().await;
+            if permissions.is_empty() {
+                println!("No permission rules configured.");
+                return Ok(());
+            }
+
+            println!(
+                "{:<36} {:<20} {:<14} {}",
+                "RULE ID", "PATTERN", "LEVEL", "DESCRIPTION"
+            );
+            println!("{}", "-".repeat(96));
+            for permission in permissions {
+                println!(
+                    "{:<36} {:<20} {:<14} {}",
+                    permission.id,
+                    truncate(&permission.path_pattern, 18),
+                    format!("{:?}", permission.level),
+                    permission.description.unwrap_or_default(),
+                );
+            }
         }
         PermissionsCommands::Remove { rule_id } => {
-            // TODO: Implement when remove_permission is added
-            println!("❌ Remove permission not yet implemented");
-            println!("   Rule to remove: {rule_id}");
+            let permission_id = Uuid::parse_str(rule_id)
+                .map_err(|_| anyhow::anyhow!("Permission rule id must be a UUID, got '{rule_id}'"))?;
+            if manager.remove_permission(permission_id).await {
+                println!("✅ Removed permission rule: {permission_id}");
+            } else {
+                println!("⚠ Permission rule not found: {permission_id}");
+            }
         }
     }
 

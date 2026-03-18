@@ -6744,7 +6744,10 @@ async fn check_gateway_status(client: &rockbot_client::GatewayClient) -> Result<
             .get("version")
             .and_then(|v| v.as_str())
             .map(String::from),
-        uptime_secs: json.get("uptime_secs").and_then(serde_json::Value::as_u64),
+        uptime_secs: json
+            .get("uptime_seconds")
+            .or_else(|| json.get("uptime_secs"))
+            .and_then(serde_json::Value::as_u64),
         active_connections: json
             .get("active_connections")
             .and_then(serde_json::Value::as_u64)

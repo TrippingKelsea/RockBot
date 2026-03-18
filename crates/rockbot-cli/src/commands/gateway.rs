@@ -17,6 +17,7 @@ use rockbot_session::SessionManager;
 #[cfg(feature = "overseer")]
 use rockbot_store::Store;
 use rockbot_tools::ToolRegistry;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -54,7 +55,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let vault_path = config.credentials.vault_path.clone();
 
     // Check if we're running interactively (TTY)
-    let interactive = atty::is(atty::Stream::Stdin);
+    let interactive = std::io::stdin().is_terminal();
 
     // Only unlock vault if credentials are enabled
     let vault_result = if config.credentials.enabled {

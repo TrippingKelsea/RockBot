@@ -72,7 +72,7 @@ impl Gateway {
                      | Version | `{}` |\n| Uptime | {}s |\n\
                      | Connections | {} |\n| Sessions | {} |\n\
                      | Agents | {} |\n| Pending | {} |\n",
-                    health.version, health.uptime_secs, health.active_connections,
+                    health.version, health.uptime_seconds, health.active_connections,
                     health.active_sessions, health.agents.len(), health.pending_agents,
                 )
             }

@@ -41,6 +41,37 @@ fn get_string_param<'a>(params: &'a serde_json::Value, keys: &[&str]) -> Option<
         .find_map(|key| params.get(*key).and_then(|v| v.as_str()))
 }
 
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn resolve_workspace_path(workspace_path: &std::path::Path, raw_path: &str) -> Result<PathBuf> {
+    let workspace = normalize_path(workspace_path);
+    let candidate = if PathBuf::from(raw_path).is_absolute() {
+        normalize_path(std::path::Path::new(raw_path))
+    } else {
+        normalize_path(&workspace.join(raw_path))
+    };
+
+    if !candidate.starts_with(&workspace) {
+        return Err(crate::ToolError::InvalidParameters {
+            message: format!("path '{raw_path}' escapes the workspace"),
+        });
+    }
+
+    Ok(candidate)
+}
+
 fn resolve_tool_path(
     context: &ToolExecutionContext,
     params: &serde_json::Value,
@@ -50,15 +81,11 @@ fn resolve_tool_path(
         .ok_or_else(|| crate::ToolError::InvalidParameters {
             message: format!("{} is required", keys[0]),
         })?
+        .to_string()
+        .trim()
         .to_string();
 
-    let path = if PathBuf::from(&raw_path).is_absolute() {
-        PathBuf::from(raw_path)
-    } else {
-        context.workspace_path.join(raw_path)
-    };
-
-    Ok(path)
+    resolve_workspace_path(&context.workspace_path, &raw_path)
 }
 
 /// File reading tool
@@ -562,14 +589,18 @@ impl Tool for GlobTool {
             let base_dir = params
                 .get("path")
                 .and_then(|v| v.as_str())
-                .map_or_else(|| context.workspace_path.clone(), PathBuf::from);
+                .map_or_else(
+                    || Ok(context.workspace_path.clone()),
+                    |p| resolve_workspace_path(&context.workspace_path, p),
+                )?;
 
             // Build full glob pattern
-            let full_pattern = if PathBuf::from(&pattern).is_absolute() {
-                pattern
-            } else {
-                format!("{}/{}", base_dir.display(), pattern)
-            };
+            if PathBuf::from(&pattern).is_absolute() {
+                return Err(crate::ToolError::InvalidParameters {
+                    message: "absolute glob patterns are not allowed".to_string(),
+                });
+            }
+            let full_pattern = format!("{}/{}", base_dir.display(), pattern);
 
             let entries =
                 glob::glob(&full_pattern).map_err(|e| crate::ToolError::InvalidParameters {
@@ -671,16 +702,9 @@ impl Tool for GrepTool {
                 .to_string();
 
             let search_path = params.get("path").and_then(|v| v.as_str()).map_or_else(
-                || context.workspace_path.clone(),
-                |p| {
-                    let pb = PathBuf::from(p);
-                    if pb.is_absolute() {
-                        pb
-                    } else {
-                        context.workspace_path.join(p)
-                    }
-                },
-            );
+                || Ok(context.workspace_path.clone()),
+                |p| resolve_workspace_path(&context.workspace_path, p),
+            )?;
 
             let include_pattern = params
                 .get("include")

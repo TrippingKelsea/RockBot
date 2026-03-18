@@ -779,7 +779,10 @@ impl GatewayClient {
                             .get("version")
                             .and_then(|v| v.as_str())
                             .map(String::from),
-                        uptime_secs: status.get("uptime_seconds").and_then(|v| v.as_u64()),
+                        uptime_secs: status
+                            .get("uptime_seconds")
+                            .or_else(|| status.get("uptime_secs"))
+                            .and_then(|v| v.as_u64()),
                         active_connections: status
                             .get("active_connections")
                             .and_then(|v| v.as_u64())

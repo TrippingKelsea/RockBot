@@ -445,7 +445,9 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
     }
 
     let mut mgr = open_pki(dir.clone())?;
-    let role = if let Ok(entry) = mgr.client_info(name) { entry.role } else {
+    let role = if let Ok(entry) = mgr.client_info(name) {
+        entry.role
+    } else {
         let config = rockbot_config::Config::from_file(config_path)
             .await
             .with_context(|| format!("Failed to load config: {}", config_path.display()))?;
@@ -458,7 +460,9 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
             .await
             .with_context(|| format!("Failed to read certificate: {}", cert_path.display()))?;
         mgr.import_signed_client(name, inferred_role, &cert_pem)
-            .with_context(|| format!("Failed to import certificate '{name}' into local PKI index"))?;
+            .with_context(|| {
+                format!("Failed to import certificate '{name}' into local PKI index")
+            })?;
         inferred_role
     };
 
@@ -494,9 +498,7 @@ async fn cmd_install(config_path: &Path, name: &str) -> Result<()> {
 
     tokio::fs::write(config_path, doc.to_string()).await?;
 
-    println!(
-        "Installed certificate '{name}' (role: {role}) into config:"
-    );
+    println!("Installed certificate '{name}' (role: {role}) into config:");
     println!("  tls_cert: {}", cert_path.display());
     println!("  tls_key:  {}", key_path.display());
     if ca_path.exists() {
@@ -758,9 +760,12 @@ async fn run_enroll(command: &EnrollCommands, config_path: &Path) -> Result<()> 
             );
             for t in tokens {
                 let uses_str = t
-                    .remaining_uses.map_or_else(|| "∞".to_string(), |n| n.to_string());
-                let expires_str = t
-                    .expires_at.map_or_else(|| "never".to_string(), |dt| dt.format("%Y-%m-%d %H:%M").to_string());
+                    .remaining_uses
+                    .map_or_else(|| "∞".to_string(), |n| n.to_string());
+                let expires_str = t.expires_at.map_or_else(
+                    || "never".to_string(),
+                    |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
+                );
                 let token_preview = if t.token.len() > 16 {
                     format!("{}…", &t.token[..16])
                 } else {
@@ -818,20 +823,63 @@ async fn cmd_enroll_submit(
     let configured_gateway = rockbot_config::Config::from_file(config_path)
         .await
         .ok()
-        .map(|config| format!("https://{}:{}", config.client.gateway_host, config.client.https_port));
+        .map(|config| {
+            format!(
+                "https://{}:{}",
+                config.client.gateway_host, config.client.https_port
+            )
+        });
     let gateway = gateway
         .map(ToOwned::to_owned)
         .or(configured_gateway)
-        .ok_or_else(|| anyhow::anyhow!("No gateway provided and no [client] bootstrap target configured"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("No gateway provided and no [client] bootstrap target configured")
+        })?;
     let gateway = if gateway.contains("://") {
         gateway
     } else {
         format!("https://{gateway}")
     };
+    #[derive(serde::Deserialize)]
+    struct CaInfoResponse {
+        ca_certificate: String,
+    }
+
+    let config = rockbot_config::Config::from_file(config_path).await.ok();
     let url = format!("{}/api/cert/sign", gateway.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()?;
+    let client = if let Some(ca_path) = config
+        .as_ref()
+        .and_then(|cfg| {
+            cfg.effective_pki()
+                .tls_ca
+                .as_ref()
+                .map(|path| expand_tilde(path.as_path()))
+        })
+        .filter(|path: &PathBuf| path.exists())
+    {
+        let ca_pem = tokio::fs::read(&ca_path).await?;
+        let ca_cert = reqwest::Certificate::from_pem(&ca_pem)?;
+        reqwest::Client::builder()
+            .add_root_certificate(ca_cert)
+            .build()?
+    } else {
+        let bootstrap = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()?;
+        let ca_info: CaInfoResponse = bootstrap
+            .get(format!("{}/api/cert/ca", gateway.trim_end_matches('/')))
+            .send()
+            .await
+            .with_context(|| format!("Failed to fetch CA info from {gateway}"))?
+            .error_for_status()?
+            .json()
+            .await
+            .context("Invalid CA response from gateway")?;
+        let ca_cert = reqwest::Certificate::from_pem(ca_info.ca_certificate.as_bytes())?;
+        reqwest::Client::builder()
+            .add_root_certificate(ca_cert)
+            .build()?
+    };
 
     let resp = client
         .post(&url)
@@ -911,7 +959,9 @@ async fn resolve_cert_key_paths(
     key: Option<&Path>,
     config_path: &Path,
 ) -> Result<(PathBuf, PathBuf)> {
-    if let (Some(c), Some(k)) = (cert, key) { Ok((expand_tilde(c), expand_tilde(k))) } else {
+    if let (Some(c), Some(k)) = (cert, key) {
+        Ok((expand_tilde(c), expand_tilde(k)))
+    } else {
         let config = load_config(&config_path.to_path_buf()).await?;
         let c = cert
             .map(expand_tilde)

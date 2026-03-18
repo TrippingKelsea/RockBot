@@ -527,22 +527,17 @@ function bindDropzone() {
   });
   dropzone.addEventListener('drop', async (event) => {
     const files = Array.from(event.dataTransfer?.files || []);
+    const existing = await idbGet(ID_KEY) || {};
+    let updated = { ...existing, savedAt: Date.now() };
     for (const file of files) {
       const text = await file.text();
       if (text.includes('BEGIN CERTIFICATE')) {
-        await idbSet(ID_KEY, {
-          ...(await idbGet(ID_KEY) || {}),
-          certificate: text,
-          savedAt: Date.now(),
-        });
+        updated.certificate = text;
       } else if (text.includes('BEGIN') && text.includes('PRIVATE KEY')) {
-        await idbSet(ID_KEY, {
-          ...(await idbGet(ID_KEY) || {}),
-          privateKey: text,
-          savedAt: Date.now(),
-        });
+        updated.privateKey = await importPrivateKey(text);
       }
     }
+    await idbSet(ID_KEY, updated);
     await refreshIdentity();
   });
 }

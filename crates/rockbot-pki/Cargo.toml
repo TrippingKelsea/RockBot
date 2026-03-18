@@ -23,6 +23,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 ring = { workspace = true }
 age = { version = "0.10", features = ["armor"] }
+subtle = "2.6"
 
 [dev-dependencies]
 tempfile = { workspace = true }

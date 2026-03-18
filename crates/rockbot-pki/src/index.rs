@@ -5,6 +5,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 
 /// The role a certificate is issued for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,7 +207,16 @@ impl PkiIndex {
         let pos = self
             .enrollments
             .iter()
-            .position(|t| t.token == token_str)
+            .enumerate()
+            .find_map(|(idx, t)| {
+                let lhs = t.token.as_bytes();
+                let rhs = token_str.as_bytes();
+                if lhs.len() == rhs.len() && lhs.ct_eq(rhs).into() {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| anyhow::anyhow!("Enrollment token not found"))?;
 
         {

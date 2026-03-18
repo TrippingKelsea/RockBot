@@ -1045,6 +1045,17 @@ impl Agent {
 
         debug!("Processing streaming message in session {}", session_id);
 
+        // --- Input guardrail check ---
+        if !self.guardrail_pipeline.is_empty() {
+            let guardrail_result = self.guardrail_pipeline.check_input(&message).await;
+            if let GuardrailResult::Block(reason) = guardrail_result {
+                return Err(AgentError::ExecutionFailed {
+                    message: format!("Input blocked by guardrail: {reason}"),
+                }
+                .into());
+            }
+        }
+
         // Fire PreMessage hook
         let pre_event = HookEvent::PreMessage {
             agent_id: self.config.id.clone(),
@@ -1113,6 +1124,18 @@ impl Agent {
                 &stream_tx,
             )
             .await?;
+
+        if !self.guardrail_pipeline.is_empty() {
+            let response_text = response_message.extract_text().unwrap_or_default();
+            if let GuardrailResult::Block(reason) =
+                self.guardrail_pipeline.check_output(&response_text).await
+            {
+                return Err(AgentError::ExecutionFailed {
+                    message: format!("Output blocked by guardrail: {reason}"),
+                }
+                .into());
+            }
+        }
 
         trajectory.record(
             TrajectoryEvent::LlmResponse {

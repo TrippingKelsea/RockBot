@@ -26,6 +26,16 @@ use tracing::{debug, error, info, warn};
 use crate::commands::vault_unlock::unlock_vault_for_gateway;
 use crate::GatewayCommands;
 
+fn expand_tilde(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if s == "~" || s.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(s.strip_prefix("~/").unwrap_or(""));
+        }
+    }
+    path.to_path_buf()
+}
+
 /// Run gateway commands
 pub async fn run(command: &GatewayCommands, config_path: &PathBuf) -> Result<()> {
     match command {
@@ -647,9 +657,29 @@ async fn show_status(config_path: &Path) -> Result<()> {
     println!("\n=== Gateway Health ===");
     let config = Config::from_file(config_path).await.unwrap_or_default();
     let gateway_url = format!("https://127.0.0.1:{}", config.gateway.port);
-    match reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()?
+    let client = if let Some(ca_path) = config
+        .effective_pki()
+        .tls_ca
+        .as_ref()
+        .map(|path| expand_tilde(path.as_path()))
+    {
+        if ca_path.exists() {
+            let ca_pem = tokio::fs::read(&ca_path).await?;
+            let ca_cert = reqwest::Certificate::from_pem(&ca_pem)?;
+            reqwest::Client::builder()
+                .add_root_certificate(ca_cert)
+                .build()?
+        } else {
+            reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()?
+        }
+    } else {
+        reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()?
+    };
+    match client
         .get(format!("{gateway_url}/health"))
         .timeout(std::time::Duration::from_secs(2))
         .send()

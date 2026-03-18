@@ -3,15 +3,14 @@
 //! This module provides the main gateway server that handles WebSocket connections,
 //! HTTP API endpoints, and coordinates agent execution.
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use rockbot_agent::agent::{Agent, AgentResponse};
 use rockbot_config::{
-    Config, CredentialsConfig, GatewayConfig, PkiConfig, StorageEncryptionMode,
-    StorageKeySource,
+    Config, CredentialsConfig, GatewayConfig, PkiConfig, StorageEncryptionMode, StorageKeySource,
 };
 use rockbot_credentials::CredentialManager;
 use rockbot_pki::PkiManager;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
 
 fn tool_locality_label(locality: &rockbot_agent::agent::ToolExecutionLocality) -> String {
     match locality {
@@ -868,12 +867,11 @@ impl Gateway {
         match config.unlock_method.as_str() {
             "env" => {
                 if let Ok(password) = std::env::var(&config.password_env_var) {
-                    manager
-                        .unlock_with_password(&password)
-                        .await
-                        .map_err(|e| GatewayError::InvalidRequest {
+                    manager.unlock_with_password(&password).await.map_err(|e| {
+                        GatewayError::InvalidRequest {
                             message: format!("Failed to unlock vault: {e}"),
-                        })?;
+                        }
+                    })?;
                     info!("Vault unlocked via environment variable");
                 } else {
                     debug!("Vault password env var not set, vault remains locked");
@@ -1316,7 +1314,10 @@ impl Gateway {
 
     /// Load a TLS acceptor from the configured cert/key paths.
     /// Supports optional mTLS when `tls_ca` is configured.
-    fn load_tls_acceptor(&self, listener_kind: ListenerKind) -> Result<Option<tokio_rustls::TlsAcceptor>> {
+    fn load_tls_acceptor(
+        &self,
+        listener_kind: ListenerKind,
+    ) -> Result<Option<tokio_rustls::TlsAcceptor>> {
         let (cert_path, key_path) = match (&self.pki.tls_cert, &self.pki.tls_key) {
             (Some(c), Some(k)) => (Self::expand_tilde(c), Self::expand_tilde(k)),
             _ => return Ok(None),
@@ -1495,7 +1496,12 @@ impl Gateway {
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             tokio::spawn(async move {
                 gateway
-                    .accept_loop(listener, tls_acceptor, ListenerKind::Public, &mut shutdown_rx)
+                    .accept_loop(
+                        listener,
+                        tls_acceptor,
+                        ListenerKind::Public,
+                        &mut shutdown_rx,
+                    )
                     .await;
             });
         }
@@ -1505,7 +1511,12 @@ impl Gateway {
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             tokio::spawn(async move {
                 gateway
-                    .accept_loop(listener, tls_acceptor, ListenerKind::Client, &mut shutdown_rx)
+                    .accept_loop(
+                        listener,
+                        tls_acceptor,
+                        ListenerKind::Client,
+                        &mut shutdown_rx,
+                    )
                     .await;
             });
         }
@@ -1647,7 +1658,10 @@ impl Gateway {
         match (req.method(), path.as_str()) {
             // Web UI
             (&Method::GET, "/") | (&Method::GET, "/index.html") => self.handle_web_ui().await,
-            (&Method::GET, "/ws") => self.handle_websocket_upgrade(req, ListenerKind::Client).await,
+            (&Method::GET, "/ws") => {
+                self.handle_websocket_upgrade(req, ListenerKind::Client)
+                    .await
+            }
             // A2A Protocol
             (&Method::GET, "/.well-known/agent.json") => self.handle_agent_card().await,
             (&Method::POST, "/a2a") => self.handle_a2a_request(req).await,
@@ -1817,24 +1831,23 @@ impl Gateway {
                     .await
                     .map(Self::with_public_security_headers)
             }
-            (&Method::GET, p)
-                if p.starts_with("/static/") && self.config.public.serve_webapp =>
-            {
+            (&Method::GET, p) if p.starts_with("/static/") && self.config.public.serve_webapp => {
                 self.handle_web_ui_asset(p)
                     .await
                     .map(Self::with_public_security_headers)
             }
-            (&Method::GET, "/ws") => self.handle_websocket_upgrade(req, ListenerKind::Public).await,
-            (&Method::GET, "/api/cert/ca") if self.config.public.serve_ca => {
-                self.handle_cert_ca_info()
+            (&Method::GET, "/ws") => {
+                self.handle_websocket_upgrade(req, ListenerKind::Public)
                     .await
-                    .map(Self::with_public_security_headers)
             }
-            (&Method::POST, "/api/cert/sign") if self.config.public.enrollment_enabled => {
-                self.handle_cert_sign(req)
-                    .await
-                    .map(Self::with_public_security_headers)
-            }
+            (&Method::GET, "/api/cert/ca") if self.config.public.serve_ca => self
+                .handle_cert_ca_info()
+                .await
+                .map(Self::with_public_security_headers),
+            (&Method::POST, "/api/cert/sign") if self.config.public.enrollment_enabled => self
+                .handle_cert_sign(req)
+                .await
+                .map(Self::with_public_security_headers),
             _ => Ok(Self::with_public_security_headers(
                 Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -2304,11 +2317,10 @@ impl Gateway {
             "keyfile" => {
                 use std::os::unix::fs::OpenOptionsExt;
 
-                let keyfile_path = match self.resolve_keyfile_path(request.keyfile_path.as_deref()) {
+                let keyfile_path = match self.resolve_keyfile_path(request.keyfile_path.as_deref())
+                {
                     Ok(path) => path,
-                    Err(e) => {
-                        return Ok(Self::json_error(&e.to_string(), StatusCode::BAD_REQUEST))
-                    }
+                    Err(e) => return Ok(Self::json_error(&e.to_string(), StatusCode::BAD_REQUEST)),
                 };
 
                 // Create parent directory if needed
@@ -2552,22 +2564,23 @@ impl Gateway {
         };
 
         // Parse optional body for resolved_by
-        let resolved_by = if let Ok(body) = Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
-            if !body.is_empty() {
-                #[derive(Deserialize)]
-                struct ApproveBody {
-                    resolved_by: Option<String>,
+        let resolved_by =
+            if let Ok(body) = Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+                if !body.is_empty() {
+                    #[derive(Deserialize)]
+                    struct ApproveBody {
+                        resolved_by: Option<String>,
+                    }
+                    serde_json::from_slice::<ApproveBody>(&body)
+                        .ok()
+                        .and_then(|b| b.resolved_by)
+                        .unwrap_or_else(|| "api".to_string())
+                } else {
+                    "api".to_string()
                 }
-                serde_json::from_slice::<ApproveBody>(&body)
-                    .ok()
-                    .and_then(|b| b.resolved_by)
-                    .unwrap_or_else(|| "api".to_string())
             } else {
                 "api".to_string()
-            }
-        } else {
-            "api".to_string()
-        };
+            };
 
         let response = rockbot_credentials::HilApprovalResponse {
             request_id: uuid,
@@ -2612,29 +2625,28 @@ impl Gateway {
         };
 
         // Parse body for resolved_by and denial_reason
-        let (resolved_by, denial_reason) = if let Ok(body) =
-            Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await
-        {
-            if !body.is_empty() {
-                #[derive(Deserialize)]
-                struct DenyBody {
-                    resolved_by: Option<String>,
-                    reason: Option<String>,
+        let (resolved_by, denial_reason) =
+            if let Ok(body) = Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+                if !body.is_empty() {
+                    #[derive(Deserialize)]
+                    struct DenyBody {
+                        resolved_by: Option<String>,
+                        reason: Option<String>,
+                    }
+                    let parsed = serde_json::from_slice::<DenyBody>(&body).ok();
+                    (
+                        parsed
+                            .as_ref()
+                            .and_then(|b| b.resolved_by.clone())
+                            .unwrap_or_else(|| "api".to_string()),
+                        parsed.and_then(|b| b.reason),
+                    )
+                } else {
+                    ("api".to_string(), None)
                 }
-                let parsed = serde_json::from_slice::<DenyBody>(&body).ok();
-                (
-                    parsed
-                        .as_ref()
-                        .and_then(|b| b.resolved_by.clone())
-                        .unwrap_or_else(|| "api".to_string()),
-                    parsed.and_then(|b| b.reason),
-                )
             } else {
                 ("api".to_string(), None)
-            }
-        } else {
-            ("api".to_string(), None)
-        };
+            };
 
         let response = rockbot_credentials::HilApprovalResponse {
             request_id: uuid,
@@ -2988,9 +3000,7 @@ impl Gateway {
             Ok(response) => Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
-                .body(GatewayBody::Left(Full::new(
-                    json_string(&response).into(),
-                )))
+                .body(GatewayBody::Left(Full::new(json_string(&response).into())))
                 .unwrap()),
             Err(e) => {
                 error!("Chat completion error: {e}");
@@ -3549,7 +3559,7 @@ impl Gateway {
     /// Get the directory path for an agent
     #[allow(clippy::unused_self)]
     fn agent_directory(&self, agent_id: &str) -> std::path::PathBuf {
-        debug_assert!(Self::is_valid_agent_id(agent_id));
+        assert!(Self::is_valid_agent_id(agent_id), "invalid agent id");
         dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
             .join("rockbot")
@@ -3721,11 +3731,7 @@ impl Gateway {
     }
 
     /// Create or update a context file
-    async fn handle_put_agent_file<B>(
-        &self,
-        path: &str,
-        req: Request<B>,
-    ) -> Response<GatewayBody>
+    async fn handle_put_agent_file<B>(&self, path: &str, req: Request<B>) -> Response<GatewayBody>
     where
         B: hyper::body::Body<Data = hyper::body::Bytes> + Send,
         B::Error: std::fmt::Debug,
@@ -4280,11 +4286,14 @@ impl Gateway {
         let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref())
             .map_err(|_| anyhow::anyhow!("Failed to parse certificate"))?;
         let spki = cert.tbs_certificate.subject_pki.raw.to_owned();
-        let signature = BASE64_STANDARD.decode(signature_b64)
+        let signature = BASE64_STANDARD
+            .decode(signature_b64)
             .map_err(|e| anyhow::anyhow!("Invalid auth signature encoding: {e}"))?;
 
-        let verifier =
-            ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, spki);
+        let verifier = ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P256_SHA256_FIXED,
+            spki,
+        );
         verifier
             .verify(&challenge, &signature)
             .map_err(|_| anyhow::anyhow!("Browser auth signature verification failed"))?;
@@ -4382,7 +4391,8 @@ impl Gateway {
             } => {
                 let previous_uuid = {
                     let conns = self.ws_connections.read().await;
-                    conns.get(conn_id)
+                    conns
+                        .get(conn_id)
                         .and_then(|conn| conn.identity.as_ref())
                         .map(|identity| identity.client_uuid.clone())
                 };
@@ -4404,7 +4414,10 @@ impl Gateway {
                 }
                 info!(
                     "WebSocket client {} identified: uuid={}, hostname='{}', label={:?}",
-                    conn_id, uuid, trusted_hostname, Option::<String>::None
+                    conn_id,
+                    uuid,
+                    trusted_hostname,
+                    Option::<String>::None
                 );
                 let identity = ClientIdentity {
                     client_uuid: uuid.clone(),
@@ -4672,16 +4685,28 @@ impl Gateway {
             .map_err(|e| format!("Failed to build API request: {e}"))?;
 
         match (method, path) {
-            (Method::GET, "/api/status") => self.handle_health_check().await.map_err(|e| e.to_string()),
-            (Method::GET, "/api/providers") => self.handle_list_providers().await.map_err(|e| e.to_string()),
-            (Method::POST, p) if p.starts_with("/api/providers/") && p.ends_with("/test") => {
-                self.handle_test_provider(path).await.map_err(|e| e.to_string())
+            (Method::GET, "/api/status") => {
+                self.handle_health_check().await.map_err(|e| e.to_string())
             }
-            (Method::GET, "/api/agents") => self.handle_list_agents().await.map_err(|e| e.to_string()),
-            (Method::POST, "/api/agents") => self.handle_create_agent(req).await.map_err(|e| e.to_string()),
-            (Method::PUT, p) if p.starts_with("/api/agents/") && !p.contains("/files/") => {
-                self.handle_update_agent(req).await.map_err(|e| e.to_string())
+            (Method::GET, "/api/providers") => self
+                .handle_list_providers()
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::POST, p) if p.starts_with("/api/providers/") && p.ends_with("/test") => self
+                .handle_test_provider(path)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::GET, "/api/agents") => {
+                self.handle_list_agents().await.map_err(|e| e.to_string())
             }
+            (Method::POST, "/api/agents") => self
+                .handle_create_agent(req)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::PUT, p) if p.starts_with("/api/agents/") && !p.contains("/files/") => self
+                .handle_update_agent(req)
+                .await
+                .map_err(|e| e.to_string()),
             (Method::GET, p) if p.starts_with("/api/agents/") && p.ends_with("/files") => {
                 Ok(self.handle_list_agent_files(path).await)
             }
@@ -4694,12 +4719,14 @@ impl Gateway {
             (Method::DELETE, p) if p.starts_with("/api/agents/") && p.contains("/files/") => {
                 Ok(self.handle_delete_agent_file(path).await)
             }
-            (Method::GET, "/api/credentials/schemas") => {
-                self.handle_credential_schemas().await.map_err(|e| e.to_string())
-            }
-            (Method::POST, "/api/credentials/endpoints") => {
-                self.handle_create_endpoint(req).await.map_err(|e| e.to_string())
-            }
+            (Method::GET, "/api/credentials/schemas") => self
+                .handle_credential_schemas()
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::POST, "/api/credentials/endpoints") => self
+                .handle_create_endpoint(req)
+                .await
+                .map_err(|e| e.to_string()),
             (Method::POST, p)
                 if p.starts_with("/api/credentials/endpoints/") && p.ends_with("/credential") =>
             {
@@ -4707,35 +4734,43 @@ impl Gateway {
                     .await
                     .map_err(|e| e.to_string())
             }
-            (Method::GET, p) if p == "/api/sessions" || p.starts_with("/api/sessions?") => {
-                self.handle_list_sessions(req).await.map_err(|e| e.to_string())
-            }
-            (Method::POST, "/api/sessions") => {
-                self.handle_create_session(req).await.map_err(|e| e.to_string())
-            }
-            (Method::DELETE, p) if p.starts_with("/api/sessions/") => {
-                self.handle_delete_session(path).await.map_err(|e| e.to_string())
-            }
-            (Method::GET, p) if p.starts_with("/api/sessions/") && p.ends_with("/messages") => {
-                self.handle_get_session_messages(path)
+            (Method::GET, p) if p == "/api/sessions" || p.starts_with("/api/sessions?") => self
+                .handle_list_sessions(req)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::POST, "/api/sessions") => self
+                .handle_create_session(req)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::DELETE, p) if p.starts_with("/api/sessions/") => self
+                .handle_delete_session(path)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::GET, p) if p.starts_with("/api/sessions/") && p.ends_with("/messages") => self
+                .handle_get_session_messages(path)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::GET, "/api/cron/jobs") => self
+                .handle_list_cron_jobs()
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::PUT, p) if p.starts_with("/api/cron/jobs/") => self
+                .handle_update_cron_job(req, path)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::DELETE, p) if p.starts_with("/api/cron/jobs/") => self
+                .handle_delete_cron_job(path)
+                .await
+                .map_err(|e| e.to_string()),
+            (Method::POST, p) if p.starts_with("/api/cron/jobs/") && p.ends_with("/trigger") => {
+                self.handle_trigger_cron_job(path)
                     .await
                     .map_err(|e| e.to_string())
             }
-            (Method::GET, "/api/cron/jobs") => {
-                self.handle_list_cron_jobs().await.map_err(|e| e.to_string())
-            }
-            (Method::PUT, p) if p.starts_with("/api/cron/jobs/") => {
-                self.handle_update_cron_job(req, path).await.map_err(|e| e.to_string())
-            }
-            (Method::DELETE, p) if p.starts_with("/api/cron/jobs/") => {
-                self.handle_delete_cron_job(path).await.map_err(|e| e.to_string())
-            }
-            (Method::POST, p) if p.starts_with("/api/cron/jobs/") && p.ends_with("/trigger") => {
-                self.handle_trigger_cron_job(path).await.map_err(|e| e.to_string())
-            }
-            (Method::GET, "/api/executors") => {
-                self.handle_list_executors().await.map_err(|e| e.to_string())
-            }
+            (Method::GET, "/api/executors") => self
+                .handle_list_executors()
+                .await
+                .map_err(|e| e.to_string()),
             _ => Ok(Self::json_error(
                 &format!("Unsupported WS API route: {method_label} {path}"),
                 StatusCode::NOT_FOUND,
@@ -4963,17 +4998,15 @@ impl Gateway {
                         ref output,
                         ref locality,
                         ..
-                    } => {
-                        split_utf8_chunks(output, MAX_TOOL_OUTPUT_CHARS)
-                            .into_iter()
-                            .map(|chunk| WsResponseType::ToolOutput {
-                                session_key: progress_sk.clone(),
-                                tool_name: tool_name.clone(),
-                                output: chunk,
-                                locality: Some(tool_locality_label(locality)),
-                            })
-                            .collect()
-                    }
+                    } => split_utf8_chunks(output, MAX_TOOL_OUTPUT_CHARS)
+                        .into_iter()
+                        .map(|chunk| WsResponseType::ToolOutput {
+                            session_key: progress_sk.clone(),
+                            tool_name: tool_name.clone(),
+                            output: chunk,
+                            locality: Some(tool_locality_label(locality)),
+                        })
+                        .collect(),
                     rockbot_agent::agent::AgentProgressEvent::TextDelta { ref text } => {
                         // Stream the model's actual text/reasoning to the client
                         vec![WsResponseType::StreamChunk {
@@ -5203,8 +5236,7 @@ impl Gateway {
         // For step 3: read msg 3, complete handshake
         // We store in-progress handshake states keyed by conn_id in a static map
         // and explicitly clear them when the websocket disconnects.
-        let states =
-            NOISE_HANDSHAKE_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+        let states = NOISE_HANDSHAKE_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
 
         let mut states_lock = states.lock().await;
 
@@ -5664,14 +5696,6 @@ impl Gateway {
             ));
         }
 
-        let active_has_same_id = self.agents.read().await.contains_key(&req.id);
-        if active_has_same_id {
-            return Ok(Self::json_error(
-                &format!("Agent '{}' already exists", req.id),
-                StatusCode::CONFLICT,
-            ));
-        }
-
         let mut config = rockbot_config::AgentInstance {
             id: req.id.clone(),
             primary: false,
@@ -5699,6 +5723,12 @@ impl Gateway {
 
         {
             let mut configs = self.agents_config.write().await;
+            if self.agents.read().await.contains_key(&req.id) {
+                return Ok(Self::json_error(
+                    &format!("Agent '{}' already exists", req.id),
+                    StatusCode::CONFLICT,
+                ));
+            }
             if configs.iter().any(|c| c.id == req.id) {
                 return Ok(Self::json_error(
                     &format!("Agent '{}' already exists in config", req.id),
@@ -6317,11 +6347,7 @@ impl Gateway {
     fn current_process_memory_bytes() -> Option<u64> {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
         let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
-        let kb = line
-            .split_whitespace()
-            .nth(1)?
-            .parse::<u64>()
-            .ok()?;
+        let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
         Some(kb * 1024)
     }
 

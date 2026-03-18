@@ -12,10 +12,13 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use tokio::process::Command;
 
+#[derive(Debug, PartialEq, Eq)]
 struct DetectedCommand {
     program: String,
     args: Vec<String>,
 }
+
+const MAX_EXEC_TIMEOUT_SECS: u64 = 600;
 
 fn validate_runner_filter(filter: &str) -> Result<()> {
     if filter.is_empty() {
@@ -487,15 +490,16 @@ impl Tool for ExecTool {
                 })?
                 .to_string();
 
-            let workdir = params
-                .get("workdir")
-                .and_then(|v| v.as_str())
-                .map_or_else(|| context.workspace_path.clone(), PathBuf::from);
+            let workdir = params.get("workdir").and_then(|v| v.as_str()).map_or_else(
+                || Ok(context.workspace_path.clone()),
+                |p| resolve_workspace_path(&context.workspace_path, p),
+            )?;
 
             let timeout = params
                 .get("timeout")
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or(30); // Default 30 second timeout
+                .unwrap_or(30)
+                .min(MAX_EXEC_TIMEOUT_SECS); // Default 30 second timeout
 
             // Execute command with timeout
             let mut cmd = Command::new("sh");
@@ -586,13 +590,10 @@ impl Tool for GlobTool {
                 })?
                 .to_string();
 
-            let base_dir = params
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map_or_else(
-                    || Ok(context.workspace_path.clone()),
-                    |p| resolve_workspace_path(&context.workspace_path, p),
-                )?;
+            let base_dir = params.get("path").and_then(|v| v.as_str()).map_or_else(
+                || Ok(context.workspace_path.clone()),
+                |p| resolve_workspace_path(&context.workspace_path, p),
+            )?;
 
             // Build full glob pattern
             if PathBuf::from(&pattern).is_absolute() {
@@ -1628,9 +1629,11 @@ async fn validate_web_fetch_url(url: &str) -> Result<reqwest::Url> {
         }
     }
 
-    let host = parsed.host_str().ok_or_else(|| crate::ToolError::InvalidParameters {
-        message: "URL host is required".to_string(),
-    })?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| crate::ToolError::InvalidParameters {
+            message: "URL host is required".to_string(),
+        })?;
 
     if matches!(host, "localhost" | "localhost.localdomain")
         || host.ends_with(".local")
@@ -1652,17 +1655,16 @@ async fn validate_web_fetch_url(url: &str) -> Result<reqwest::Url> {
     }
 
     let port = parsed.port_or_known_default().unwrap_or(80);
-    let resolved = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| crate::ToolError::ExecutionFailed {
+    let resolved = tokio::net::lookup_host((host, port)).await.map_err(|e| {
+        crate::ToolError::ExecutionFailed {
             message: format!("Failed to resolve host '{host}': {e}"),
-        })?;
+        }
+    })?;
     for socket_addr in resolved {
         if is_private_or_local_ip(socket_addr.ip()) {
             return Err(crate::ToolError::InvalidParameters {
-                message:
-                    "web_fetch target resolves to a private, loopback, or link-local address"
-                        .to_string(),
+                message: "web_fetch target resolves to a private, loopback, or link-local address"
+                    .to_string(),
             });
         }
     }
@@ -1750,19 +1752,17 @@ impl Tool for WebFetchTool {
 
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(timeout_secs))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| crate::ToolError::ExecutionFailed {
                     message: format!("Failed to create HTTP client: {e}"),
                 })?;
 
-            let response =
-                client
-                    .get(parsed_url)
-                    .send()
-                    .await
-                    .map_err(|e| crate::ToolError::ExecutionFailed {
-                        message: format!("HTTP request failed: {e}"),
-                    })?;
+            let response = client.get(parsed_url).send().await.map_err(|e| {
+                crate::ToolError::ExecutionFailed {
+                    message: format!("HTTP request failed: {e}"),
+                }
+            })?;
 
             let status = response.status();
             let content_type = response
@@ -2054,16 +2054,16 @@ impl Tool for TestTool {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
 
-            let workdir = params
-                .get("workdir")
-                .and_then(|v| v.as_str())
-                .map(|rel| context.workspace_path.join(rel))
-                .unwrap_or_else(|| context.workspace_path.clone());
+            let workdir = params.get("workdir").and_then(|v| v.as_str()).map_or_else(
+                || Ok(context.workspace_path.clone()),
+                |p| resolve_workspace_path(&context.workspace_path, p),
+            )?;
 
             let timeout_secs = params
                 .get("timeout")
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or(120);
+                .unwrap_or(120)
+                .min(MAX_EXEC_TIMEOUT_SECS);
 
             let cmd = detect_test_command(&workdir, filter.as_deref()).await?;
 
@@ -2241,16 +2241,16 @@ impl Tool for LintTool {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
 
-            let workdir = params
-                .get("workdir")
-                .and_then(|v| v.as_str())
-                .map(|rel| context.workspace_path.join(rel))
-                .unwrap_or_else(|| context.workspace_path.clone());
+            let workdir = params.get("workdir").and_then(|v| v.as_str()).map_or_else(
+                || Ok(context.workspace_path.clone()),
+                |p| resolve_workspace_path(&context.workspace_path, p),
+            )?;
 
             let timeout_secs = params
                 .get("timeout")
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or(120);
+                .unwrap_or(120)
+                .min(MAX_EXEC_TIMEOUT_SECS);
 
             let cmd = detect_lint_command(&workdir, filter.as_deref()).await?;
 
@@ -2603,6 +2603,9 @@ impl Tool for BrowserTool {
                 })?
                 .to_string();
 
+            let parsed_url = validate_web_fetch_url(&url).await?;
+            let normalized_url = parsed_url.to_string();
+
             let selector = params
                 .get("selector")
                 .and_then(|v| v.as_str())
@@ -2613,19 +2616,15 @@ impl Tool for BrowserTool {
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(3000);
 
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Ok(ToolResult::error("URL must start with http:// or https://"));
-            }
-
             // Try headless Chrome/Chromium first
             if let Ok(content) =
-                fetch_with_headless_chrome(&url, selector.as_deref(), wait_ms).await
+                fetch_with_headless_chrome(&normalized_url, selector.as_deref(), wait_ms).await
             {
                 return Ok(ToolResult::text(content));
             }
 
             // Fall back to plain HTTP GET + HTML stripping
-            fetch_with_http_fallback(&url).await
+            fetch_with_http_fallback(&normalized_url).await
         })
     }
 }
@@ -2706,6 +2705,7 @@ fn find_chrome_binary() -> Option<String> {
 async fn fetch_with_http_fallback(url: &str) -> Result<ToolResult> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| crate::ToolError::ExecutionFailed {
             message: e.to_string(),

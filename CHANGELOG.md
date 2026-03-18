@@ -75,6 +75,11 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   - Agent/session model pickers now support inline fuzzy search with `nucleo-matcher`
 - **TUI**: `Alt+A` agent launcher for fuzzy switching between configured agents
   and creating a new agent from anywhere in the client
+- **TUI**: Model-to-agent flow improvements
+  - `Alt+M` now treats `Enter` on the selected model/profile as “create agent from this model”
+  - Provider configuration in the models overlay moved to `Ctrl+E` so plain typing always stays search
+  - The create-agent modal now uses a searchable model field with `Up/Down` selection instead of a left/right carousel
+  - New agents default to temperature `0.5`, and default max tokens now follow the selected model’s advertised max output
 - **Docs**: Execution locality hardening proposal and feature evaluation tracker
   - `docs/architecture/execution-locality-proposal.md`
   - `docs/feature-evaluation.md`

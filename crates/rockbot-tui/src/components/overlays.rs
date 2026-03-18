@@ -249,7 +249,7 @@ pub fn render_models_overlay(
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
-            "Left/Right provider  Up/Down result  Enter browse  e configure  Ctrl+U clear",
+            "Left/Right provider  Up/Down result  Enter create agent  Ctrl+E configure  Ctrl+U clear",
             Style::default().fg(Color::DarkGray),
         )),
     ])
@@ -537,17 +537,14 @@ fn render_provider_detail_at(frame: &mut Frame, area: Rect, state: &AppState, id
     if !provider.models.is_empty() {
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(
-            format!(
-                "{} targets available — type to search, Enter to browse all",
-                provider.models.len()
-            ),
+            format!("{} targets available — type to search, Enter to create an agent", provider.models.len()),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
     content.push(Line::from(""));
     content.push(Line::from(Span::styled(
-        "[Enter] model list  [e] configure",
+        "[Enter] create agent  [Ctrl+E] configure provider",
         Style::default().fg(Color::DarkGray),
     )));
 

@@ -1843,6 +1843,8 @@ pub struct ModelOption {
     pub value: String,
     /// Provider name for grouping
     pub provider: String,
+    /// Suggested max output token budget for this model, if known.
+    pub max_output_tokens: Option<u32>,
 }
 
 /// State for the "Add/Edit Agent" modal.
@@ -1906,8 +1908,8 @@ impl EditAgentState {
             parent_id: String::new(),
             workspace: String::new(),
             max_tool_calls: String::new(),
-            temperature: "0.3".to_string(),
-            max_tokens: "16000".to_string(),
+            temperature: "0.5".to_string(),
+            max_tokens: String::new(),
             system_prompt: String::new(),
             enabled: true,
             available_models: Vec::new(),
@@ -1929,10 +1931,10 @@ impl EditAgentState {
                 .map_or_else(String::new, |n| n.to_string()),
             temperature: agent
                 .temperature
-                .map_or_else(|| "0.3".to_string(), |n| format!("{n}")),
+                .map_or_else(|| "0.5".to_string(), |n| format!("{n}")),
             max_tokens: agent
                 .max_tokens
-                .map_or_else(|| "16000".to_string(), |n| n.to_string()),
+                .map_or_else(String::new, |n| n.to_string()),
             system_prompt: agent.system_prompt.clone().unwrap_or_default(),
             enabled: agent.enabled,
             available_models: Vec::new(),
@@ -1955,6 +1957,7 @@ impl EditAgentState {
                     label: format!("{} ({})", model.name, provider.name),
                     value: value.clone(),
                     provider: provider.name.clone(),
+                    max_output_tokens: model.max_output_tokens,
                 });
                 // If current model matches, select it
                 if self.model == value {
@@ -1993,6 +1996,11 @@ impl EditAgentState {
         };
         self.selected_model_index = Some(selected);
         self.model = self.available_models[selected].value.clone();
+        if !self.is_edit {
+            self.max_tokens = self.available_models[selected]
+                .max_output_tokens
+                .map_or_else(String::new, |tokens| tokens.to_string());
+        }
     }
 
     pub fn push_model_query(&mut self, c: char) {
@@ -2008,6 +2016,19 @@ impl EditAgentState {
     pub fn clear_model_query(&mut self) {
         self.model_query.clear();
         self.sync_model_selection();
+    }
+
+    pub fn select_model_value(&mut self, value: &str) {
+        if let Some(index) = self.available_models.iter().position(|model| model.value == value) {
+            self.selected_model_index = Some(index);
+            self.model = self.available_models[index].value.clone();
+            self.model_query.clear();
+            if !self.is_edit {
+                self.max_tokens = self.available_models[index]
+                    .max_output_tokens
+                    .map_or_else(String::new, |tokens| tokens.to_string());
+            }
+        }
     }
 
     /// Cycle to next model in the picker
@@ -2433,6 +2454,7 @@ impl CreateSessionState {
                     label: format!("{} ({})", model.name, provider.name),
                     value: format!("{}/{}", provider.id, model.id),
                     provider: provider.name.clone(),
+                    max_output_tokens: model.max_output_tokens,
                 });
             }
         }

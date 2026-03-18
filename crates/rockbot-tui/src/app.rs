@@ -1591,7 +1591,6 @@ impl App {
         mut query: String,
         mut selected_model: usize,
     ) -> Result<()> {
-        let filtered = self.filtered_provider_model_indices(provider_index, &query);
         match key.code {
             KeyCode::Esc => {
                 self.state.input_mode = InputMode::Normal;
@@ -1612,6 +1611,7 @@ impl App {
                 selected_model = selected_model.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                let filtered = self.filtered_provider_model_indices(provider_index, &query);
                 if !filtered.is_empty() {
                     selected_model = (selected_model + 1).min(filtered.len().saturating_sub(1));
                 }
@@ -1624,20 +1624,21 @@ impl App {
                 query.clear();
                 selected_model = 0;
             }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) && !self.state.providers.is_empty() => {
+                self.state.selected_provider = provider_index;
+                self.handle_edit_action();
+                return Ok(());
+            }
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
                 query.push(c);
                 selected_model = 0;
             }
             KeyCode::Enter if !self.state.providers.is_empty() && query.is_empty() => {
-                self.state.input_mode = InputMode::ViewModelList {
-                    provider_index,
-                    scroll: 0,
-                };
+                self.open_add_agent_for_provider_model(provider_index, selected_model);
                 return Ok(());
             }
-            KeyCode::Char('e') if !self.state.providers.is_empty() => {
-                self.state.selected_provider = provider_index;
-                self.handle_edit_action();
+            KeyCode::Enter if !self.state.providers.is_empty() => {
+                self.open_add_agent_for_provider_model(provider_index, selected_model);
                 return Ok(());
             }
             _ => {}
@@ -1648,6 +1649,39 @@ impl App {
             selected_model,
         };
         Ok(())
+    }
+
+    fn open_add_agent_for_provider_model(&mut self, provider_index: usize, selected_model: usize) {
+        let filtered = self.filtered_provider_model_indices(provider_index, "");
+        let Some(provider) = self.state.providers.get(provider_index) else {
+            return;
+        };
+        let filtered_for_query = self.filtered_provider_model_indices(provider_index, match &self.state.input_mode {
+            InputMode::ModelsOverlay { query, .. } => query,
+            _ => "",
+        });
+        let target_index = filtered_for_query
+            .get(selected_model)
+            .copied()
+            .or_else(|| filtered.get(selected_model).copied())
+            .unwrap_or(0);
+        let Some(model) = provider.models.get(target_index) else {
+            return;
+        };
+
+        let model_value = format!("{}/{}", provider.id, model.id);
+        let mut agent_state = EditAgentState::new();
+        agent_state.model = model_value.clone();
+        agent_state.max_tokens = model
+            .max_output_tokens
+            .map_or_else(String::new, |tokens| tokens.to_string());
+        agent_state.populate_models(&self.state.providers);
+        agent_state.select_model_value(&model_value);
+        self.state.input_mode = InputMode::AddAgent(agent_state);
+        self.state.status_message = Some((
+            format!("Creating agent from {}", model.name),
+            false,
+        ));
     }
 
     fn handle_agent_launcher(
@@ -3193,21 +3227,28 @@ impl App {
                 self.state.input_mode = InputMode::Normal;
                 self.state.status_message = Some(("Cancelled".to_string(), false));
             }
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab => {
                 state.next_field();
                 self.state.input_mode = set_mode(state);
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            KeyCode::BackTab => {
                 state.prev_field();
                 self.state.input_mode = set_mode(state);
             }
-            // Model picker: left/right to cycle models
-            KeyCode::Left if state.is_model_picker_active() => {
+            KeyCode::Up if state.is_model_picker_active() => {
                 state.prev_model();
                 self.state.input_mode = set_mode(state);
             }
-            KeyCode::Right if state.is_model_picker_active() => {
+            KeyCode::Down if state.is_model_picker_active() => {
                 state.next_model();
+                self.state.input_mode = set_mode(state);
+            }
+            KeyCode::Up => {
+                state.prev_field();
+                self.state.input_mode = set_mode(state);
+            }
+            KeyCode::Down => {
+                state.next_field();
                 self.state.input_mode = set_mode(state);
             }
             KeyCode::Char('u')
@@ -3237,6 +3278,9 @@ impl App {
                     if newline_count < 9 {
                         state.system_prompt.push('\n');
                     }
+                    self.state.input_mode = set_mode(state);
+                } else if state.is_model_picker_active() {
+                    state.next_field();
                     self.state.input_mode = set_mode(state);
                 } else if state.is_last_field() {
                     if let Some(error) = state.validate() {

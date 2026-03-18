@@ -776,15 +776,15 @@ pub fn render_edit_agent_modal(
         let filtered = state.filtered_model_indices();
         let display = if let Some(idx) = state.selected_model_index {
             let model = &state.available_models[idx];
-            format!("◀ {} ▶", model.label)
+            model.label.clone()
         } else if state.model.is_empty() {
-            "◀ (none selected) ▶".to_string()
+            "(no matching model)".to_string()
         } else {
-            format!("◀ {} (custom) ▶", state.model)
+            format!("{} (custom)", state.model)
         };
         let hint = if state.model_query.is_empty() {
             format!(
-                "{} of {} models — type to search, ←→ to cycle",
+                "{} of {} models — type to search, ↑/↓ to pick, Enter to accept",
                 filtered
                     .iter()
                     .position(|candidate| Some(*candidate) == state.selected_model_index)
@@ -952,11 +952,11 @@ pub fn render_edit_agent_modal(
 
     let help_text = if !subagents.is_empty() {
         format!(
-            "Subagents: {} | Tab:Nav | Ctrl+S:Save | Esc:Cancel",
+            "Subagents: {} | Type to search model | Tab:Nav | Ctrl+S:Save | Esc:Cancel",
             subagents.join(", ")
         )
     } else {
-        "Tab/Up/Down:Navigate | Ctrl+S:Save | Esc:Cancel".to_string()
+        "Type to search model | Tab/Shift+Tab:Navigate | Ctrl+S:Save | Esc:Cancel".to_string()
     };
 
     let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));

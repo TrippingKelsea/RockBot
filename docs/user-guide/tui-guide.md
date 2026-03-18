@@ -143,8 +143,8 @@ searchable model/profile inventory on the right.
 | `Up/Down` | Select filtered model/profile result |
 | `Type` | Fuzzy search models and inference profiles |
 | `Ctrl+U` | Clear search |
-| `Enter` | View full model list |
-| `e` | Configure provider |
+| `Enter` | Open create-agent modal prefilled from the selected model/profile |
+| `Ctrl+E` | Configure provider |
 | `Esc` | Close overlay |
 
 ### Agent Launcher (Alt+A)

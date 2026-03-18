@@ -166,27 +166,49 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     }
     let session_key = storage_key_for_label(&config, pki_manager.as_ref(), "sessions")?;
     let legacy_sessions_path = storage_root.join("data").join("sessions.redb");
-    let session_store = if legacy_sessions_path.exists() {
-        let store = safe_open_legacy_store(&legacy_sessions_path)?;
-        info!(
-            "Session store opened via legacy store {}",
-            legacy_sessions_path.display()
-        );
-        Arc::new(store)
+    let (session_store, session_store_descriptor) = if legacy_sessions_path.exists() {
+        match safe_open_legacy_store(&legacy_sessions_path) {
+            Ok(store) => {
+                info!(
+                    "Session store opened via legacy store {}",
+                    legacy_sessions_path.display()
+                );
+                (
+                    Arc::new(store),
+                    format!("legacy store {}", legacy_sessions_path.display()),
+                )
+            }
+            Err(err) => {
+                warn!(
+                    "Could not open legacy session store {}: {err}. Falling back to virtual-disk sessions volume.",
+                    legacy_sessions_path.display()
+                );
+                (
+                    Arc::new(safe_open_volume(
+                        &disk_path,
+                        "sessions",
+                        SESSIONS_VOLUME_CAPACITY,
+                        session_key,
+                    )?),
+                    encryption_mode_log(
+                        session_key.is_some(),
+                        &format!("virtual disk {} volume 'sessions'", disk_path.display()),
+                    ),
+                )
+            }
+        }
     } else {
-        Arc::new(safe_open_volume(
-            &disk_path,
-            "sessions",
-            SESSIONS_VOLUME_CAPACITY,
-            session_key,
-        )?)
-    };
-    let session_store_descriptor = if legacy_sessions_path.exists() {
-        format!("legacy store {}", legacy_sessions_path.display())
-    } else {
-        encryption_mode_log(
-            session_key.is_some(),
-            &format!("virtual disk {} volume 'sessions'", disk_path.display()),
+        (
+            Arc::new(safe_open_volume(
+                &disk_path,
+                "sessions",
+                SESSIONS_VOLUME_CAPACITY,
+                session_key,
+            )?),
+            encryption_mode_log(
+                session_key.is_some(),
+                &format!("virtual disk {} volume 'sessions'", disk_path.display()),
+            ),
         )
     };
     let session_manager = Arc::new(

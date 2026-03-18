@@ -739,13 +739,15 @@ impl Gateway {
                     .join("rockbot")
                     .join("pki")
             });
-            match PkiManager::new(pki_dir).and_then(|mgr| mgr.ensure_local_storage_key("cron")) {
-                Ok(key) => Some(key),
-                Err(e) => {
-                    warn!("Could not ensure cron storage key: {}", e);
-                    None
-                }
-            }
+            Some(
+                PkiManager::new(pki_dir)
+                    .and_then(|mgr| mgr.ensure_local_storage_key("cron"))
+                    .map_err(|e| GatewayError::InvalidRequest {
+                        message: format!(
+                            "Encrypted storage is enabled, but the cron storage key could not be created or loaded: {e}"
+                        ),
+                    })?,
+            )
         } else {
             None
         };

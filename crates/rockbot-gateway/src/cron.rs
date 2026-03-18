@@ -304,11 +304,16 @@ impl CronScheduler {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let encrypted = key.is_some();
         let store = Arc::new(
             Store::open_with_optional_key(&path, key).map_err(crate::error::RockBotError::from)?,
         );
 
-        info!("Cron scheduler initialized with database at {:?}", path);
+        info!(
+            "Cron scheduler initialized with {} database at {:?}",
+            if encrypted { "encrypted" } else { "plaintext" },
+            path
+        );
 
         let jobs = Self::load_jobs_from_store(&store)?;
 

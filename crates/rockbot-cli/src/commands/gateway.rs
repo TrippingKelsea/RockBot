@@ -91,11 +91,11 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         .join("sessions.redb");
 
     tokio::fs::create_dir_all(db_path.parent().unwrap()).await?;
-    let pki_manager = open_pki_for_storage(&config);
+    let pki_manager = open_pki_for_storage(&config)?;
     if let (Some(vault_result), Some(pki_manager)) = (vault_result.as_ref(), pki_manager.as_ref()) {
         bootstrap_local_vault_node(&config, pki_manager, &vault_result.manager).await;
     }
-    let session_key = storage_key_for_label(&config, pki_manager.as_ref(), "sessions");
+    let session_key = storage_key_for_label(&config, pki_manager.as_ref(), "sessions")?;
     let session_manager =
         Arc::new(SessionManager::new_with_key(&db_path, 1000, session_key).await?);
 
@@ -181,12 +181,15 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     // Open vault store for agent persistence (if vault is available)
     if vault_result.is_some() {
         let store_path = vault_path.join("agents.redb");
-        let store_key = storage_key_for_label(&config, pki_manager.as_ref(), "agents");
+        let store_key = storage_key_for_label(&config, pki_manager.as_ref(), "agents")?;
         match rockbot_store::Store::open_with_optional_key(&store_path, store_key) {
             Ok(store) => {
                 let store = std::sync::Arc::new(store);
                 gateway.set_store(store);
-                info!("Vault store opened for agent persistence");
+                info!(
+                    "{}",
+                    encryption_mode_log(store_key.is_some(), "Vault store opened for agent persistence")
+                );
             }
             Err(e) => {
                 warn!("Could not open vault store: {e}. Falling back to TOML persistence.");
@@ -316,64 +319,67 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn open_pki_for_storage(config: &Config) -> Option<PkiManager> {
+fn open_pki_for_storage(config: &Config) -> Result<Option<PkiManager>> {
     if !config.security.storage.enabled {
-        return None;
+        return Ok(None);
     }
     if matches!(
         config.security.storage.mode,
         StorageEncryptionMode::Disabled
     ) {
-        return None;
+        return Ok(None);
     }
     if !matches!(
         config.security.storage.key_source,
         StorageKeySource::PkiLocal
     ) {
-        return None;
+        return Ok(None);
     }
 
-    let pki_dir = config
-        .gateway
-        .pki
-        .pki_dir
-        .clone()
-        .unwrap_or_else(default_pki_dir);
-    match PkiManager::new(pki_dir) {
-        Ok(manager) => Some(manager),
-        Err(e) => {
-            warn!("Could not open PKI manager for storage keys: {}", e);
-            None
-        }
-    }
+    let pki_dir = config.effective_pki().pki_dir.unwrap_or_else(default_pki_dir);
+    let manager = PkiManager::new(pki_dir).map_err(|e| {
+        anyhow::anyhow!(
+            "Encrypted storage is enabled, but the PKI manager could not be opened for storage keys: {e}"
+        )
+    })?;
+    Ok(Some(manager))
 }
 
 fn storage_key_for_label(
     config: &Config,
     pki_manager: Option<&PkiManager>,
     label: &str,
-) -> Option<[u8; 32]> {
+) -> Result<Option<[u8; 32]>> {
     if !config.security.storage.enabled {
-        return None;
+        return Ok(None);
     }
     if matches!(
         config.security.storage.mode,
         StorageEncryptionMode::Disabled
     ) {
-        return None;
+        return Ok(None);
     }
 
     match config.security.storage.key_source {
-        StorageKeySource::PkiLocal => {
-            pki_manager.and_then(|mgr| match mgr.ensure_local_storage_key(label) {
-                Ok(key) => Some(key),
-                Err(e) => {
-                    warn!("Could not ensure storage key for '{}': {}", label, e);
-                    None
-                }
-            })
-        }
-        StorageKeySource::DataLocal | StorageKeySource::External => None,
+        StorageKeySource::PkiLocal => match pki_manager {
+            Some(mgr) => Ok(Some(mgr.ensure_local_storage_key(label).map_err(|e| {
+                anyhow::anyhow!(
+                    "Encrypted storage is enabled, but the storage key for '{label}' could not be created or loaded: {e}"
+                )
+            })?)),
+            None => Err(anyhow::anyhow!(
+                "Encrypted storage is enabled, but no PKI manager is available for storage key '{label}'"
+            )),
+        },
+        StorageKeySource::DataLocal | StorageKeySource::External => Ok(None),
+    }
+}
+
+fn encryption_mode_log(encrypted: bool, base: &str) -> String {
+    if encrypted {
+        format!("{base} (encrypted)")
+    } else {
+        format!("{base} (plaintext)")
     }
 }
 

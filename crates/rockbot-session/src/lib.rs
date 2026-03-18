@@ -185,8 +185,13 @@ impl SessionManager {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let encrypted = key.is_some();
         let store = Arc::new(Store::open_with_optional_key(path, key)?);
-        info!("Session manager initialized with redb store at {:?}", path);
+        info!(
+            "Session manager initialized with {} redb store at {:?}",
+            if encrypted { "encrypted" } else { "plaintext" },
+            path
+        );
         Ok(Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             store,

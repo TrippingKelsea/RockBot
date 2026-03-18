@@ -96,6 +96,21 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         });
 
     let storage_runtime = StorageRuntime::new(config_path, &config).await?;
+    if let Ok(plan) = storage_runtime.plan() {
+        info!(
+            "Resolved storage plan for {} store(s) under {}",
+            plan.stores.len(),
+            plan.storage_root.display()
+        );
+        for store in &plan.stores {
+            info!(
+                "Storage plan: {} -> {:?} ({})",
+                store.label,
+                store.resolution,
+                store.descriptor
+            );
+        }
+    }
     let pki_manager = storage_runtime.pki_manager();
     if let (Some(vault_result), Some(pki_manager)) = (vault_result.as_ref(), pki_manager) {
         bootstrap_local_vault_node(&config, pki_manager, &vault_result.manager).await;

@@ -5,6 +5,7 @@
 
 use crate::load_config;
 use anyhow::Result;
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use crate::DoctorCommands;
@@ -234,6 +235,7 @@ async fn run_storage(config_path: &PathBuf, with_ai: bool) -> Result<()> {
     use rockbot_doctor::{inspect_storage, recommended_actions, summarize_report};
     use std::time::Duration;
     use tokio::process::Command;
+    use tokio::sync::oneshot;
 
     println!("Doctor AI: Inspecting storage state...\n");
     let report = inspect_storage(config_path);
@@ -241,6 +243,11 @@ async fn run_storage(config_path: &PathBuf, with_ai: bool) -> Result<()> {
     let actions = recommended_actions(&report);
 
     let analysis = if with_ai {
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let spinner = tokio::spawn(spinner_task(
+            "Reviewing storage state with the embedded doctor model",
+            stop_rx,
+        ));
         let exe = std::env::current_exe()?;
         let child = Command::new(exe)
             .arg("doctor")
@@ -250,13 +257,16 @@ async fn run_storage(config_path: &PathBuf, with_ai: bool) -> Result<()> {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()?;
-        match tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await {
+        let result = match tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await {
             Ok(Ok(output)) => Some(Ok((output.status.success(), output.stdout, output.stderr))),
             Ok(Err(e)) => Some(Err(anyhow::anyhow!("doctor AI worker failed: {e}"))),
             Err(_) => Some(Err(anyhow::anyhow!(
                 "doctor AI worker timed out after 30 seconds"
             ))),
-        }
+        };
+        let _ = stop_tx.send(());
+        let _ = spinner.await;
+        result
     } else {
         None
     };
@@ -294,6 +304,34 @@ async fn run_storage(config_path: &PathBuf, with_ai: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "doctor-ai")]
+async fn spinner_task(label: &'static str, mut stop_rx: tokio::sync::oneshot::Receiver<()>) {
+    if !io::stdout().is_terminal() {
+        println!("{label}...");
+        let _ = stop_rx.await;
+        return;
+    }
+
+    let frames = ["|", "/", "-", "\\"];
+    let mut idx = 0usize;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
+
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => {
+                print!("\r\x1b[2K");
+                let _ = io::stdout().flush();
+                break;
+            }
+            _ = interval.tick() => {
+                print!("\r{} {}", frames[idx % frames.len()], label);
+                let _ = io::stdout().flush();
+                idx += 1;
+            }
+        }
+    }
 }
 
 #[cfg(feature = "doctor-ai")]

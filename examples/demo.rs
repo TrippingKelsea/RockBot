@@ -83,6 +83,7 @@ async fn main() -> Result<()> {
     // Create agent configuration
     let agent_config = AgentInstance {
         id: "demo-agent".to_string(),
+        primary: true,
         workspace: Some(workspace_path),
         model: Some(model.to_string()),
         max_tool_calls: None,

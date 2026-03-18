@@ -93,6 +93,14 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   - Automatic save of `[tui]`, `[tui.theme]`, and `[tui.fonts]` changes to `rockbot.toml`
 
 ### Fixed
+- **Remote exec streaming**: fast remote tools no longer log repeated
+  “Received tool output for unknown request” warnings when output chunks arrive
+  just after the final response wins the race back to the gateway
+- **Overseer defaults**: gateways built with the `overseer` feature now seed and
+  use a default overseer configuration from encrypted storage when available,
+  and fall back to an in-memory default when the store is not yet present
+- **TUI startup target**: the main chat now prefers a primary enabled agent,
+  then the first enabled agent, instead of landing on Butler by default
 - **Bedrock fallback**: agent chat and tool-loop LLM calls now fall back to
   non-streaming completions when Bedrock streaming repeatedly returns service
   errors, instead of failing the request outright

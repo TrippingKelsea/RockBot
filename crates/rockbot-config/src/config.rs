@@ -613,6 +613,9 @@ pub struct AgentDefaults {
 pub struct AgentInstance {
     /// Agent identifier
     pub id: String,
+    /// Whether this agent should be treated as the default primary agent.
+    #[serde(default)]
+    pub primary: bool,
     /// Workspace directory (optional, uses default if not specified)
     pub workspace: Option<PathBuf>,
     /// Model override

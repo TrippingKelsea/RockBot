@@ -603,6 +603,7 @@ impl RemoteExecutorInfo {
 #[derive(Debug, Clone)]
 pub struct AgentInfo {
     pub id: String,
+    pub primary: bool,
     pub model: Option<String>,
     pub status: AgentStatus,
     pub session_count: usize,

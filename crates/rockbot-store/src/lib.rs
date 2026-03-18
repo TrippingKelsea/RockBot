@@ -343,6 +343,7 @@ mod tests {
         let (store, _dir) = open_store();
         let agent = rockbot_config::AgentInstance {
             id: "test-agent".to_string(),
+            primary: false,
             workspace: None,
             model: Some("test-model".to_string()),
             max_tool_calls: None,

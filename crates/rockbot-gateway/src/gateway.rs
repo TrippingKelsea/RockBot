@@ -5156,6 +5156,7 @@ impl Gateway {
                 "parent_id": cfg.parent_id,
                 "system_prompt": cfg.system_prompt,
                 "workspace": cfg.workspace.as_ref().map(|p| p.display().to_string()),
+                "primary": cfg.primary,
                 "max_tool_calls": cfg.max_tool_calls,
                 "temperature": cfg.temperature,
                 "max_tokens": cfg.max_tokens,
@@ -5174,6 +5175,7 @@ impl Gateway {
                     "parent_id": p.config.parent_id,
                     "system_prompt": p.config.system_prompt,
                     "workspace": p.config.workspace.as_ref().map(|p| p.display().to_string()),
+                    "primary": p.config.primary,
                     "max_tool_calls": p.config.max_tool_calls,
                     "temperature": p.config.temperature,
                     "max_tokens": p.config.max_tokens,
@@ -5199,6 +5201,7 @@ impl Gateway {
                     "parent_id": cfg.parent_id,
                     "system_prompt": cfg.system_prompt,
                     "workspace": cfg.workspace.as_ref().map(|p| p.display().to_string()),
+                    "primary": cfg.primary,
                     "max_tool_calls": cfg.max_tool_calls,
                     "temperature": cfg.temperature,
                     "max_tokens": cfg.max_tokens,
@@ -5246,6 +5249,7 @@ impl Gateway {
             model: Option<String>,
             parent_id: Option<String>,
             workspace: Option<String>,
+            primary: Option<bool>,
             max_tool_calls: Option<u32>,
             temperature: Option<f32>,
             max_tokens: Option<u32>,
@@ -5290,8 +5294,17 @@ impl Gateway {
         }
         drop(configs);
 
+        let has_primary = {
+            let active = self.agents.read().await;
+            let active_has_primary = active.values().any(|agent| agent.config.primary);
+            drop(active);
+            let configs = self.agents_config.read().await;
+            active_has_primary || configs.iter().any(|cfg| cfg.primary)
+        };
+
         let config = rockbot_config::AgentInstance {
             id: req.id.clone(),
+            primary: req.primary.unwrap_or(!has_primary),
             model: req.model,
             workspace: req.workspace.map(std::path::PathBuf::from),
             max_tool_calls: req.max_tool_calls,
@@ -5410,6 +5423,7 @@ impl Gateway {
             model: Option<String>,
             parent_id: Option<String>,
             workspace: Option<String>,
+            primary: Option<bool>,
             max_tool_calls: Option<u32>,
             temperature: Option<f32>,
             max_tokens: Option<u32>,
@@ -5464,6 +5478,9 @@ impl Gateway {
                 } else {
                     Some(std::path::PathBuf::from(workspace))
                 };
+            }
+            if let Some(primary) = update.primary {
+                cfg.primary = primary;
             }
             if let Some(max_tool_calls) = update.max_tool_calls {
                 cfg.max_tool_calls = Some(max_tool_calls);

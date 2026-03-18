@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 // Re-export snow types so downstream crates (rockbot-cli) can use them
@@ -296,12 +297,13 @@ pub struct RemoteExecutorRegistry {
     /// Active Noise sessions keyed by connection ID.
     sessions: RwLock<HashMap<String, Arc<tokio::sync::Mutex<NoiseSession>>>>,
     /// Pending response channels keyed by request ID.
-    pending: RwLock<HashMap<String, PendingRemoteToolCall>>,
+    pending: Arc<RwLock<HashMap<String, PendingRemoteToolCall>>>,
 }
 
 struct PendingRemoteToolCall {
-    response_tx: oneshot::Sender<RemoteToolResponse>,
+    response_tx: Option<oneshot::Sender<RemoteToolResponse>>,
     output_tx: Option<tokio::sync::mpsc::UnboundedSender<RemoteToolOutput>>,
+    completed: bool,
 }
 
 impl RemoteExecutorRegistry {
@@ -329,7 +331,7 @@ impl RemoteExecutorRegistry {
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            pending: RwLock::new(HashMap::new()),
+            pending: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -433,8 +435,9 @@ impl RemoteExecutorRegistry {
         self.pending.write().await.insert(
             request_id.clone(),
             PendingRemoteToolCall {
-                response_tx: resp_tx,
+                response_tx: Some(resp_tx),
                 output_tx,
+                completed: false,
             },
         );
 
@@ -444,19 +447,20 @@ impl RemoteExecutorRegistry {
             let _ = session.tool_tx.send(request);
         }
 
-        // Wait for response with timeout
         let result = tokio::time::timeout(timeout, resp_rx).await;
 
-        // Clean up pending entry
-        self.pending.write().await.remove(&request_id);
-
         match result {
-            Ok(Ok(response)) => Some(response),
+            Ok(Ok(response)) => {
+                Self::schedule_pending_cleanup(Arc::clone(&self.pending), request_id);
+                Some(response)
+            }
             Ok(Err(_)) => {
+                self.pending.write().await.remove(&request_id);
                 warn!("Remote executor {conn_id} dropped response channel");
                 None
             }
             Err(_) => {
+                self.pending.write().await.remove(&request_id);
                 warn!("Remote tool call to {conn_id} timed out");
                 None
             }
@@ -497,8 +501,9 @@ impl RemoteExecutorRegistry {
         self.pending.write().await.insert(
             request_id.clone(),
             PendingRemoteToolCall {
-                response_tx: resp_tx,
+                response_tx: Some(resp_tx),
                 output_tx,
+                completed: false,
             },
         );
 
@@ -508,15 +513,19 @@ impl RemoteExecutorRegistry {
         }
 
         let result = tokio::time::timeout(timeout, resp_rx).await;
-        self.pending.write().await.remove(&request_id);
 
         match result {
-            Ok(Ok(response)) => Some(response),
+            Ok(Ok(response)) => {
+                Self::schedule_pending_cleanup(Arc::clone(&self.pending), request_id);
+                Some(response)
+            }
             Ok(Err(_)) => {
+                self.pending.write().await.remove(&request_id);
                 warn!("Remote executor {conn_id} dropped response channel");
                 None
             }
             Err(_) => {
+                self.pending.write().await.remove(&request_id);
                 warn!("Remote tool call to {conn_id} timed out");
                 None
             }
@@ -525,8 +534,12 @@ impl RemoteExecutorRegistry {
 
     /// Deliver a response from a client to the waiting dispatch call.
     pub async fn deliver_response(&self, response: RemoteToolResponse) {
-        if let Some(pending) = self.pending.write().await.remove(&response.request_id) {
-            let _ = pending.response_tx.send(response);
+        let mut pending = self.pending.write().await;
+        if let Some(call) = pending.get_mut(&response.request_id) {
+            if let Some(response_tx) = call.response_tx.take() {
+                call.completed = true;
+                let _ = response_tx.send(response);
+            }
         } else {
             warn!(
                 "Received tool response for unknown request: {}",
@@ -542,12 +555,23 @@ impl RemoteExecutorRegistry {
             if let Some(tx) = &call.output_tx {
                 let _ = tx.send(output);
             }
-        } else {
-            warn!(
-                "Received tool output for unknown request: {}",
-                output.request_id
-            );
+            return;
         }
+
+        warn!(
+            "Received tool output for unknown request: {}",
+            output.request_id
+        );
+    }
+
+    fn schedule_pending_cleanup(
+        pending: Arc<RwLock<HashMap<String, PendingRemoteToolCall>>>,
+        request_id: String,
+    ) {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            pending.write().await.remove(&request_id);
+        });
     }
 
     /// Number of active remote executors.

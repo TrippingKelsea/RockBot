@@ -14,6 +14,8 @@ use rockbot_memory::MemoryManager;
 use rockbot_pki::PkiManager;
 use rockbot_security::SecurityManager;
 use rockbot_session::SessionManager;
+#[cfg(feature = "overseer")]
+use rockbot_store::Store;
 use rockbot_tools::ToolRegistry;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -42,7 +44,8 @@ pub async fn run(command: &GatewayCommands, config_path: &PathBuf) -> Result<()>
 /// Run the gateway server in foreground
 async fn run_server(config_path: &PathBuf) -> Result<()> {
     // Load configuration
-    let config = Config::from_file(config_path).await?;
+    #[allow(unused_mut)]
+    let mut config = Config::from_file(config_path).await?;
 
     // Initialize core components
     info!("Initializing RockBot gateway...");
@@ -98,6 +101,32 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let session_key = storage_key_for_label(&config, pki_manager.as_ref(), "sessions")?;
     let session_manager =
         Arc::new(SessionManager::new_with_key(&db_path, 1000, session_key).await?);
+
+    let mut vault_store: Option<Arc<rockbot_store::Store>> = None;
+    if vault_result.is_some() {
+        let store_path = vault_path.join("agents.redb");
+        let store_key = storage_key_for_label(&config, pki_manager.as_ref(), "agents")?;
+        match rockbot_store::Store::open_with_optional_key(&store_path, store_key) {
+            Ok(store) => {
+                let store = Arc::new(store);
+                #[cfg(feature = "overseer")]
+                ensure_default_overseer_config(&mut config, store.as_ref())?;
+                info!(
+                    "{}",
+                    encryption_mode_log(store_key.is_some(), "Vault store opened for agent persistence")
+                );
+                vault_store = Some(store);
+            }
+            Err(e) => {
+                warn!("Could not open vault store: {e}. Falling back to TOML persistence.");
+            }
+        }
+    }
+
+    #[cfg(feature = "overseer")]
+    if config.overseer.is_none() {
+        config.overseer = Some(serde_json::to_value(rockbot_overseer::OverseerConfig::default())?);
+    }
 
     // Create gateway
     let mut gateway = Gateway::new(
@@ -179,22 +208,8 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     gateway.set_llm_registry(llm_registry.clone()).await;
 
     // Open vault store for agent persistence (if vault is available)
-    if vault_result.is_some() {
-        let store_path = vault_path.join("agents.redb");
-        let store_key = storage_key_for_label(&config, pki_manager.as_ref(), "agents")?;
-        match rockbot_store::Store::open_with_optional_key(&store_path, store_key) {
-            Ok(store) => {
-                let store = std::sync::Arc::new(store);
-                gateway.set_store(store);
-                info!(
-                    "{}",
-                    encryption_mode_log(store_key.is_some(), "Vault store opened for agent persistence")
-                );
-            }
-            Err(e) => {
-                warn!("Could not open vault store: {e}. Falling back to TOML persistence.");
-            }
-        }
+    if let Some(store) = vault_store.clone() {
+        gateway.set_store(store);
     }
 
     // Auto-migrate agents from TOML to vault if needed
@@ -451,6 +466,28 @@ fn local_node_roles(config: &Config) -> Vec<ClusterNodeRole> {
         roles.push(ClusterNodeRole::Admin);
     }
     roles
+}
+
+#[cfg(feature = "overseer")]
+fn ensure_default_overseer_config(config: &mut Config, store: &Store) -> Result<()> {
+    const NS: &str = "app_config";
+    const KEY: &str = "overseer";
+
+    if let Some(bytes) = store.kv_get(NS, KEY)? {
+        let stored: rockbot_overseer::OverseerConfig = serde_json::from_slice(&bytes)?;
+        config.overseer = Some(serde_json::to_value(stored)?);
+        return Ok(());
+    }
+
+    let overseer = config
+        .overseer
+        .clone()
+        .map(serde_json::from_value::<rockbot_overseer::OverseerConfig>)
+        .transpose()?
+        .unwrap_or_default();
+    store.kv_put(NS, KEY, &serde_json::to_vec(&overseer)?)?;
+    config.overseer = Some(serde_json::to_value(overseer)?);
+    Ok(())
 }
 
 /// Get the service name based on whether it's user or system level

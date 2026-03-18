@@ -630,6 +630,23 @@ impl App {
             tracing::info!("Keybindings reloaded from vault");
         }
 
+        if let Message::AgentsLoaded(ref agents) = msg {
+            let current_target_is_butler = matches!(self.state.chat_target, ChatTarget::Butler);
+            let agents_empty = agents.is_empty();
+            self.state.update(msg);
+            if let Some(idx) = self.preferred_agent_index() {
+                self.state.selected_agent = idx;
+                if matches!(self.state.menu_item, MenuItem::Dashboard | MenuItem::Agents)
+                    || current_target_is_butler
+                {
+                    self.sync_chat_target();
+                }
+            } else if agents_empty {
+                self.state.chat_target = ChatTarget::Butler;
+            }
+            return;
+        }
+
         self.state.update(msg);
     }
 
@@ -1891,10 +1908,31 @@ impl App {
         self.sync_chat_target();
     }
 
+    fn preferred_agent_index(&self) -> Option<usize> {
+        self.state
+            .agents
+            .iter()
+            .enumerate()
+            .find(|(_, agent)| agent.enabled && agent.primary)
+            .map(|(idx, _)| idx)
+            .or_else(|| {
+                self.state
+                    .agents
+                    .iter()
+                    .enumerate()
+                    .find(|(_, agent)| agent.enabled)
+                    .map(|(idx, _)| idx)
+            })
+    }
+
     /// Update chat_target based on current mode and selection
     fn sync_chat_target(&mut self) {
         self.state.chat_target = match self.state.menu_item {
-            MenuItem::Dashboard => ChatTarget::Butler,
+            MenuItem::Dashboard => self
+                .preferred_agent_index()
+                .and_then(|idx| self.state.agents.get(idx))
+                .map(|a| ChatTarget::Agent(a.id.clone()))
+                .unwrap_or(ChatTarget::Butler),
             MenuItem::Agents => self
                 .state
                 .agents
@@ -6749,6 +6787,10 @@ async fn load_agents(client: &rockbot_client::GatewayClient) -> Result<Vec<Agent
             .get("model")
             .and_then(|v| v.as_str())
             .map(String::from);
+        let primary = entry
+            .get("primary")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let parent_id = entry
             .get("parent_id")
             .and_then(|v| v.as_str())
@@ -6793,6 +6835,7 @@ async fn load_agents(client: &rockbot_client::GatewayClient) -> Result<Vec<Agent
 
         agents.push(AgentInfo {
             id,
+            primary,
             model,
             status,
             session_count,

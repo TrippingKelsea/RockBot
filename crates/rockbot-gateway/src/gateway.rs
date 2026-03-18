@@ -249,9 +249,23 @@ struct ClientIdentity {
     label: Option<String>,
 }
 
+type WsOutboundSender = tokio::sync::mpsc::Sender<WsMessage>;
+const MAX_WS_OUTBOUND_QUEUE: usize = 256;
+
+fn enqueue_ws_message(sender: &WsOutboundSender, message: WsMessage) -> bool {
+    match sender.try_send(message) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            warn!("Dropping websocket message because outbound queue is full");
+            false
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 /// WebSocket connection information
 struct WsConnection {
-    sender: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    sender: WsOutboundSender,
     /// Client identity for targeted cron dispatch and human-readable display.
     /// Set by the client sending a `client_identify` WS message after connecting.
     identity: Option<ClientIdentity>,
@@ -4104,7 +4118,8 @@ impl Gateway {
         use futures_util::{SinkExt, StreamExt};
 
         let (mut ws_sink, mut ws_source) = ws_stream.split();
-        let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::unbounded_channel::<WsMessage>();
+        let (outbound_tx, mut outbound_rx) =
+            tokio::sync::mpsc::channel::<WsMessage>(MAX_WS_OUTBOUND_QUEUE);
 
         // Register connection
         {
@@ -4163,7 +4178,7 @@ impl Gateway {
                             });
                         }
                         Some(Ok(WsMessage::Ping(data))) => {
-                            let _ = outbound_tx.send(WsMessage::Pong(data));
+                            let _ = enqueue_ws_message(&outbound_tx, WsMessage::Pong(data));
                         }
                         Some(Ok(WsMessage::Close(_))) | None => {
                             debug!("WebSocket closed: {}", conn_id);
@@ -4177,7 +4192,7 @@ impl Gateway {
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    let _ = outbound_tx.send(WsMessage::Close(None));
+                    let _ = enqueue_ws_message(&outbound_tx, WsMessage::Close(None));
                     break;
                 }
             }
@@ -4383,7 +4398,7 @@ impl Gateway {
     async fn handle_ws_message(
         &self,
         conn_id: &str,
-        outbound_tx: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
+        outbound_tx: &WsOutboundSender,
         text: &str,
     ) {
         let msg: WsMessageType = match serde_json::from_str(text) {
@@ -4392,7 +4407,7 @@ impl Gateway {
                 let resp = WsResponseType::Error {
                     message: format!("Invalid message: {e}"),
                 };
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
                 return;
@@ -4413,7 +4428,7 @@ impl Gateway {
             let resp = WsResponseType::Error {
                 message: "This public WebSocket connection is not authenticated yet".to_string(),
             };
-            let _ = outbound_tx.send(WsMessage::Text(
+            let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                 serde_json::to_string(&resp).unwrap_or_default(),
             ));
             return;
@@ -4422,14 +4437,14 @@ impl Gateway {
         match msg {
             WsMessageType::Ping => {
                 let resp = WsResponseType::Pong;
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
             }
             WsMessageType::HealthCheck => {
                 let health = self.get_health_status().await;
                 let resp = WsResponseType::HealthStatus { status: health };
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
             }
@@ -4506,7 +4521,7 @@ impl Gateway {
                     label: None,
                 };
                 if let Ok(json) = serde_json::to_string(&response) {
-                    let _ = outbound_tx.send(WsMessage::Text(json));
+                    let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(json));
                 }
             }
             WsMessageType::CronResult {
@@ -4540,7 +4555,7 @@ impl Gateway {
                 let resp = WsResponseType::Error {
                     message: "Remote execution not enabled on this gateway".to_string(),
                 };
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
             }
@@ -4566,7 +4581,7 @@ impl Gateway {
                     let resp = WsResponseType::Error {
                         message: "Remote execution not enabled on this gateway".to_string(),
                     };
-                    let _ = outbound_tx.send(WsMessage::Text(
+                    let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                         serde_json::to_string(&resp).unwrap_or_default(),
                     ));
                 }
@@ -4637,7 +4652,7 @@ impl Gateway {
                 match self.begin_browser_web_auth(conn_id).await {
                     Ok((challenge, _, _)) => {
                         let resp = WsResponseType::WebAuthChallenge { challenge };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                     }
@@ -4648,7 +4663,7 @@ impl Gateway {
                             cert_name: None,
                             cert_role: None,
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                     }
@@ -4663,7 +4678,7 @@ impl Gateway {
                             cert_name: Some(cert_name),
                             cert_role: Some(cert_role),
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                     }
@@ -4680,7 +4695,7 @@ impl Gateway {
                             cert_name: None,
                             cert_role: None,
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                     }
@@ -4691,7 +4706,7 @@ impl Gateway {
 
     async fn handle_ws_api_request(
         &self,
-        outbound_tx: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
+        outbound_tx: &WsOutboundSender,
         request_id: String,
         method: String,
         path: String,
@@ -4721,7 +4736,7 @@ impl Gateway {
             content_type,
         };
         if let Ok(json) = serde_json::to_string(&response) {
-            let _ = outbound_tx.send(WsMessage::Text(json));
+            let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(json));
         }
     }
 
@@ -4856,7 +4871,7 @@ impl Gateway {
     async fn handle_ws_agent_message(
         &self,
         conn_id: &str,
-        outbound_tx: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
+        outbound_tx: &WsOutboundSender,
         agent_id: String,
         session_key: String,
         user_message: String,
@@ -4903,7 +4918,7 @@ impl Gateway {
                     tokens_used: None,
                     processing_time_ms: None,
                 };
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
                 return;
@@ -4923,7 +4938,7 @@ impl Gateway {
                             tokens_used: None,
                             processing_time_ms: None,
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                         return;
@@ -4942,7 +4957,7 @@ impl Gateway {
                 tokens_used: None,
                 processing_time_ms: None,
             };
-            let _ = outbound_tx.send(WsMessage::Text(
+            let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                 serde_json::to_string(&resp).unwrap_or_default(),
             ));
             return;
@@ -4957,7 +4972,7 @@ impl Gateway {
                     session_key,
                     error: format!("Agent '{agent_id}' not found"),
                 };
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
                 return;
@@ -5123,7 +5138,7 @@ impl Gateway {
                 };
                 for resp in messages {
                     let json = serde_json::to_string(&resp).unwrap_or_default();
-                    if progress_ws_tx.send(WsMessage::Text(json)).is_err() {
+                    if !enqueue_ws_message(&progress_ws_tx, WsMessage::Text(json)) {
                         break;
                     }
                 }
@@ -5139,6 +5154,7 @@ impl Gateway {
                 resolved_executor_target.clone(),
                 strict_executor_target,
                 remote_workspace_override,
+                0,
                 progress_tx,
             )
             .await;
@@ -5164,7 +5180,7 @@ impl Gateway {
                         handoff.target_agent_id
                     ),
                 };
-                let _ = tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(&tx, WsMessage::Text(
                     serde_json::to_string(&chunk).unwrap_or_default(),
                 ));
 
@@ -5194,6 +5210,7 @@ impl Gateway {
                             resolved_executor_target.clone(),
                             strict_executor_target,
                             workspace.clone(),
+                            handoff_depth,
                         )
                         .await;
                 } else {
@@ -5258,7 +5275,7 @@ impl Gateway {
                     tokens_used: tokens,
                     processing_time_ms: Some(response.processing_time_ms),
                 };
-                let _ = tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(&tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
             }
@@ -5267,7 +5284,7 @@ impl Gateway {
                     session_key: sk,
                     error: e.to_string(),
                 };
-                let _ = tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(&tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
             }
@@ -5282,7 +5299,7 @@ impl Gateway {
     async fn handle_noise_handshake(
         &self,
         conn_id: &str,
-        outbound_tx: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
+        outbound_tx: &WsOutboundSender,
         payload_b64: &str,
         step: u8,
     ) {
@@ -5295,7 +5312,7 @@ impl Gateway {
                 let resp = WsResponseType::Error {
                     message: format!("Invalid base64 in Noise handshake: {e}"),
                 };
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
                 return;
@@ -5319,7 +5336,7 @@ impl Gateway {
                         let resp = WsResponseType::Error {
                             message: format!("Failed to create Noise responder: {e}"),
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                         return;
@@ -5331,7 +5348,7 @@ impl Gateway {
                     let resp = WsResponseType::Error {
                         message: format!("Noise handshake step 1 failed: {e}"),
                     };
-                    let _ = outbound_tx.send(WsMessage::Text(
+                    let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                         serde_json::to_string(&resp).unwrap_or_default(),
                     ));
                     return;
@@ -5345,7 +5362,7 @@ impl Gateway {
                             payload: response_b64,
                             step: 2,
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                         // Store the in-progress handshake
@@ -5356,7 +5373,7 @@ impl Gateway {
                         let resp = WsResponseType::Error {
                             message: format!("Noise handshake step 2 write failed: {e}"),
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                     }
@@ -5370,7 +5387,7 @@ impl Gateway {
                         let resp = WsResponseType::Error {
                             message: format!("Noise handshake step 3 failed: {e}"),
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                         return;
@@ -5387,7 +5404,7 @@ impl Gateway {
                                 let resp = WsResponseType::Error {
                                     message: format!("Noise transport init failed: {e}"),
                                 };
-                                let _ = outbound_tx.send(WsMessage::Text(
+                                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                                     serde_json::to_string(&resp).unwrap_or_default(),
                                 ));
                                 return;
@@ -5409,7 +5426,7 @@ impl Gateway {
                                 "Noise handshake complete. Send remote_capabilities to register."
                                     .to_string(),
                         };
-                        let _ = outbound_tx.send(WsMessage::Text(
+                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                             serde_json::to_string(&resp).unwrap_or_default(),
                         ));
                     } else {
@@ -5419,7 +5436,7 @@ impl Gateway {
                     let resp = WsResponseType::Error {
                         message: "No pending Noise handshake for this connection".to_string(),
                     };
-                    let _ = outbound_tx.send(WsMessage::Text(
+                    let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                         serde_json::to_string(&resp).unwrap_or_default(),
                     ));
                 }
@@ -5428,7 +5445,7 @@ impl Gateway {
                 let resp = WsResponseType::Error {
                     message: format!("Invalid Noise handshake step: {step} (expected 1 or 3)"),
                 };
-                let _ = outbound_tx.send(WsMessage::Text(
+                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                     serde_json::to_string(&resp).unwrap_or_default(),
                 ));
             }
@@ -5443,7 +5460,7 @@ impl Gateway {
     async fn handle_remote_capabilities(
         &self,
         conn_id: &str,
-        outbound_tx: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
+        outbound_tx: &WsOutboundSender,
         capabilities: Vec<String>,
         client_type: String,
         working_dir: Option<String>,
@@ -5491,7 +5508,7 @@ impl Gateway {
                 message: "No completed Noise handshake found. Complete handshake first."
                     .to_string(),
             };
-            let _ = outbound_tx.send(WsMessage::Text(
+            let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
                 serde_json::to_string(&resp).unwrap_or_default(),
             ));
             return;
@@ -5549,12 +5566,10 @@ impl Gateway {
                     session_id: request.session_id,
                     workspace_path: request.workspace_path,
                 };
-                if outbound_clone
-                    .send(WsMessage::Text(
-                        serde_json::to_string(&msg).unwrap_or_default(),
-                    ))
-                    .is_err()
-                {
+                if !enqueue_ws_message(
+                    &outbound_clone,
+                    WsMessage::Text(serde_json::to_string(&msg).unwrap_or_default()),
+                ) {
                     debug!("WS connection closed for remote executor {conn_id_clone}");
                     break;
                 }
@@ -5568,7 +5583,7 @@ impl Gateway {
                 "Registered as remote executor ({client_type}). Total executors: {count}"
             ),
         };
-        let _ = outbound_tx.send(WsMessage::Text(
+        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
             serde_json::to_string(&resp).unwrap_or_default(),
         ));
 
@@ -6377,6 +6392,7 @@ impl Gateway {
                 executor_target,
                 strict_executor_target,
                 remote_workspace_override,
+                0,
             )
             .await?)
     }
@@ -6440,7 +6456,7 @@ impl Gateway {
         // Close all WebSocket connections
         let connections = self.ws_connections.read().await;
         for connection in connections.values() {
-            let _ = connection.sender.send(WsMessage::Close(None));
+            let _ = enqueue_ws_message(&connection.sender, WsMessage::Close(None));
         }
 
         Ok(())
@@ -7148,7 +7164,7 @@ impl rockbot_tools::AgentInvoker for GatewayInvoker {
             .with_role(rockbot_config::message::MessageRole::User);
 
         match agent
-            .process_message(session_id.to_string(), msg, None, None, false, None)
+            .process_message(session_id.to_string(), msg, None, None, false, None, depth)
             .await
         {
             Ok(response) => {
@@ -7278,7 +7294,7 @@ impl GatewayCronExecutor {
             .with_role(rockbot_config::message::MessageRole::User);
 
         match agent
-            .process_message(session_id, user_message, None, None, false, None)
+            .process_message(session_id, user_message, None, None, false, None, 0)
             .await
         {
             Ok(response) => {
@@ -7336,9 +7352,12 @@ impl GatewayCronExecutor {
         let json = serde_json::to_string(&dispatch_msg)
             .map_err(|e| format!("Failed to serialize cron dispatch: {e}"))?;
 
-        conn.sender
-            .send(WsMessage::Text(json))
-            .map_err(|_| format!("Failed to send cron dispatch to client '{}'", target))?;
+        if !enqueue_ws_message(&conn.sender, WsMessage::Text(json)) {
+            return Err(format!(
+                "Failed to send cron dispatch to client '{}'",
+                target
+            ));
+        }
 
         info!("Cron job '{}' dispatched to client '{}'", job.name, target);
         Ok(())

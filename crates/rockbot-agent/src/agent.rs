@@ -282,6 +282,8 @@ struct ProcessingContext {
     remote_executor_strict: bool,
     /// Client-side working directory for remote-dispatched tools.
     remote_workspace_override: Option<String>,
+    /// Current subagent delegation depth for this processing chain.
+    delegation_depth: u32,
 }
 
 /// Agent execution statistics
@@ -607,6 +609,7 @@ impl Agent {
         remote_executor_target: Option<String>,
         remote_executor_strict: bool,
         remote_workspace_override: Option<String>,
+        delegation_depth: u32,
     ) -> Result<AgentResponse> {
         self.process_message_inner(
             session_id,
@@ -615,6 +618,7 @@ impl Agent {
             remote_executor_target,
             remote_executor_strict,
             remote_workspace_override,
+            delegation_depth,
             None,
         )
         .await
@@ -631,6 +635,7 @@ impl Agent {
         remote_executor_target: Option<String>,
         remote_executor_strict: bool,
         remote_workspace_override: Option<String>,
+        delegation_depth: u32,
         progress_tx: ProgressSender,
     ) -> Result<AgentResponse> {
         self.process_message_inner(
@@ -640,6 +645,7 @@ impl Agent {
             remote_executor_target,
             remote_executor_strict,
             remote_workspace_override,
+            delegation_depth,
             Some(progress_tx),
         )
         .await
@@ -654,6 +660,7 @@ impl Agent {
         remote_executor_target: Option<String>,
         remote_executor_strict: bool,
         remote_workspace_override: Option<String>,
+        delegation_depth: u32,
         progress_tx: Option<ProgressSender>,
     ) -> Result<AgentResponse> {
         let start_time = std::time::Instant::now();
@@ -731,6 +738,7 @@ impl Agent {
                 remote_executor_target,
                 remote_executor_strict,
                 remote_workspace_override,
+                delegation_depth,
             )
             .await?;
 
@@ -1099,6 +1107,7 @@ impl Agent {
                 None,
                 false,
                 None,
+                0,
             )
             .await?;
 
@@ -1655,6 +1664,7 @@ impl Agent {
         remote_executor_target: Option<String>,
         remote_executor_strict: bool,
         remote_workspace_override: Option<String>,
+        delegation_depth: u32,
     ) -> Result<ProcessingContext> {
         // Check if we need to load history (context doesn't exist in memory yet)
         let needs_history = {
@@ -1702,6 +1712,7 @@ impl Agent {
                 remote_executor_target: None,
                 remote_executor_strict: false,
                 remote_workspace_override: None,
+                delegation_depth,
             });
 
         // Apply workspace override if provided
@@ -1711,6 +1722,7 @@ impl Agent {
         context.remote_executor_target = remote_executor_target;
         context.remote_executor_strict = remote_executor_strict;
         context.remote_workspace_override = remote_workspace_override;
+        context.delegation_depth = delegation_depth;
 
         // Add new message to context
         context.messages.push(message);
@@ -3681,7 +3693,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                         command_allowlist: vec![],
                         approval_callback: None,
                         agent_invoker: self.agent_invoker.clone(),
-                        delegation_depth: 0,
+                        delegation_depth: _context.delegation_depth,
                         blackboard: self.blackboard.clone(),
                         swarm_id: self.swarm_id.clone(),
                     };
@@ -4648,6 +4660,7 @@ mod tests {
             remote_executor_target: None,
             remote_executor_strict: false,
             remote_workspace_override: None,
+            delegation_depth: 0,
         }
     }
 

@@ -8,6 +8,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -1273,7 +1274,8 @@ impl Config {
             });
         }
 
-        if !self.gateway.public.serve_webapp && !self.gateway.public.serve_ca
+        if !self.gateway.public.serve_webapp
+            && !self.gateway.public.serve_ca
             && !self.gateway.public.enrollment_enabled
         {
             warn!(
@@ -1374,32 +1376,35 @@ impl ConfigWatcher {
 
 /// Expand environment variables in configuration strings
 fn expand_env_vars(content: &str) -> Result<String> {
-    let mut result = content.to_string();
+    static ENV_VAR_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = ENV_VAR_RE
+        .get_or_init(|| regex::Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").expect("valid regex"));
 
-    let re = regex::Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
-
-    while let Some(caps) = re.captures(&result) {
-        let full_match = caps.get(0).unwrap().as_str();
-        let var_name = caps.get(1).unwrap().as_str();
+    let mut missing_var: Option<String> = None;
+    let expanded = re.replace_all(content, |caps: &regex::Captures<'_>| {
+        let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
         let default_value = caps.get(2).map(|m| m.as_str());
 
-        let replacement = match std::env::var(var_name) {
+        match std::env::var(var_name) {
             Ok(value) => value,
             Err(_) => {
                 if let Some(default) = default_value {
                     default.to_string()
                 } else {
-                    return Err(ConfigError::EnvVarNotFound {
-                        var: var_name.to_string(),
-                    });
+                    missing_var = Some(var_name.to_string());
+                    caps.get(0)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default()
                 }
             }
-        };
+        }
+    });
 
-        result = result.replace(full_match, &replacement);
+    if let Some(var) = missing_var {
+        return Err(ConfigError::EnvVarNotFound { var });
     }
 
-    Ok(result)
+    Ok(expanded.into_owned())
 }
 
 // Default value functions

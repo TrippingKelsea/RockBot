@@ -14,10 +14,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
+
+const MAX_MCP_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// JSON-RPC 2.0 request
 #[derive(Debug, Serialize)]
@@ -119,12 +121,13 @@ impl McpConnection {
                 message: format!("Failed to flush MCP server stdin: {e}"),
             })?;
 
-        // Read response line
-        let mut response_line = String::new();
-        let read = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            self.stdout_reader.read_line(&mut response_line),
-        )
+        // Read response line with a hard byte cap to avoid unbounded memory use.
+        let mut response_bytes = Vec::new();
+        let read = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let mut limited =
+                tokio::io::AsyncReadExt::take(&mut self.stdout_reader, (MAX_MCP_RESPONSE_BYTES + 1) as u64);
+            tokio::io::AsyncBufReadExt::read_until(&mut limited, b'\n', &mut response_bytes).await
+        })
         .await
         .map_err(|_| ToolError::ExecutionFailed {
             message: "Timeout waiting for MCP server response".to_string(),
@@ -138,6 +141,20 @@ impl McpConnection {
                 message: "MCP server closed stdout unexpectedly".to_string(),
             });
         }
+
+        if response_bytes.len() > MAX_MCP_RESPONSE_BYTES {
+            return Err(ToolError::ExecutionFailed {
+                message: format!(
+                    "MCP server response exceeded {} bytes",
+                    MAX_MCP_RESPONSE_BYTES
+                ),
+            });
+        }
+
+        let response_line =
+            String::from_utf8(response_bytes).map_err(|e| ToolError::ExecutionFailed {
+                message: format!("Failed to decode MCP server response as UTF-8: {e}"),
+            })?;
 
         let response: JsonRpcResponse =
             serde_json::from_str(response_line.trim()).map_err(|e| ToolError::ExecutionFailed {
@@ -327,8 +344,15 @@ impl McpServerManager {
 
 impl Drop for McpServerManager {
     fn drop(&mut self) {
-        // Best-effort cleanup — async drop isn't available so we just try
-        // to kill the child processes synchronously via their handles
+        if let Ok(mut servers) = self.servers.try_write() {
+            for (name, conn) in servers.drain() {
+                if let Ok(mut conn) = conn.try_lock() {
+                    if let Err(e) = conn.child.start_kill() {
+                        warn!("Failed to start_kill MCP server '{name}' during drop: {e}");
+                    }
+                }
+            }
+        }
     }
 }
 

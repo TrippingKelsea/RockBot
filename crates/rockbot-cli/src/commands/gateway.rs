@@ -80,7 +80,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let mut config = Config::from_file(config_path).await?;
 
     // Initialize core components
-    info!("Initializing RockBot gateway...");
+    info!("Initializing RockBot gateway v{}...", env!("CARGO_PKG_VERSION"));
 
     // Determine vault path from config
     let vault_path = config.credentials.vault_path.clone();

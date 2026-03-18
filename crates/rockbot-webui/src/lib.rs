@@ -338,7 +338,7 @@ function summarizeIdentity(identity) {
     'Certificate preview:',
     certPreview,
     '',
-    `Private key bytes: ${identity.privateKey.length}`,
+    `Private key: ${identity.privateKey instanceof CryptoKey ? 'stored as non-extractable CryptoKey' : 'legacy PEM'}`,
   ].join('\n');
 }
 
@@ -381,9 +381,10 @@ async function saveIdentity() {
     setPill('identity-pill', 'pill-warn', 'Need cert + key');
     return;
   }
+  const privateKey = await importPrivateKey(keyPem);
   await idbSet(ID_KEY, {
     certificate: certPem,
-    privateKey: keyPem,
+    privateKey,
     savedAt: Date.now(),
   });
   await refreshIdentity();
@@ -443,9 +444,13 @@ async function importPrivateKey(privateKeyPem) {
 
 async function signChallenge(privateKeyPem, challengeBase64) {
   const key = await importPrivateKey(privateKeyPem);
+  return signChallengeWithKey(key, challengeBase64);
+}
+
+async function signChallengeWithKey(privateKey, challengeBase64) {
   const signature = await window.crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
-    key,
+    privateKey,
     base64ToArrayBuffer(challengeBase64),
   );
   return arrayBufferToBase64(signature);
@@ -471,7 +476,9 @@ async function ensureAuthenticatedSocket(identity) {
     const payload = JSON.parse(event.data);
     if (payload.type === 'web_auth_challenge') {
       try {
-        const signature = await signChallenge(identity.privateKey, payload.challenge);
+        const signature = identity.privateKey instanceof CryptoKey
+          ? await signChallengeWithKey(identity.privateKey, payload.challenge)
+          : await signChallenge(identity.privateKey, payload.challenge);
         socket.send(JSON.stringify({
           type: 'web_auth_complete',
           signature,

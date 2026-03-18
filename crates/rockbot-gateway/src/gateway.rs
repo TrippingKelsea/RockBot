@@ -8,7 +8,7 @@ use rockbot_config::{
     Config, CredentialsConfig, GatewayConfig, PkiConfig, StorageEncryptionMode,
     StorageKeySource,
 };
-use rockbot_credentials::{generate_salt, CredentialManager, MasterKey};
+use rockbot_credentials::CredentialManager;
 use rockbot_pki::PkiManager;
 
 fn tool_locality_label(locality: &rockbot_agent::agent::ToolExecutionLocality) -> String {
@@ -305,6 +305,9 @@ struct BrowserAuthState {
     cert_name: Option<String>,
     cert_role: Option<String>,
 }
+
+const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const MAX_WS_API_BODY_BYTES: usize = 256 * 1024;
 
 /// WebSocket message types (client -> server)
 #[allow(clippy::large_enum_variant)]
@@ -889,15 +892,8 @@ impl Gateway {
         match config.unlock_method.as_str() {
             "env" => {
                 if let Ok(password) = std::env::var(&config.password_env_var) {
-                    let salt = generate_salt();
-                    let master_key =
-                        MasterKey::derive_from_password(&password, &salt).map_err(|e| {
-                            GatewayError::InvalidRequest {
-                                message: format!("Failed to derive master key: {e}"),
-                            }
-                        })?;
                     manager
-                        .unlock(master_key)
+                        .unlock_with_password(&password)
                         .await
                         .map_err(|e| GatewayError::InvalidRequest {
                             message: format!("Failed to unlock vault: {e}"),
@@ -1909,14 +1905,9 @@ impl Gateway {
             ));
         };
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read request body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         #[derive(Deserialize)]
@@ -2025,14 +2016,9 @@ impl Gateway {
             ));
         };
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read request body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         #[derive(Deserialize)]
@@ -2119,14 +2105,9 @@ impl Gateway {
             ));
         };
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read request body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         let response: rockbot_credentials::HilApprovalResponse = match serde_json::from_slice(&body)
@@ -2193,14 +2174,9 @@ impl Gateway {
             ));
         };
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read request body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         #[derive(Deserialize)]
@@ -2218,18 +2194,7 @@ impl Gateway {
             }
         };
 
-        let salt = generate_salt();
-        let master_key = match MasterKey::derive_from_password(&request.password, &salt) {
-            Ok(key) => key,
-            Err(e) => {
-                return Ok(Self::json_error(
-                    &format!("Failed to derive key: {e}"),
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
-        };
-
-        match manager.unlock(master_key).await {
+        match manager.unlock_with_password(&request.password).await {
             Ok(()) => Ok(Self::json_response(
                 r#"{"status":"unlocked"}"#,
                 StatusCode::OK,
@@ -2283,14 +2248,9 @@ impl Gateway {
             ));
         }
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read request body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         #[derive(Deserialize)]
@@ -2356,20 +2316,21 @@ impl Gateway {
             "keyfile" => {
                 use std::os::unix::fs::OpenOptionsExt;
 
-                let keyfile_path = request.keyfile_path.map_or_else(
-                    || {
-                        self.credentials_config
-                            .vault_path
-                            .parent()
-                            .unwrap_or(std::path::Path::new("."))
-                            .join("vault.key")
-                    },
-                    std::path::PathBuf::from,
-                );
+                let keyfile_path = match self.resolve_keyfile_path(request.keyfile_path.as_deref()) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        return Ok(Self::json_error(&e.to_string(), StatusCode::BAD_REQUEST))
+                    }
+                };
 
                 // Create parent directory if needed
                 if let Some(parent) = keyfile_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        return Ok(Self::json_error(
+                            &format!("Failed to prepare keyfile directory: {e}"),
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                        ));
+                    }
                 }
 
                 // Generate keyfile if it doesn't exist
@@ -2459,14 +2420,9 @@ impl Gateway {
             ));
         };
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read request body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         #[derive(Deserialize)]
@@ -2894,7 +2850,10 @@ impl Gateway {
         &self,
         req: Request<IncomingBody>,
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
-        let body = req.collect().await.unwrap().to_bytes();
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
+        };
 
         // Parse as raw JSON first to extract agent_id (not part of ChatCompletionRequest)
         let raw_json: serde_json::Value = match serde_json::from_slice(&body) {
@@ -3205,7 +3164,10 @@ impl Gateway {
         B: hyper::body::Body<Data = hyper::body::Bytes> + Send,
         B::Error: std::fmt::Debug,
     {
-        let body = req.collect().await.unwrap_or_default().to_bytes();
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
+        };
         let body_str = String::from_utf8_lossy(&body);
 
         #[derive(Deserialize)]
@@ -3490,9 +3452,93 @@ impl Gateway {
             .unwrap()
     }
 
+    async fn collect_limited_body(
+        req: Request<IncomingBody>,
+        max_bytes: usize,
+    ) -> std::result::Result<hyper::body::Bytes, Response<GatewayBody>> {
+        let collected = req.collect().await.map_err(|e| {
+            Self::json_error(
+                &format!("Failed to read request body: {e}"),
+                StatusCode::BAD_REQUEST,
+            )
+        })?;
+        let bytes = collected.to_bytes();
+        if bytes.len() > max_bytes {
+            return Err(Self::json_error(
+                &format!("Request body too large (max {max_bytes} bytes)"),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ));
+        }
+        Ok(bytes)
+    }
+
+    async fn collect_limited_body_generic<B>(
+        req: Request<B>,
+        max_bytes: usize,
+    ) -> std::result::Result<hyper::body::Bytes, Response<GatewayBody>>
+    where
+        B: hyper::body::Body<Data = hyper::body::Bytes> + Send,
+        B::Error: std::fmt::Debug,
+    {
+        let collected = req.collect().await.map_err(|e| {
+            Self::json_error(
+                &format!("Failed to read request body: {e:?}"),
+                StatusCode::BAD_REQUEST,
+            )
+        })?;
+        let bytes = collected.to_bytes();
+        if bytes.len() > max_bytes {
+            return Err(Self::json_error(
+                &format!("Request body too large (max {max_bytes} bytes)"),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn is_valid_agent_id(agent_id: &str) -> bool {
+        !agent_id.is_empty()
+            && agent_id.len() <= 64
+            && !agent_id.contains('/')
+            && !agent_id.contains('\\')
+            && !agent_id.contains("..")
+            && agent_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    }
+
+    fn is_valid_cert_name(name: &str) -> bool {
+        Self::is_valid_agent_id(name)
+    }
+
+    fn resolve_keyfile_path(&self, keyfile_hint: Option<&str>) -> Result<std::path::PathBuf> {
+        let base_dir = self
+            .credentials_config
+            .vault_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        match keyfile_hint {
+            None => Ok(base_dir.join("vault.key")),
+            Some(name)
+                if !name.is_empty()
+                    && !name.contains('/')
+                    && !name.contains('\\')
+                    && !name.contains("..") =>
+            {
+                Ok(base_dir.join(name))
+            }
+            Some(_) => Err(crate::error::GatewayError::InvalidRequest {
+                message: "keyfile_path must be a simple filename relative to the vault directory"
+                    .to_string(),
+            }
+            .into()),
+        }
+    }
+
     /// Get the directory path for an agent
     #[allow(clippy::unused_self)]
     fn agent_directory(&self, agent_id: &str) -> std::path::PathBuf {
+        debug_assert!(Self::is_valid_agent_id(agent_id));
         dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
             .join("rockbot")
@@ -3575,7 +3621,7 @@ impl Gateway {
     fn parse_agent_file_path(path: &str) -> Option<(&str, &str)> {
         let stripped = path.strip_prefix("/api/agents/")?;
         let (agent_id, rest) = stripped.split_once("/files/")?;
-        if agent_id.is_empty() || rest.is_empty() {
+        if agent_id.is_empty() || rest.is_empty() || !Self::is_valid_agent_id(agent_id) {
             return None;
         }
         Some((agent_id, rest))
@@ -3585,7 +3631,7 @@ impl Gateway {
     fn parse_agent_files_list_path(path: &str) -> Option<&str> {
         let stripped = path.strip_prefix("/api/agents/")?;
         let agent_id = stripped.strip_suffix("/files")?;
-        if agent_id.is_empty() {
+        if agent_id.is_empty() || !Self::is_valid_agent_id(agent_id) {
             return None;
         }
         Some(agent_id)
@@ -4218,7 +4264,7 @@ impl Gateway {
             .map_err(|e| anyhow::anyhow!("Invalid auth signature encoding: {e}"))?;
 
         let verifier =
-            ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_ASN1, spki);
+            ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, spki);
         verifier
             .verify(&challenge, &signature)
             .map_err(|_| anyhow::anyhow!("Browser auth signature verification failed"))?;
@@ -4460,6 +4506,8 @@ impl Gateway {
                     if let Some(conn) = conns.get_mut(conn_id) {
                         conn.browser_auth.pending_cert_pem = Some(certificate_pem);
                         conn.browser_auth.pending_challenge = None;
+                        conn.browser_auth.cert_name = None;
+                        conn.browser_auth.cert_role = None;
                         conn.browser_auth.authenticated = false;
                     }
                 }
@@ -4498,6 +4546,12 @@ impl Gateway {
                         ));
                     }
                     Err(err) => {
+                        if let Some(conn) = self.ws_connections.write().await.get_mut(conn_id) {
+                            conn.browser_auth.authenticated = false;
+                            conn.browser_auth.pending_challenge = None;
+                            conn.browser_auth.cert_name = None;
+                            conn.browser_auth.cert_role = None;
+                        }
                         let resp = WsResponseType::WebAuthResult {
                             authenticated: false,
                             message: err.to_string(),
@@ -4566,6 +4620,11 @@ impl Gateway {
                 .map_err(|e| format!("Failed to encode API request body: {e}"))?,
             None => Vec::new(),
         };
+        if body_bytes.len() > MAX_WS_API_BODY_BYTES {
+            return Err(format!(
+                "API request body too large (max {MAX_WS_API_BODY_BYTES} bytes)"
+            ));
+        }
         let req = Request::builder()
             .method(method.clone())
             .uri(uri)
@@ -5524,14 +5583,9 @@ impl Gateway {
         B: hyper::body::Body<Data = hyper::body::Bytes> + Send,
         B::Error: std::fmt::Debug,
     {
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         fn default_enabled() -> bool {
@@ -5563,9 +5617,9 @@ impl Gateway {
             }
         };
 
-        if req.id.trim().is_empty() {
+        if !Self::is_valid_agent_id(req.id.trim()) {
             return Ok(Self::json_error(
-                "Agent ID is required",
+                "Agent ID must be 1-64 chars and use only letters, numbers, '-' or '_'",
                 StatusCode::BAD_REQUEST,
             ));
         }
@@ -5696,21 +5750,16 @@ impl Gateway {
         let path = req.uri().path().to_string();
         let agent_id = path.strip_prefix("/api/agents/").unwrap_or("").to_string();
 
-        if agent_id.is_empty() {
+        if !Self::is_valid_agent_id(&agent_id) {
             return Ok(Self::json_error(
                 "Invalid agent ID",
                 StatusCode::BAD_REQUEST,
             ));
         }
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Self::json_error(
-                    "Failed to read body",
-                    StatusCode::BAD_REQUEST,
-                ))
-            }
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         #[derive(Deserialize)]
@@ -5851,7 +5900,7 @@ impl Gateway {
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         let agent_id = path.strip_prefix("/api/agents/").unwrap_or("").to_string();
 
-        if agent_id.is_empty() {
+        if !Self::is_valid_agent_id(&agent_id) {
             return Ok(Self::json_error(
                 "Invalid agent ID",
                 StatusCode::BAD_REQUEST,
@@ -5906,7 +5955,7 @@ impl Gateway {
             .and_then(|s| s.strip_suffix("/message"))
             .unwrap_or("");
 
-        if agent_id.is_empty() {
+        if !Self::is_valid_agent_id(agent_id) {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(GatewayBody::Left(Full::new("Invalid agent ID".into())))
@@ -5917,16 +5966,9 @@ impl Gateway {
         let agent_id = agent_id.to_string();
 
         // Parse request body
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(GatewayBody::Left(Full::new(
-                        "Failed to read request body".into(),
-                    )))
-                    .unwrap());
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         let message_request: MessageRequest = match serde_json::from_slice(&body) {
@@ -6042,7 +6084,7 @@ impl Gateway {
             .and_then(|s| s.strip_suffix("/stream"))
             .unwrap_or("");
 
-        if agent_id.is_empty() {
+        if !Self::is_valid_agent_id(agent_id) {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(GatewayBody::Left(Full::new("Invalid agent ID".into())))
@@ -6051,16 +6093,9 @@ impl Gateway {
 
         let agent_id = agent_id.to_string();
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(GatewayBody::Left(Full::new(
-                        "Failed to read request body".into(),
-                    )))
-                    .unwrap());
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         let message_request: MessageRequest = match serde_json::from_slice(&body) {
@@ -6276,23 +6311,16 @@ impl Gateway {
             .and_then(|s| s.strip_suffix("/approve"))
             .unwrap_or("");
 
-        if agent_id.is_empty() {
+        if !Self::is_valid_agent_id(agent_id) {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(GatewayBody::Left(Full::new("Invalid agent ID".into())))
                 .unwrap());
         }
 
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(GatewayBody::Left(Full::new(
-                        "Failed to read request body".into(),
-                    )))
-                    .unwrap());
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         let approval: ToolApprovalRequest = match serde_json::from_slice(&body) {
@@ -6377,16 +6405,9 @@ impl Gateway {
         B: hyper::body::Body<Data = hyper::body::Bytes> + Send,
         B::Error: std::fmt::Debug,
     {
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                let json = serde_json::json!({"error": "Failed to read request body"}).to_string();
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .header("Content-Type", "application/json")
-                    .body(GatewayBody::Left(Full::new(json.into())))
-                    .unwrap());
-            }
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
         let job: crate::cron::CronJob = match serde_json::from_slice(&body) {
             Ok(j) => j,
@@ -6463,16 +6484,9 @@ impl Gateway {
         B::Error: std::fmt::Debug,
     {
         let _job_id = path.strip_prefix("/api/cron/jobs/").unwrap_or("");
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => {
-                let json = serde_json::json!({"error": "Failed to read request body"}).to_string();
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .header("Content-Type", "application/json")
-                    .body(GatewayBody::Left(Full::new(json.into())))
-                    .unwrap());
-            }
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
         let job: crate::cron::CronJob = match serde_json::from_slice(&body) {
             Ok(j) => j,
@@ -6664,14 +6678,9 @@ impl Gateway {
         let ca_cert_path = pki_dir.join("ca.crt");
 
         // Parse request body
-        let body = match req.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(e) => {
-                return Ok(Self::json_error(
-                    &format!("Failed to read body: {e}"),
-                    StatusCode::BAD_REQUEST,
-                ));
-            }
+        let body = match Self::collect_limited_body(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return Ok(resp),
         };
 
         #[derive(serde::Deserialize)]
@@ -6700,6 +6709,13 @@ impl Gateway {
                 ));
             }
         };
+
+        if !Self::is_valid_cert_name(&sign_req.name) {
+            return Ok(Self::json_error(
+                "Invalid certificate name",
+                StatusCode::BAD_REQUEST,
+            ));
+        }
 
         // Validate PSK against enrollment tokens in the index
         let index_path = pki_dir.join("index.json");

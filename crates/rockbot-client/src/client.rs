@@ -298,56 +298,27 @@ impl GatewayClient {
         }
     }
 
-    /// Build a TLS connector that accepts self-signed certificates.
+    /// Build a TLS connector using the configured CA bundle and optional client identity.
     fn tls_connector(pki: Option<&PkiConfig>) -> Option<tokio_tungstenite::Connector> {
-        /// Verifier that accepts any server certificate (for self-signed certs).
-        #[derive(Debug)]
-        struct AcceptAnyCert;
-
-        impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
-            fn verify_server_cert(
-                &self,
-                _end_entity: &rustls::pki_types::CertificateDer<'_>,
-                _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-                _server_name: &rustls::pki_types::ServerName<'_>,
-                _ocsp_response: &[u8],
-                _now: rustls::pki_types::UnixTime,
-            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-                Ok(rustls::client::danger::ServerCertVerified::assertion())
+        let pki = pki?;
+        let mut roots = rustls::RootCertStore::empty();
+        if let Some(ca_path) = &pki.tls_ca {
+            let ca_path = Self::expand_tilde(ca_path);
+            let ca_pem = std::fs::read(&ca_path).ok()?;
+            let ca_certs = rustls_pemfile::certs(&mut &ca_pem[..])
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .ok()?;
+            let (added, _ignored) = roots.add_parsable_certificates(ca_certs);
+            if added == 0 {
+                return None;
             }
-
-            fn verify_tls12_signature(
-                &self,
-                _message: &[u8],
-                _cert: &rustls::pki_types::CertificateDer<'_>,
-                _dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-            {
-                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-            }
-
-            fn verify_tls13_signature(
-                &self,
-                _message: &[u8],
-                _cert: &rustls::pki_types::CertificateDer<'_>,
-                _dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-            {
-                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-            }
-
-            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                rustls::crypto::ring::default_provider()
-                    .signature_verification_algorithms
-                    .supported_schemes()
-            }
+        } else {
+            return None;
         }
 
-        let builder = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyCert));
+        let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
 
-        let config = match pki.and_then(|cfg| Self::load_client_identity(cfg).ok().flatten()) {
+        let config = match Self::load_client_identity(pki).ok().flatten() {
             Some((certs, key)) => builder.with_client_auth_cert(certs, key).ok()?,
             None => builder.with_no_client_auth(),
         };

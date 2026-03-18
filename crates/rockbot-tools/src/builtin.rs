@@ -11,6 +11,30 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use tokio::process::Command;
 
+struct DetectedCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+fn validate_runner_filter(filter: &str) -> Result<()> {
+    if filter.is_empty() {
+        return Err(crate::ToolError::InvalidParameters {
+            message: "filter cannot be empty".to_string(),
+        });
+    }
+
+    if !filter
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '='))
+    {
+        return Err(crate::ToolError::InvalidParameters {
+            message: "filter contains unsupported characters".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 fn get_string_param<'a>(params: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter()
         .find_map(|key| params.get(*key).and_then(|v| v.as_str()))
@@ -1941,8 +1965,8 @@ impl Tool for TestTool {
 
             let cmd = detect_test_command(&workdir, filter.as_deref()).await?;
 
-            let mut child = Command::new("sh");
-            child.arg("-c").arg(&cmd).current_dir(&workdir);
+            let mut child = Command::new(&cmd.program);
+            child.args(&cmd.args).current_dir(&workdir);
 
             let output =
                 tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.output())
@@ -1973,41 +1997,60 @@ impl Tool for TestTool {
 }
 
 /// Detect which test command to run based on files present in `workdir`.
-async fn detect_test_command(workdir: &std::path::Path, filter: Option<&str>) -> Result<String> {
+async fn detect_test_command(
+    workdir: &std::path::Path,
+    filter: Option<&str>,
+) -> Result<DetectedCommand> {
     if workdir.join("Cargo.toml").exists() {
-        let cmd = if let Some(f) = filter {
-            format!("cargo test -- {f}")
-        } else {
-            "cargo test".to_string()
-        };
-        return Ok(cmd);
+        let mut args = vec!["test".to_string()];
+        if let Some(f) = filter {
+            validate_runner_filter(f)?;
+            args.push("--".to_string());
+            args.push(f.to_string());
+        }
+        return Ok(DetectedCommand {
+            program: "cargo".to_string(),
+            args,
+        });
     }
 
     if workdir.join("package.json").exists() {
-        let cmd = if let Some(f) = filter {
-            format!("npx jest {f}")
-        } else {
-            "npm test".to_string()
-        };
-        return Ok(cmd);
+        if let Some(f) = filter {
+            validate_runner_filter(f)?;
+            return Ok(DetectedCommand {
+                program: "npx".to_string(),
+                args: vec!["jest".to_string(), f.to_string()],
+            });
+        }
+        return Ok(DetectedCommand {
+            program: "npm".to_string(),
+            args: vec!["test".to_string()],
+        });
     }
 
     if workdir.join("pyproject.toml").exists() || workdir.join("setup.py").exists() {
-        let cmd = if let Some(f) = filter {
-            format!("pytest {f}")
-        } else {
-            "pytest".to_string()
-        };
-        return Ok(cmd);
+        let mut args = Vec::new();
+        if let Some(f) = filter {
+            validate_runner_filter(f)?;
+            args.push(f.to_string());
+        }
+        return Ok(DetectedCommand {
+            program: "pytest".to_string(),
+            args,
+        });
     }
 
     if workdir.join("go.mod").exists() {
-        let cmd = if let Some(f) = filter {
-            format!("go test ./... -run {f}")
-        } else {
-            "go test ./...".to_string()
-        };
-        return Ok(cmd);
+        let mut args = vec!["test".to_string(), "./...".to_string()];
+        if let Some(f) = filter {
+            validate_runner_filter(f)?;
+            args.push("-run".to_string());
+            args.push(f.to_string());
+        }
+        return Ok(DetectedCommand {
+            program: "go".to_string(),
+            args,
+        });
     }
 
     // Makefile with a test target
@@ -2017,7 +2060,10 @@ async fn detect_test_command(workdir: &std::path::Path, filter: Option<&str>) ->
             .await
             .unwrap_or_default();
         if contents.contains("\ntest:") || contents.starts_with("test:") {
-            return Ok("make test".to_string());
+            return Ok(DetectedCommand {
+                program: "make".to_string(),
+                args: vec!["test".to_string()],
+            });
         }
     }
 
@@ -2106,8 +2152,8 @@ impl Tool for LintTool {
 
             let cmd = detect_lint_command(&workdir, filter.as_deref()).await?;
 
-            let mut child = Command::new("sh");
-            child.arg("-c").arg(&cmd).current_dir(&workdir);
+            let mut child = Command::new(&cmd.program);
+            child.args(&cmd.args).current_dir(&workdir);
 
             let output =
                 tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.output())
@@ -2138,9 +2184,20 @@ impl Tool for LintTool {
 }
 
 /// Detect which lint command to run based on files present in `workdir`.
-async fn detect_lint_command(workdir: &std::path::Path, filter: Option<&str>) -> Result<String> {
+async fn detect_lint_command(
+    workdir: &std::path::Path,
+    filter: Option<&str>,
+) -> Result<DetectedCommand> {
     if workdir.join("Cargo.toml").exists() {
-        return Ok("cargo clippy -- -D warnings".to_string());
+        return Ok(DetectedCommand {
+            program: "cargo".to_string(),
+            args: vec![
+                "clippy".to_string(),
+                "--".to_string(),
+                "-D".to_string(),
+                "warnings".to_string(),
+            ],
+        });
     }
 
     if workdir.join("package.json").exists() {
@@ -2149,7 +2206,10 @@ async fn detect_lint_command(workdir: &std::path::Path, filter: Option<&str>) ->
             .await
             .unwrap_or_default();
         if pkg_contents.contains("\"lint\"") {
-            return Ok("npm run lint".to_string());
+            return Ok(DetectedCommand {
+                program: "npm".to_string(),
+                args: vec!["run".to_string(), "lint".to_string()],
+            });
         }
         return Err(crate::ToolError::ExecutionFailed {
             message: "package.json has no 'lint' script defined.".to_string(),
@@ -2159,6 +2219,7 @@ async fn detect_lint_command(workdir: &std::path::Path, filter: Option<&str>) ->
     if workdir.join("pyproject.toml").exists() || workdir.join("setup.py").exists() {
         // Prefer ruff, fall back to flake8
         let target = filter.unwrap_or(".");
+        validate_runner_filter(target)?;
         let ruff_available = Command::new("sh")
             .arg("-c")
             .arg("command -v ruff")
@@ -2167,13 +2228,22 @@ async fn detect_lint_command(workdir: &std::path::Path, filter: Option<&str>) ->
             .map(|o| o.status.success())
             .unwrap_or(false);
         if ruff_available {
-            return Ok(format!("ruff check {target}"));
+            return Ok(DetectedCommand {
+                program: "ruff".to_string(),
+                args: vec!["check".to_string(), target.to_string()],
+            });
         }
-        return Ok(format!("flake8 {target}"));
+        return Ok(DetectedCommand {
+            program: "flake8".to_string(),
+            args: vec![target.to_string()],
+        });
     }
 
     if workdir.join("go.mod").exists() {
-        return Ok("golangci-lint run".to_string());
+        return Ok(DetectedCommand {
+            program: "golangci-lint".to_string(),
+            args: vec!["run".to_string()],
+        });
     }
 
     Err(crate::ToolError::ExecutionFailed {

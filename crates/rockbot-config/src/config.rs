@@ -1614,6 +1614,7 @@ mod tests {
                 client_port: 8081,
                 max_connections: 1000,
                 request_timeout: 30,
+                public: GatewayPublicConfig::default(),
                 require_api_key: None,
                 pki: PkiConfig::default(),
             },

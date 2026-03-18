@@ -3021,6 +3021,7 @@ impl AppState {
         config_path: PathBuf,
         vault_path: PathBuf,
         gateway_url: String,
+        gateway_http_url: String,
         tx: mpsc::UnboundedSender<Message>,
     ) -> Self {
         Self {
@@ -3031,7 +3032,7 @@ impl AppState {
             config_path,
             vault_path,
             launch_dir: std::env::current_dir().unwrap_or_default(),
-            gateway_http_url: rockbot_client::ws_url_to_http(&gateway_url),
+            gateway_http_url,
             gateway_url,
 
             gateway: GatewayStatus::default(),

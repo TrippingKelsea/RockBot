@@ -140,11 +140,16 @@ fn build_command_registry() -> rockbot_chat::ChatCommandRegistry {
 }
 
 impl App {
-    pub fn new(config_path: PathBuf, vault_path: PathBuf, gateway_url: String) -> Self {
+    pub fn new(
+        config_path: PathBuf,
+        vault_path: PathBuf,
+        gateway_url: String,
+        gateway_http_url: String,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         Self {
-            state: AppState::new(config_path, vault_path, gateway_url, tx),
+            state: AppState::new(config_path, vault_path, gateway_url, gateway_http_url, tx),
             rx,
             effect_state: EffectState::new(),
             last_frame: Instant::now(),
@@ -5585,7 +5590,12 @@ fn update_credential_in_vault(
 ///
 /// Uses crossterm's `EventStream` for async terminal input (not poll/read),
 /// a `TerminalGuard` for RAII cleanup, and a unified `AppEvent` bus.
-pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: String) -> Result<()> {
+pub async fn run_app(
+    config_path: PathBuf,
+    vault_path: PathBuf,
+    gateway_url: String,
+    gateway_http_url: String,
+) -> Result<()> {
     use crate::event::{spawn_terminal_input, AppEvent, TerminalGuard};
 
     // TerminalGuard owns raw mode, alternate screen, keyboard enhancement,
@@ -5593,7 +5603,7 @@ pub async fn run_app(config_path: PathBuf, vault_path: PathBuf, gateway_url: Str
     let (_guard, mut terminal) = TerminalGuard::enter()?;
 
     // Create and initialize app
-    let mut app = App::new(config_path, vault_path, gateway_url);
+    let mut app = App::new(config_path, vault_path, gateway_url, gateway_http_url);
     app.init().await?;
 
     // Unified event channel — terminal input task sends AppEvents here

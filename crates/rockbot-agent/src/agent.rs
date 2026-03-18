@@ -21,7 +21,7 @@ use rockbot_session::{Session, SessionManager};
 use rockbot_tools::message::ToolResult;
 use rockbot_tools::{AgentInvoker, ToolExecutionContext, ToolExecutionResult, ToolRegistry};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1874,6 +1874,72 @@ impl Agent {
         self.build_llm_request_inner(context, true).await
     }
 
+    fn llm_messages_from_context(&self, context: &ProcessingContext) -> Vec<rockbot_llm::Message> {
+        let mut messages = Vec::new();
+        let mut pending_tool_results: HashSet<String> = HashSet::new();
+        let mut skipped_orphan_tool_results = 0usize;
+
+        for message in &context.messages {
+            if matches!(message.metadata.role, MessageRole::System) {
+                continue;
+            }
+
+            let tool_calls =
+                message.metadata.extra.get("tool_calls").and_then(|v| {
+                    serde_json::from_value::<Vec<rockbot_llm::ToolCall>>(v.clone()).ok()
+                });
+            let tool_call_id = message
+                .metadata
+                .extra
+                .get("tool_call_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let role = match message.metadata.role {
+                MessageRole::User => rockbot_llm::MessageRole::User,
+                MessageRole::Assistant => rockbot_llm::MessageRole::Assistant,
+                MessageRole::System => rockbot_llm::MessageRole::System,
+                MessageRole::Tool => rockbot_llm::MessageRole::Tool,
+            };
+
+            if let rockbot_llm::MessageRole::Assistant = role {
+                if let Some(ref calls) = tool_calls {
+                    for call in calls {
+                        pending_tool_results.insert(call.id.clone());
+                    }
+                }
+            }
+
+            if let rockbot_llm::MessageRole::Tool = role {
+                let Some(ref id) = tool_call_id else {
+                    skipped_orphan_tool_results += 1;
+                    continue;
+                };
+                if !pending_tool_results.remove(id) {
+                    skipped_orphan_tool_results += 1;
+                    continue;
+                }
+            }
+
+            messages.push(rockbot_llm::Message {
+                role,
+                content: message.extract_text().unwrap_or_default(),
+                images: vec![],
+                tool_calls,
+                tool_call_id,
+            });
+        }
+
+        if skipped_orphan_tool_results > 0 {
+            warn!(
+                "Skipped {} orphan tool result message(s) while building LLM context for agent {}",
+                skipped_orphan_tool_results, self.config.id
+            );
+        }
+
+        messages
+    }
+
     /// Inner implementation for building LLM requests
     async fn build_llm_request_inner(
         &self,
@@ -1897,38 +1963,7 @@ impl Agent {
             });
         }
 
-        // Add conversation messages
-        for message in &context.messages {
-            // Skip system messages from conversation (they're handled above)
-            if matches!(message.metadata.role, MessageRole::System) {
-                continue;
-            }
-
-            // Reconstruct structured tool data from metadata
-            let tool_calls =
-                message.metadata.extra.get("tool_calls").and_then(|v| {
-                    serde_json::from_value::<Vec<rockbot_llm::ToolCall>>(v.clone()).ok()
-                });
-            let tool_call_id = message
-                .metadata
-                .extra
-                .get("tool_call_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            messages.push(rockbot_llm::Message {
-                role: match message.metadata.role {
-                    MessageRole::User => rockbot_llm::MessageRole::User,
-                    MessageRole::Assistant => rockbot_llm::MessageRole::Assistant,
-                    MessageRole::System => rockbot_llm::MessageRole::System,
-                    MessageRole::Tool => rockbot_llm::MessageRole::Tool,
-                },
-                content: message.extract_text().unwrap_or_default(),
-                images: vec![],
-                tool_calls,
-                tool_call_id,
-            });
-        }
+        messages.extend(self.llm_messages_from_context(context));
 
         // Get tool definitions if tools are available
         let tools = if !context.available_tools.is_empty() {
@@ -3224,33 +3259,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                 tool_call_id: None,
             });
         }
-        for msg in &context.messages {
-            if matches!(msg.metadata.role, MessageRole::System) {
-                continue;
-            }
-            let tool_calls =
-                msg.metadata.extra.get("tool_calls").and_then(|v| {
-                    serde_json::from_value::<Vec<rockbot_llm::ToolCall>>(v.clone()).ok()
-                });
-            let tool_call_id = msg
-                .metadata
-                .extra
-                .get("tool_call_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            messages.push(rockbot_llm::Message {
-                role: match msg.metadata.role {
-                    MessageRole::User => rockbot_llm::MessageRole::User,
-                    MessageRole::Assistant => rockbot_llm::MessageRole::Assistant,
-                    MessageRole::System => rockbot_llm::MessageRole::System,
-                    MessageRole::Tool => rockbot_llm::MessageRole::Tool,
-                },
-                content: msg.extract_text().unwrap_or_default(),
-                images: vec![],
-                tool_calls,
-                tool_call_id,
-            });
-        }
+        messages.extend(self.llm_messages_from_context(context));
 
         let model = self
             .config
@@ -3584,7 +3593,9 @@ The user wants me to explore the codebase. I should start by listing the directo
                         if let Some(progress) = progress_tx {
                             let _ = progress.send(AgentProgressEvent::ToolDone {
                                 tool_name: tool_call.function.name.clone(),
-                                result_preview: Some(format!("Tool call aborted by hook: {reason}")),
+                                result_preview: Some(format!(
+                                    "Tool call aborted by hook: {reason}"
+                                )),
                                 success: false,
                                 duration_ms: tool_start.elapsed().as_millis() as u64,
                                 locality: Self::tool_locality_for_context(_context),
@@ -4096,18 +4107,21 @@ The user wants me to explore the codebase. I should start by listing the directo
     fn tool_result_preview(result: &ToolResult) -> Option<String> {
         const MAX_PREVIEW_CHARS: usize = 500;
         match result {
-            ToolResult::Text { content } => Some(Self::truncate_content(content, MAX_PREVIEW_CHARS)),
-            ToolResult::Error { message, .. } => {
-                Some(Self::truncate_content(&format!("Error: {message}"), MAX_PREVIEW_CHARS))
+            ToolResult::Text { content } => {
+                Some(Self::truncate_content(content, MAX_PREVIEW_CHARS))
             }
+            ToolResult::Error { message, .. } => Some(Self::truncate_content(
+                &format!("Error: {message}"),
+                MAX_PREVIEW_CHARS,
+            )),
             ToolResult::Json { data } => {
                 let text = serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string());
                 Some(Self::truncate_content(&text, MAX_PREVIEW_CHARS))
             }
             ToolResult::File { path, .. } => Some(format!("[File: {path}]")),
-            ToolResult::Handoff { target_agent_id, .. } => {
-                Some(format!("[Handoff to {target_agent_id}]"))
-            }
+            ToolResult::Handoff {
+                target_agent_id, ..
+            } => Some(format!("[Handoff to {target_agent_id}]")),
         }
     }
 

@@ -115,6 +115,10 @@ enum ListenerKind {
 static NOISE_TRANSPORT_STATES: std::sync::OnceLock<
     tokio::sync::Mutex<HashMap<String, snow::TransportState>>,
 > = std::sync::OnceLock::new();
+#[cfg(feature = "remote-exec")]
+static NOISE_HANDSHAKE_STATES: std::sync::OnceLock<
+    tokio::sync::Mutex<HashMap<String, snow::HandshakeState>>,
+> = std::sync::OnceLock::new();
 
 /// Pending agent info (for agents that couldn't be created due to missing credentials)
 #[derive(Debug, Clone)]
@@ -307,6 +311,8 @@ struct BrowserAuthState {
 
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_WS_API_BODY_BYTES: usize = 256 * 1024;
+const MAX_TOOL_OUTPUT_CHARS: usize = 2000;
+const MAX_WS_INFLIGHT_MESSAGES_PER_CONNECTION: usize = 32;
 
 /// WebSocket message types (client -> server)
 #[allow(clippy::large_enum_variant)]
@@ -555,6 +561,17 @@ fn truncate_utf8(input: &str, max_chars: usize) -> String {
     } else {
         input.to_string()
     }
+}
+
+fn split_utf8_chunks(input: &str, max_chars: usize) -> Vec<String> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<char> = input.chars().collect();
+    chars
+        .chunks(max_chars)
+        .map(|chunk| chunk.iter().collect())
+        .collect()
 }
 
 /// Gateway health status
@@ -907,8 +924,7 @@ impl Gateway {
                 debug!("Vault configured for password unlock, remains locked until manual unlock");
             }
             "keyring" => {
-                // TODO: Implement keyring support
-                debug!("Keyring unlock not yet implemented");
+                warn!("Vault unlock method 'keyring' is configured but not implemented; vault remains locked");
             }
             other => {
                 debug!("Unknown unlock method '{}', vault remains locked", other);
@@ -3209,13 +3225,15 @@ impl Gateway {
         {
             Ok(mut session) => {
                 // Resolve model: use explicit model, or fall back to agent's configured model
-                let model = parsed.model.or_else(|| {
-                    let configs = self.agents_config.try_read().ok()?;
+                let model = if let Some(model) = parsed.model {
+                    Some(model)
+                } else {
+                    let configs = self.agents_config.read().await;
                     configs
                         .iter()
                         .find(|c| c.id == agent_id)
                         .and_then(|c| c.model.clone())
-                });
+                };
                 if let Some(model) = model {
                     session.set_metadata("model", &model);
                     let _ = self.session_manager.update_session(&session).await;
@@ -4095,6 +4113,9 @@ impl Gateway {
 
         // Reader loop: process incoming WebSocket messages
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let inflight_ws_messages = Arc::new(tokio::sync::Semaphore::new(
+            MAX_WS_INFLIGHT_MESSAGES_PER_CONNECTION,
+        ));
         loop {
             tokio::select! {
                 msg = ws_source.next() => {
@@ -4103,7 +4124,12 @@ impl Gateway {
                             let gateway = self.clone();
                             let conn_id_clone = conn_id.clone();
                             let outbound_clone = outbound_tx.clone();
+                            let permit = match inflight_ws_messages.clone().acquire_owned().await {
+                                Ok(permit) => permit,
+                                Err(_) => break,
+                            };
                             tokio::spawn(async move {
+                                let _permit = permit;
                                 gateway
                                     .handle_ws_message(&conn_id_clone, &outbound_clone, &text)
                                     .await;
@@ -4141,6 +4167,12 @@ impl Gateway {
         #[cfg(feature = "remote-exec")]
         {
             self.remote_exec_registry.remove(&conn_id).await;
+            if let Some(states) = NOISE_HANDSHAKE_STATES.get() {
+                states.lock().await.remove(&conn_id);
+            }
+            if let Some(transports) = NOISE_TRANSPORT_STATES.get() {
+                transports.lock().await.remove(&conn_id);
+            }
         }
         writer_handle.abort();
         info!(
@@ -4409,14 +4441,21 @@ impl Gateway {
                         uuid
                     );
                 }
+                let trusted_hostname = format!("client-{}", &uuid[..8.min(uuid.len())]);
+                if !hostname.is_empty() || label.is_some() {
+                    debug!(
+                        "Ignoring self-reported client identity metadata for {}: hostname='{}', label={:?}",
+                        conn_id, hostname, label
+                    );
+                }
                 info!(
                     "WebSocket client {} identified: uuid={}, hostname='{}', label={:?}",
-                    conn_id, uuid, hostname, label
+                    conn_id, uuid, trusted_hostname, Option::<String>::None
                 );
                 let identity = ClientIdentity {
                     client_uuid: uuid.clone(),
-                    hostname: hostname.clone(),
-                    label: label.clone(),
+                    hostname: trusted_hostname.clone(),
+                    label: None,
                 };
                 {
                     let mut conns = self.ws_connections.write().await;
@@ -4427,8 +4466,8 @@ impl Gateway {
                 // Confirm the identity back to the client so it can persist its UUID
                 let response = WsResponseType::ClientIdentityAssigned {
                     client_uuid: uuid,
-                    hostname,
-                    label,
+                    hostname: trusted_hostname,
+                    label: None,
                 };
                 if let Ok(json) = serde_json::to_string(&response) {
                     let _ = outbound_tx.send(WsMessage::Text(json));
@@ -4948,6 +4987,7 @@ impl Gateway {
                     }
                     rockbot_agent::agent::AgentProgressEvent::ToolDone {
                         ref tool_name,
+                        ref result_preview,
                         success,
                         duration_ms,
                         ref locality,
@@ -4955,11 +4995,10 @@ impl Gateway {
                         vec![WsResponseType::ToolResult {
                             session_key: progress_sk.clone(),
                             tool_name: tool_name.clone(),
-                            result: if success {
-                                "ok".to_string()
-                            } else {
-                                "error".to_string()
-                            },
+                            result: result_preview
+                                .clone()
+                                .map(|preview| truncate_utf8(&preview, MAX_TOOL_OUTPUT_CHARS))
+                                .unwrap_or_default(),
                             success,
                             duration_ms,
                             locality: Some(tool_locality_label(locality)),
@@ -4971,12 +5010,15 @@ impl Gateway {
                         ref locality,
                         ..
                     } => {
-                        vec![WsResponseType::ToolOutput {
-                            session_key: progress_sk.clone(),
-                            tool_name: tool_name.clone(),
-                            output: output.clone(),
-                            locality: Some(tool_locality_label(locality)),
-                        }]
+                        split_utf8_chunks(output, MAX_TOOL_OUTPUT_CHARS)
+                            .into_iter()
+                            .map(|chunk| WsResponseType::ToolOutput {
+                                session_key: progress_sk.clone(),
+                                tool_name: tool_name.clone(),
+                                output: chunk,
+                                locality: Some(tool_locality_label(locality)),
+                            })
+                            .collect()
                     }
                     rockbot_agent::agent::AgentProgressEvent::TextDelta { ref text } => {
                         // Stream the model's actual text/reasoning to the client
@@ -5205,13 +5247,10 @@ impl Gateway {
 
         // For step 1: create a new responder, read msg 1, write msg 2
         // For step 3: read msg 3, complete handshake
-        // We store in-progress handshake states keyed by conn_id in a thread-local-like map.
-        // For simplicity, we use a static lazy map guarded by a mutex.
-        use std::sync::OnceLock;
-        static HANDSHAKE_STATES: OnceLock<
-            tokio::sync::Mutex<HashMap<String, snow::HandshakeState>>,
-        > = OnceLock::new();
-        let states = HANDSHAKE_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+        // We store in-progress handshake states keyed by conn_id in a static map
+        // and explicitly clear them when the websocket disconnects.
+        let states =
+            NOISE_HANDSHAKE_STATES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
 
         let mut states_lock = states.lock().await;
 
@@ -5671,36 +5710,17 @@ impl Gateway {
             ));
         }
 
-        // Check if agent already exists (active or in config)
-        let agents = self.agents.read().await;
-        if agents.contains_key(&req.id) {
+        let active_has_same_id = self.agents.read().await.contains_key(&req.id);
+        if active_has_same_id {
             return Ok(Self::json_error(
                 &format!("Agent '{}' already exists", req.id),
                 StatusCode::CONFLICT,
             ));
         }
-        drop(agents);
 
-        let configs = self.agents_config.read().await;
-        if configs.iter().any(|c| c.id == req.id) {
-            return Ok(Self::json_error(
-                &format!("Agent '{}' already exists in config", req.id),
-                StatusCode::CONFLICT,
-            ));
-        }
-        drop(configs);
-
-        let has_primary = {
-            let active = self.agents.read().await;
-            let active_has_primary = active.values().any(|agent| agent.config.primary);
-            drop(active);
-            let configs = self.agents_config.read().await;
-            active_has_primary || configs.iter().any(|cfg| cfg.primary)
-        };
-
-        let config = rockbot_config::AgentInstance {
+        let mut config = rockbot_config::AgentInstance {
             id: req.id.clone(),
-            primary: req.primary.unwrap_or(!has_primary),
+            primary: false,
             model: req.model,
             workspace: req.workspace.map(std::path::PathBuf::from),
             max_tool_calls: req.max_tool_calls,
@@ -5723,6 +5743,20 @@ impl Gateway {
             tool_timeout_secs: 120,
         };
 
+        {
+            let mut configs = self.agents_config.write().await;
+            if configs.iter().any(|c| c.id == req.id) {
+                return Ok(Self::json_error(
+                    &format!("Agent '{}' already exists in config", req.id),
+                    StatusCode::CONFLICT,
+                ));
+            }
+
+            let has_primary = configs.iter().any(|cfg| cfg.primary);
+            config.primary = req.primary.unwrap_or(!has_primary);
+            configs.push(config.clone());
+        }
+
         // Create agent directory with SOUL.md and SYSTEM-PROMPT.md
         let agent_dir = self.agent_directory(&config.id);
         if let Err(e) = self
@@ -5738,9 +5772,6 @@ impl Gateway {
         if self.store.is_none() {
             self.persist_agent_to_config(&config).await;
         }
-
-        // Add to our in-memory config list
-        self.agents_config.write().await.push(config.clone());
 
         // Try to create the agent via factory
         let status = if let Some(ref factory) = self.agent_factory {
@@ -6184,6 +6215,35 @@ impl Gateway {
         let (stream_tx, mut stream_rx) =
             tokio::sync::mpsc::channel::<rockbot_llm::StreamingChunk>(128);
 
+        // Spawn the agent processing task
+        let processing_sse_tx = sse_tx.clone();
+        let processing_handle = tokio::spawn(async move {
+            let result = agent
+                .process_message_streaming(session_id, message, workspace, stream_tx)
+                .await;
+
+            // Send final event with the complete AgentResponse
+            match result {
+                Ok(response) => {
+                    if let Ok(json) = serde_json::to_string(&response) {
+                        let event = format!("event: done\ndata: {json}\n\n");
+                        let _ = processing_sse_tx
+                            .send(Ok(Frame::data(hyper::body::Bytes::from(event))))
+                            .await;
+                    }
+                }
+                Err(e) => {
+                    let error_json = serde_json::json!({"error": e.to_string()});
+                    let event = format!("event: error\ndata: {error_json}\n\n");
+                    let _ = processing_sse_tx
+                        .send(Ok(Frame::data(hyper::body::Bytes::from(event))))
+                        .await;
+                }
+            }
+            // Channel drops, stream ends
+        });
+        let processing_abort = processing_handle.abort_handle();
+
         // Spawn task to forward StreamingChunks as SSE data events
         let sse_tx_clone = sse_tx.clone();
         tokio::spawn(async move {
@@ -6195,36 +6255,10 @@ impl Gateway {
                 let sse_event = format!("data: {json}\n\n");
                 let frame = Frame::data(hyper::body::Bytes::from(sse_event));
                 if sse_tx_clone.send(Ok(frame)).await.is_err() {
-                    break; // Client disconnected
+                    processing_abort.abort();
+                    break;
                 }
             }
-        });
-
-        // Spawn the agent processing task
-        tokio::spawn(async move {
-            let result = agent
-                .process_message_streaming(session_id, message, workspace, stream_tx)
-                .await;
-
-            // Send final event with the complete AgentResponse
-            match result {
-                Ok(response) => {
-                    if let Ok(json) = serde_json::to_string(&response) {
-                        let event = format!("event: done\ndata: {json}\n\n");
-                        let _ = sse_tx
-                            .send(Ok(Frame::data(hyper::body::Bytes::from(event))))
-                            .await;
-                    }
-                }
-                Err(e) => {
-                    let error_json = serde_json::json!({"error": e.to_string()});
-                    let event = format!("event: error\ndata: {error_json}\n\n");
-                    let _ = sse_tx
-                        .send(Ok(Frame::data(hyper::body::Bytes::from(event))))
-                        .await;
-                }
-            }
-            // Channel drops, stream ends
         });
 
         // Return SSE streaming response

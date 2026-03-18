@@ -399,6 +399,7 @@ pub enum AgentProgressEvent {
     #[serde(rename = "tool_done")]
     ToolDone {
         tool_name: String,
+        result_preview: Option<String>,
         success: bool,
         duration_ms: u64,
         locality: ToolExecutionLocality,
@@ -1228,6 +1229,27 @@ impl Agent {
                     .first()
                     .map(|choice| choice.message.content.clone())
                     .unwrap_or_default();
+                if !accumulated_text.is_empty() {
+                    let chunk = StreamingChunk {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        object: "chat.completion.chunk".to_string(),
+                        created: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or_default(),
+                        model: model.clone(),
+                        choices: vec![rockbot_llm::StreamingChoice {
+                            index: 0,
+                            delta: rockbot_llm::StreamingDelta {
+                                role: Some(rockbot_llm::MessageRole::Assistant),
+                                content: Some(accumulated_text.clone()),
+                                tool_calls: None,
+                            },
+                            finish_reason: Some("stop".to_string()),
+                        }],
+                    };
+                    let _ = stream_tx.send(chunk).await;
+                }
                 return Ok((response, accumulated_text));
             }
         };
@@ -2869,13 +2891,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                         if let Some(ref tx) = progress_tx {
                             let _ = tx.send(AgentProgressEvent::ToolStart {
                                 tool_name: tc.function.name.clone(),
-                                locality: if context.remote_workspace_override.is_some() {
-                                    ToolExecutionLocality::ActiveClient
-                                } else if let Some(ref target) = context.remote_executor_target {
-                                    ToolExecutionLocality::RemoteClient(target.clone())
-                                } else {
-                                    ToolExecutionLocality::Gateway
-                                },
+                                locality: Self::tool_locality_for_context(context),
                             });
                         }
                     }
@@ -2893,7 +2909,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                 )
                 .await?;
 
-            // Notify progress listener of completed tool calls with output
+            // Notify progress listener of completed local-tool outputs.
             if let Some(ref tx) = progress_tx {
                 for (tr, tm) in tool_results.iter().zip(tool_messages.iter()) {
                     let output = tm.extract_text().unwrap_or_default();
@@ -2902,13 +2918,14 @@ The user wants me to explore the codebase. I should start by listing the directo
                         output,
                         success: tr.success,
                         duration_ms: tr.execution_time_ms,
-                        locality: if context.remote_workspace_override.is_some() {
-                            ToolExecutionLocality::ActiveClient
-                        } else if let Some(ref target) = context.remote_executor_target {
-                            ToolExecutionLocality::RemoteClient(target.clone())
-                        } else {
-                            ToolExecutionLocality::Gateway
-                        },
+                        locality: Self::tool_locality_for_context(context),
+                    });
+                    let _ = tx.send(AgentProgressEvent::ToolDone {
+                        tool_name: tr.tool_name.clone(),
+                        result_preview: Self::tool_result_preview(&tr.result),
+                        success: tr.success,
+                        duration_ms: tr.execution_time_ms,
+                        locality: Self::tool_locality_for_context(context),
                     });
                 }
             }
@@ -3540,6 +3557,8 @@ The user wants me to explore the codebase. I should start by listing the directo
             if let Some(ref tool_calls) = choice.message.tool_calls {
                 for tool_call in tool_calls {
                     debug!("Executing tool: {}", tool_call.function.name);
+                    let tool_start = std::time::Instant::now();
+                    let tool_timeout = Duration::from_secs(self.config.tool_timeout_secs);
 
                     // Fire PreToolCall hook
                     let pre_tool_event = HookEvent::PreToolCall {
@@ -3562,6 +3581,15 @@ The user wants me to explore the codebase. I should start by listing the directo
                             format!("Tool call aborted by hook: {reason}"),
                         )
                         .with_session_id(session_id);
+                        if let Some(progress) = progress_tx {
+                            let _ = progress.send(AgentProgressEvent::ToolDone {
+                                tool_name: tool_call.function.name.clone(),
+                                result_preview: Some(format!("Tool call aborted by hook: {reason}")),
+                                success: false,
+                                duration_ms: tool_start.elapsed().as_millis() as u64,
+                                locality: Self::tool_locality_for_context(_context),
+                            });
+                        }
                         tool_messages.push(error_message);
                         continue;
                     }
@@ -3588,6 +3616,18 @@ The user wants me to explore the codebase. I should start by listing the directo
                                 tool_call.function.name
                             ),
                         ).with_session_id(session_id);
+                        if let Some(progress) = progress_tx {
+                            let _ = progress.send(AgentProgressEvent::ToolDone {
+                                tool_name: tool_call.function.name.clone(),
+                                result_preview: Some(format!(
+                                    "Tool '{}' requires approval before execution",
+                                    tool_call.function.name
+                                )),
+                                success: false,
+                                duration_ms: tool_start.elapsed().as_millis() as u64,
+                                locality: Self::tool_locality_for_context(_context),
+                            });
+                        }
                         tool_messages.push(error_message);
                         continue;
                     }
@@ -3608,9 +3648,6 @@ The user wants me to explore the codebase. I should start by listing the directo
                         blackboard: self.blackboard.clone(),
                         swarm_id: self.swarm_id.clone(),
                     };
-
-                    let tool_start = std::time::Instant::now();
-                    let tool_timeout = Duration::from_secs(self.config.tool_timeout_secs);
 
                     #[cfg(feature = "remote-exec")]
                     let remote_workspace = _context
@@ -3826,6 +3863,18 @@ The user wants me to explore the codebase. I should start by listing the directo
                                 tool_call.function.name.clone(),
                                 format!("Tool execution timed out after {}s. The operation was cancelled.", self.config.tool_timeout_secs),
                             ).with_session_id(session_id);
+                            if let Some(progress) = progress_tx {
+                                let _ = progress.send(AgentProgressEvent::ToolDone {
+                                    tool_name: tool_call.function.name.clone(),
+                                    result_preview: Some(format!(
+                                        "Tool execution timed out after {}s",
+                                        self.config.tool_timeout_secs
+                                    )),
+                                    success: false,
+                                    duration_ms: tool_start.elapsed().as_millis() as u64,
+                                    locality: Self::tool_locality_for_context(_context),
+                                });
+                            }
                             tool_messages.push(error_message);
 
                             crate::metrics::record_tool_call(
@@ -3958,6 +4007,15 @@ The user wants me to explore the codebase. I should start by listing the directo
                                 format!("Tool execution failed: {e}"),
                             )
                             .with_session_id(session_id);
+                            if let Some(progress) = progress_tx {
+                                let _ = progress.send(AgentProgressEvent::ToolDone {
+                                    tool_name: tool_call.function.name.clone(),
+                                    result_preview: Some(format!("Tool execution failed: {e}")),
+                                    success: false,
+                                    duration_ms: tool_start.elapsed().as_millis() as u64,
+                                    locality: Self::tool_locality_for_context(_context),
+                                });
+                            }
 
                             tool_messages.push(error_message);
                         }
@@ -4022,6 +4080,34 @@ The user wants me to explore the codebase. I should start by listing the directo
             "[Internal reasoning completed]".to_string()
         } else {
             trimmed
+        }
+    }
+
+    fn tool_locality_for_context(context: &ProcessingContext) -> ToolExecutionLocality {
+        if context.remote_workspace_override.is_some() {
+            ToolExecutionLocality::ActiveClient
+        } else if let Some(ref target) = context.remote_executor_target {
+            ToolExecutionLocality::RemoteClient(target.clone())
+        } else {
+            ToolExecutionLocality::Gateway
+        }
+    }
+
+    fn tool_result_preview(result: &ToolResult) -> Option<String> {
+        const MAX_PREVIEW_CHARS: usize = 500;
+        match result {
+            ToolResult::Text { content } => Some(Self::truncate_content(content, MAX_PREVIEW_CHARS)),
+            ToolResult::Error { message, .. } => {
+                Some(Self::truncate_content(&format!("Error: {message}"), MAX_PREVIEW_CHARS))
+            }
+            ToolResult::Json { data } => {
+                let text = serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string());
+                Some(Self::truncate_content(&text, MAX_PREVIEW_CHARS))
+            }
+            ToolResult::File { path, .. } => Some(format!("[File: {path}]")),
+            ToolResult::Handoff { target_agent_id, .. } => {
+                Some(format!("[Handoff to {target_agent_id}]"))
+            }
         }
     }
 

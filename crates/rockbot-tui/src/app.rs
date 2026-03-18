@@ -633,13 +633,16 @@ impl App {
         if let Message::AgentsLoaded(ref agents) = msg {
             let current_target_is_butler = matches!(self.state.chat_target, ChatTarget::Butler);
             let agents_empty = agents.is_empty();
+            let selected_in_bounds = self.state.selected_agent < agents.len();
             self.state.update(msg);
             if let Some(idx) = self.preferred_agent_index() {
-                self.state.selected_agent = idx;
-                if matches!(self.state.menu_item, MenuItem::Dashboard | MenuItem::Agents)
-                    || current_target_is_butler
-                {
-                    self.sync_chat_target();
+                if current_target_is_butler || !selected_in_bounds {
+                    self.state.selected_agent = idx;
+                    if matches!(self.state.menu_item, MenuItem::Dashboard | MenuItem::Agents)
+                        || current_target_is_butler
+                    {
+                        self.sync_chat_target();
+                    }
                 }
             } else if agents_empty {
                 self.state.chat_target = ChatTarget::Butler;
@@ -6480,12 +6483,15 @@ async fn handle_gateway_event(
             let _ = tx.send(Message::ToolExecutionObserved {
                 locality: locality.clone(),
             });
-            if !result.is_empty() && !session_key.is_empty() && !*success {
+            if !result.is_empty() && !session_key.is_empty() {
                 let prefix = locality
                     .as_ref()
                     .map(|value| format!("\n[{tool_name} | executed on: {value}]\n"))
                     .unwrap_or_else(|| format!("\n[{tool_name}]\n"));
-                let _ = tx.send(Message::ChatStreamChunk(format!("{session_key}:{}{result}", prefix)));
+                let _ = tx.send(Message::ChatStreamChunk(format!(
+                    "{session_key}:{}{result}",
+                    prefix
+                )));
             }
         }
         GatewayEvent::AgentResponse {

@@ -74,6 +74,7 @@ ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
 tachyonfx = { version = "0.10", features = ["std-duration"] }
 futures = "0.3"
+nucleo-matcher = "0.3"
 
 # WebSocket
 tokio-tungstenite = { workspace = true }

@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Tabs},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Tabs, Wrap},
     Frame,
 };
 
@@ -166,7 +166,8 @@ pub fn render_models_overlay(
     full: Rect,
     state: &AppState,
     provider_index: usize,
-    _scroll: usize,
+    query: &str,
+    selected_model: usize,
     _effect_state: &EffectState,
 ) {
     let area = centered_rect(80, 85, full);
@@ -191,45 +192,256 @@ pub fn render_models_overlay(
         return;
     }
 
-    // Dynamic tab bar from actual providers
     let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Fill(1)])
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(26), Constraint::Fill(1)])
         .split(inner);
 
-    let titles: Vec<Line<'_>> = state
+    let provider_rows: Vec<Line<'_>> = state
         .providers
         .iter()
         .enumerate()
-        .map(|(i, p)| {
-            if i == provider_index {
-                Line::from(Span::styled(
-                    &p.name,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ))
+        .map(|(i, provider)| {
+            let model_count = provider.models.len();
+            let profiles = provider
+                .models
+                .iter()
+                .filter(|model| {
+                    model
+                        .kind
+                        .as_deref()
+                        .is_some_and(|kind| kind.starts_with("inference_profile"))
+                })
+                .count();
+            let label = format!(
+                "{}  {}  ({model_count} items, {profiles} profiles)",
+                if i == provider_index { "▶" } else { " " },
+                provider.name
+            );
+            let style = if i == provider_index {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Line::from(Span::styled(&p.name, Style::default().fg(Color::DarkGray)))
-            }
+                Style::default().fg(Color::DarkGray)
+            };
+            Line::from(Span::styled(label, style))
         })
         .collect();
 
-    let tabs = Tabs::new(titles)
-        .select(provider_index)
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(
+    let provider_block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(
+            " Providers ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    frame.render_widget(Paragraph::new(provider_rows).block(provider_block), chunks[0]);
+
+    let rhs = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(8), Constraint::Fill(1)])
+        .split(chunks[1]);
+
+    let search = Paragraph::new(vec![
+        Line::from(Span::styled(
+            format!("Search: {}", if query.is_empty() { "(type to filter)" } else { query }),
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "Left/Right provider  Up/Down result  Enter browse  e configure  Ctrl+U clear",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    frame.render_widget(search, rhs[0]);
+
+    let idx = provider_index.min(state.providers.len().saturating_sub(1));
+    render_provider_detail_at(frame, rhs[1], state, idx);
+
+    let provider = &state.providers[idx];
+    let filtered: Vec<usize> = crate::search::fuzzy_indices(
+        query,
+        provider.models.iter().enumerate().map(|(index, model)| {
+            (
+                index,
+                format!(
+                    "{} {} {} {}",
+                    model.name,
+                    model.id,
+                    model.description,
+                    model.kind.clone().unwrap_or_default()
+                ),
+            )
+        }),
+    );
+    let selected = selected_model.min(filtered.len().saturating_sub(1));
+    let rows: Vec<Line<'_>> = if filtered.is_empty() {
+        vec![Line::from(Span::styled(
+            "No models or inference profiles match this search",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        filtered
+            .iter()
+            .enumerate()
+            .map(|(row, model_index)| {
+                let model = &provider.models[*model_index];
+                let prefix = if row == selected { "▶" } else { " " };
+                let kind = match model.kind.as_deref() {
+                    Some("foundation_model") => "model",
+                    Some(kind) if kind.starts_with("inference_profile") => "profile",
+                    Some(other) => other,
+                    None => "model",
+                };
+                let tokens = model
+                    .max_output_tokens
+                    .map_or_else(|| format!("{}k ctx", model.context_window / 1000), |tokens| {
+                        format!("{}k ctx / {}k out", model.context_window / 1000, tokens / 1000)
+                    });
+                let style = if row == selected {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(vec![
+                    Span::styled(format!("{prefix} "), style),
+                    Span::styled(format!("[{kind}] "), Style::default().fg(Color::DarkGray)),
+                    Span::styled(&model.name, style),
+                    Span::styled(format!("  {tokens}"), Style::default().fg(Color::DarkGray)),
+                ])
+            })
+            .collect()
+    };
+
+    let models_block = Block::default().title(Span::styled(
+        format!(" Results ({}) ", filtered.len()),
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(
+        Paragraph::new(rows)
+            .block(models_block)
+            .wrap(Wrap { trim: false }),
+        rhs[2],
+    );
+}
+
+pub fn render_agent_launcher_overlay(
+    frame: &mut Frame,
+    full: Rect,
+    state: &AppState,
+    launcher: &crate::state::AgentLauncherState,
+    _effect_state: &EffectState,
+) {
+    let area = centered_rect(60, 60, full);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            " Agents ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-        )
-        .divider("│");
-    frame.render_widget(tabs, chunks[0]);
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    // Render selected provider details — temporarily set selected_provider
-    // We can't mutate state, so we render manually with the provider at index
-    let idx = provider_index.min(state.providers.len().saturating_sub(1));
-    render_provider_detail_at(frame, chunks[1], state, idx);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Fill(1)])
+        .split(inner);
+
+    let query = Paragraph::new(vec![
+        Line::from(Span::styled(
+            format!(
+                "Search: {}",
+                if launcher.query.is_empty() {
+                    "(type an agent id or model)"
+                } else {
+                    launcher.query.as_str()
+                }
+            ),
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "Enter selects  Ctrl+U clears  Esc closes",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]);
+    frame.render_widget(query, chunks[0]);
+
+    let mut items: Vec<Line<'_>> = crate::search::fuzzy_indices(
+        &launcher.query,
+        state
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| agent.enabled)
+            .map(|(idx, agent)| {
+                (
+                    idx,
+                    format!(
+                        "{} {} {}",
+                        agent.id,
+                        agent.model.as_deref().unwrap_or("unconfigured"),
+                        agent.workspace.as_deref().unwrap_or("")
+                    ),
+                )
+            }),
+    )
+    .into_iter()
+    .enumerate()
+    .filter_map(|(row, index)| {
+        let agent = state.agents.get(index)?;
+        let style = if row == launcher.selected {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        Some(Line::from(vec![
+            Span::styled(
+                if row == launcher.selected { "▶ " } else { "  " },
+                style,
+            ),
+            Span::styled(agent.id.clone(), style),
+            Span::styled(
+                format!(
+                    "  [{}]",
+                    agent.model.as_deref().unwrap_or("unconfigured")
+                ),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+    })
+    .collect();
+
+    let create_selected = launcher.selected == items.len();
+    items.push(Line::from(vec![
+        Span::styled(
+            if create_selected { "▶ " } else { "  " },
+            if create_selected {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled(
+            "+ Create new agent",
+            if create_selected {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::White)
+            },
+        ),
+    ]));
+
+    frame.render_widget(Paragraph::new(items), chunks[1]);
 }
 
 /// Render provider details for a specific index (used by models overlay).
@@ -291,12 +503,42 @@ fn render_provider_detail_at(frame: &mut Frame, area: Rect, state: &AppState, id
         ]));
     }
 
+    let foundation_models = provider
+        .models
+        .iter()
+        .filter(|model| model.kind.as_deref() == Some("foundation_model"))
+        .count();
+    let inference_profiles = provider
+        .models
+        .iter()
+        .filter(|model| {
+            model
+                .kind
+                .as_deref()
+                .is_some_and(|kind| kind.starts_with("inference_profile"))
+        })
+        .count();
+
+    content.push(Line::from(""));
+    content.push(Line::from(vec![
+        Span::styled("Inventory: ", Style::default().fg(Color::Cyan)),
+        Span::styled(
+            format!(
+                "{} total / {} models / {} profiles",
+                provider.models.len(),
+                foundation_models,
+                inference_profiles
+            ),
+            Style::default().fg(Color::White),
+        ),
+    ]));
+
     // Models summary
     if !provider.models.is_empty() {
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(
             format!(
-                "{} models available — Enter to browse",
+                "{} targets available — type to search, Enter to browse all",
                 provider.models.len()
             ),
             Style::default().fg(Color::DarkGray),

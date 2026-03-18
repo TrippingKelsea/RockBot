@@ -45,6 +45,7 @@ Switching between modes changes **what you're chatting with**, not the content a
 | `Alt+V` | Vault / Credentials |
 | `Alt+S` | Settings |
 | `Alt+M` | Models / LLM Providers |
+| `Alt+A` | Agent Launcher |
 | `Alt+C` | Cron Jobs |
 
 ### Modes
@@ -133,13 +134,29 @@ custom token editing and persisted font preferences available in config:
 
 ### Models (Alt+M)
 
-LLM provider configuration. Dynamic tab bar built from actual gateway providers (not hardcoded).
+LLM provider inventory. The overlay now shows a provider list on the left and a
+searchable model/profile inventory on the right.
 
 | Key | Action |
 |-----|--------|
 | `Left/Right` | Select provider |
-| `Enter` | View model list |
+| `Up/Down` | Select filtered model/profile result |
+| `Type` | Fuzzy search models and inference profiles |
+| `Ctrl+U` | Clear search |
+| `Enter` | View full model list |
 | `e` | Configure provider |
+| `Esc` | Close overlay |
+
+### Agent Launcher (Alt+A)
+
+Quick agent switcher and creation launcher.
+
+| Key | Action |
+|-----|--------|
+| `Type` | Fuzzy search configured agents |
+| `Up/Down` | Move selection |
+| `Enter` | Jump to selected agent or create a new one |
+| `Ctrl+U` | Clear search |
 | `Esc` | Close overlay |
 
 ### Cron Jobs (Alt+C)
@@ -163,6 +180,7 @@ Agents are shown as cards in the top bar. Selecting an agent changes the chat ta
 | Key | Action |
 |-----|--------|
 | `Alt+Left/Right` | Select agent (card bar) |
+| `Alt+A` | Open fuzzy agent launcher |
 | `c` | Chat with selected agent |
 | `a` | Add new agent |
 | `e` | Edit selected agent |

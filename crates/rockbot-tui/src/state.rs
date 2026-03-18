@@ -1125,6 +1125,21 @@ pub struct ModelProviderModel {
     pub max_output_tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLauncherState {
+    pub query: String,
+    pub selected: usize,
+}
+
+impl AgentLauncherState {
+    pub fn new() -> Self {
+        Self {
+            query: String::new(),
+            selected: 0,
+        }
+    }
+}
+
 /// Centralized application state
 pub struct AppState {
     // Navigation
@@ -1319,8 +1334,10 @@ pub enum InputMode {
     /// Models overlay (Alt+M)
     ModelsOverlay {
         provider_index: usize,
-        scroll: usize,
+        query: String,
+        selected_model: usize,
     },
+    AgentLauncher(AgentLauncherState),
     /// Cron jobs overlay (Alt+C)
     CronOverlay { scroll: usize },
 }
@@ -1857,6 +1874,8 @@ pub struct EditAgentState {
     pub available_models: Vec<ModelOption>,
     /// Currently selected model index in the picker (-1 or None = custom text)
     pub selected_model_index: Option<usize>,
+    /// Inline fuzzy search query for the model picker.
+    pub model_query: String,
 }
 
 impl Default for EditAgentState {
@@ -1893,6 +1912,7 @@ impl EditAgentState {
             enabled: true,
             available_models: Vec::new(),
             selected_model_index: None,
+            model_query: String::new(),
         }
     }
 
@@ -1917,12 +1937,14 @@ impl EditAgentState {
             enabled: agent.enabled,
             available_models: Vec::new(),
             selected_model_index: None,
+            model_query: String::new(),
         }
     }
 
     /// Populate the model picker from available providers
     pub fn populate_models(&mut self, providers: &[ModelProvider]) {
         self.available_models.clear();
+        self.selected_model_index = None;
         for provider in providers {
             if !provider.available {
                 continue;
@@ -1940,38 +1962,86 @@ impl EditAgentState {
                 }
             }
         }
+        self.sync_model_selection();
+    }
+
+    pub fn filtered_model_indices(&self) -> Vec<usize> {
+        crate::search::fuzzy_indices(
+            &self.model_query,
+            self.available_models.iter().enumerate().map(|(idx, model)| {
+                (
+                    idx,
+                    format!("{} {} {}", model.label, model.value, model.provider),
+                )
+            }),
+        )
+    }
+
+    fn sync_model_selection(&mut self) {
+        let filtered = self.filtered_model_indices();
+        if filtered.is_empty() {
+            self.selected_model_index = None;
+            if !self.model_query.trim().is_empty() {
+                self.model = self.model_query.clone();
+            }
+            return;
+        }
+
+        let selected = match self.selected_model_index {
+            Some(current) if filtered.contains(&current) => current,
+            _ => filtered[0],
+        };
+        self.selected_model_index = Some(selected);
+        self.model = self.available_models[selected].value.clone();
+    }
+
+    pub fn push_model_query(&mut self, c: char) {
+        self.model_query.push(c);
+        self.sync_model_selection();
+    }
+
+    pub fn pop_model_query(&mut self) {
+        self.model_query.pop();
+        self.sync_model_selection();
+    }
+
+    pub fn clear_model_query(&mut self) {
+        self.model_query.clear();
+        self.sync_model_selection();
     }
 
     /// Cycle to next model in the picker
     pub fn next_model(&mut self) {
-        if self.available_models.is_empty() {
+        let filtered = self.filtered_model_indices();
+        if filtered.is_empty() {
             return;
         }
-        let next = match self.selected_model_index {
-            Some(i) if i + 1 < self.available_models.len() => Some(i + 1),
-            Some(_) => None, // wrap to "custom" (no selection)
-            None => Some(0),
+        let next = match self
+            .selected_model_index
+            .and_then(|idx| filtered.iter().position(|candidate| *candidate == idx))
+        {
+            Some(i) if i + 1 < filtered.len() => filtered[i + 1],
+            _ => filtered[0],
         };
-        self.selected_model_index = next;
-        if let Some(idx) = next {
-            self.model = self.available_models[idx].value.clone();
-        }
+        self.selected_model_index = Some(next);
+        self.model = self.available_models[next].value.clone();
     }
 
     /// Cycle to previous model in the picker
     pub fn prev_model(&mut self) {
-        if self.available_models.is_empty() {
+        let filtered = self.filtered_model_indices();
+        if filtered.is_empty() {
             return;
         }
-        let prev = match self.selected_model_index {
-            Some(0) => None, // wrap to "custom"
-            Some(i) => Some(i - 1),
-            None => Some(self.available_models.len() - 1),
+        let prev = match self
+            .selected_model_index
+            .and_then(|idx| filtered.iter().position(|candidate| *candidate == idx))
+        {
+            Some(0) | None => *filtered.last().unwrap_or(&filtered[0]),
+            Some(i) => filtered[i - 1],
         };
-        self.selected_model_index = prev;
-        if let Some(idx) = prev {
-            self.model = self.available_models[idx].value.clone();
-        }
+        self.selected_model_index = Some(prev);
+        self.model = self.available_models[prev].value.clone();
     }
 
     pub fn total_fields(&self) -> usize {
@@ -2344,9 +2414,11 @@ pub struct CreateSessionState {
     /// Selected model for ad-hoc mode
     pub available_models: Vec<ModelOption>,
     pub selected_model_index: usize,
+    pub model_query: String,
     /// Selected agent for agent-bound mode
     pub available_agents: Vec<(String, String)>, // (id, display_name)
     pub selected_agent_index: usize,
+    pub agent_query: String,
 }
 
 impl CreateSessionState {
@@ -2383,8 +2455,10 @@ impl CreateSessionState {
             field_index: 1, // Start on the model/agent picker for quick selection
             available_models,
             selected_model_index: 0,
+            model_query: String::new(),
             available_agents,
             selected_agent_index: 0,
+            agent_query: String::new(),
         }
     }
 
@@ -2398,13 +2472,27 @@ impl CreateSessionState {
 
     pub fn next_option(&mut self) {
         match (self.mode, self.field_index) {
-            (SessionMode::AdHoc, 1) if !self.available_models.is_empty() => {
-                self.selected_model_index =
-                    (self.selected_model_index + 1) % self.available_models.len();
+            (SessionMode::AdHoc, 1) => {
+                let filtered = self.filtered_model_indices();
+                if filtered.is_empty() {
+                    return;
+                }
+                let pos = filtered
+                    .iter()
+                    .position(|candidate| *candidate == self.selected_model_index)
+                    .unwrap_or(0);
+                self.selected_model_index = filtered[(pos + 1) % filtered.len()];
             }
-            (SessionMode::AgentBound, 1) if !self.available_agents.is_empty() => {
-                self.selected_agent_index =
-                    (self.selected_agent_index + 1) % self.available_agents.len();
+            (SessionMode::AgentBound, 1) => {
+                let filtered = self.filtered_agent_indices();
+                if filtered.is_empty() {
+                    return;
+                }
+                let pos = filtered
+                    .iter()
+                    .position(|candidate| *candidate == self.selected_agent_index)
+                    .unwrap_or(0);
+                self.selected_agent_index = filtered[(pos + 1) % filtered.len()];
             }
             _ => {}
         }
@@ -2412,31 +2500,132 @@ impl CreateSessionState {
 
     pub fn prev_option(&mut self) {
         match (self.mode, self.field_index) {
-            (SessionMode::AdHoc, 1) if !self.available_models.is_empty() => {
-                if self.selected_model_index == 0 {
-                    self.selected_model_index = self.available_models.len() - 1;
-                } else {
-                    self.selected_model_index -= 1;
+            (SessionMode::AdHoc, 1) => {
+                let filtered = self.filtered_model_indices();
+                if filtered.is_empty() {
+                    return;
                 }
+                let pos = filtered
+                    .iter()
+                    .position(|candidate| *candidate == self.selected_model_index)
+                    .unwrap_or(0);
+                self.selected_model_index = if pos == 0 {
+                    *filtered.last().unwrap_or(&filtered[0])
+                } else {
+                    filtered[pos - 1]
+                };
             }
-            (SessionMode::AgentBound, 1) if !self.available_agents.is_empty() => {
-                if self.selected_agent_index == 0 {
-                    self.selected_agent_index = self.available_agents.len() - 1;
-                } else {
-                    self.selected_agent_index -= 1;
+            (SessionMode::AgentBound, 1) => {
+                let filtered = self.filtered_agent_indices();
+                if filtered.is_empty() {
+                    return;
                 }
+                let pos = filtered
+                    .iter()
+                    .position(|candidate| *candidate == self.selected_agent_index)
+                    .unwrap_or(0);
+                self.selected_agent_index = if pos == 0 {
+                    *filtered.last().unwrap_or(&filtered[0])
+                } else {
+                    filtered[pos - 1]
+                };
             }
             _ => {}
         }
     }
 
+    pub fn filtered_model_indices(&self) -> Vec<usize> {
+        crate::search::fuzzy_indices(
+            &self.model_query,
+            self.available_models.iter().enumerate().map(|(idx, model)| {
+                (
+                    idx,
+                    format!("{} {} {}", model.label, model.value, model.provider),
+                )
+            }),
+        )
+    }
+
+    pub fn filtered_agent_indices(&self) -> Vec<usize> {
+        crate::search::fuzzy_indices(
+            &self.agent_query,
+            self.available_agents
+                .iter()
+                .enumerate()
+                .map(|(idx, (id, label))| (idx, format!("{label} {id}"))),
+        )
+    }
+
+    fn sync_model_query_selection(&mut self) {
+        let filtered = self.filtered_model_indices();
+        if let Some(first) = filtered.first() {
+            if !filtered.contains(&self.selected_model_index) {
+                self.selected_model_index = *first;
+            }
+        }
+    }
+
+    fn sync_agent_query_selection(&mut self) {
+        let filtered = self.filtered_agent_indices();
+        if let Some(first) = filtered.first() {
+            if !filtered.contains(&self.selected_agent_index) {
+                self.selected_agent_index = *first;
+            }
+        }
+    }
+
+    pub fn push_query_char(&mut self, c: char) {
+        match self.mode {
+            SessionMode::AdHoc => {
+                self.model_query.push(c);
+                self.sync_model_query_selection();
+            }
+            SessionMode::AgentBound => {
+                self.agent_query.push(c);
+                self.sync_agent_query_selection();
+            }
+        }
+    }
+
+    pub fn pop_query_char(&mut self) {
+        match self.mode {
+            SessionMode::AdHoc => {
+                self.model_query.pop();
+                self.sync_model_query_selection();
+            }
+            SessionMode::AgentBound => {
+                self.agent_query.pop();
+                self.sync_agent_query_selection();
+            }
+        }
+    }
+
+    pub fn clear_query(&mut self) {
+        match self.mode {
+            SessionMode::AdHoc => {
+                self.model_query.clear();
+                self.sync_model_query_selection();
+            }
+            SessionMode::AgentBound => {
+                self.agent_query.clear();
+                self.sync_agent_query_selection();
+            }
+        }
+    }
+
     pub fn selected_model(&self) -> Option<&str> {
+        if self.filtered_model_indices().is_empty() {
+            return None;
+        }
         self.available_models
             .get(self.selected_model_index)
             .map(|m| m.value.as_str())
     }
 
     pub fn selected_agent_id(&self) -> Option<&str> {
+        if self.filtered_agent_indices().is_empty() {
+            return None;
+        }
         self.available_agents
             .get(self.selected_agent_index)
             .map(|(id, _)| id.as_str())

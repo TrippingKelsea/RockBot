@@ -27,6 +27,7 @@ pub mod doctor_tui;
 pub mod effects;
 pub mod event;
 pub mod keybindings;
+pub mod search;
 pub mod state;
 pub mod ui;
 

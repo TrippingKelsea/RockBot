@@ -25,11 +25,18 @@ use crate::components::{
 };
 use crate::effects::EffectState;
 use crate::state::{
-    AddCredentialState, AppState, ChatMessage, ChatTarget, ConfirmAction, ContextFileInfo,
-    ContextMenuAction, ContextMenuState, CreateSessionState, EditAgentState, EditCredentialState,
-    EditProviderState, EndpointInfo, FontRole, InputMode, MenuItem, Message, PasswordAction,
-    SessionMode, ThemeToken, ToolCallInfo, UnlockMethod, ViewContextFilesState,
+    AddCredentialState, AgentLauncherState, AppState, ChatMessage, ChatTarget, ConfirmAction,
+    ContextFileInfo, ContextMenuAction, ContextMenuState, CreateSessionState, EditAgentState,
+    EditCredentialState, EditProviderState, EndpointInfo, FontRole, InputMode, MenuItem,
+    Message, PasswordAction, SessionMode, ThemeToken, ToolCallInfo, UnlockMethod,
+    ViewContextFilesState,
 };
+
+#[derive(Debug, Clone)]
+enum AgentLauncherSelection {
+    Agent(String),
+    CreateNew,
+}
 
 /// Check if Claude Code OAuth credentials are available
 pub fn has_claude_credentials() -> bool {
@@ -772,11 +779,17 @@ impl App {
             InputMode::SettingsOverlay => self.handle_settings_overlay(key),
             InputMode::ModelsOverlay {
                 provider_index,
-                scroll,
+                query,
+                selected_model,
             } => {
                 let pi = *provider_index;
-                let s = *scroll;
-                self.handle_models_overlay(key, pi, s)
+                let query = query.clone();
+                let selected_model = *selected_model;
+                self.handle_models_overlay(key, pi, query, selected_model)
+            }
+            InputMode::AgentLauncher(state) => {
+                let state = state.clone();
+                self.handle_agent_launcher(key, state)
             }
             InputMode::CronOverlay { scroll } => {
                 let s = *scroll;
@@ -958,8 +971,12 @@ impl App {
                 }
                 7 => {
                     self.state.input_mode = InputMode::ModelsOverlay {
-                        provider_index: 0,
-                        scroll: 0,
+                        provider_index: self
+                            .state
+                            .selected_provider
+                            .min(self.state.providers.len().saturating_sub(1)),
+                        query: String::new(),
+                        selected_model: 0,
                     };
                 }
                 _ => {}
@@ -1075,9 +1092,16 @@ impl App {
             }
             OpenModels => {
                 self.state.input_mode = InputMode::ModelsOverlay {
-                    provider_index: 0,
-                    scroll: 0,
+                    provider_index: self
+                        .state
+                        .selected_provider
+                        .min(self.state.providers.len().saturating_sub(1)),
+                    query: String::new(),
+                    selected_model: 0,
                 };
+            }
+            OpenAgentLauncher => {
+                self.state.input_mode = InputMode::AgentLauncher(AgentLauncherState::new());
             }
             OpenCron => {
                 self.state.input_mode = InputMode::CronOverlay { scroll: 0 };
@@ -1564,8 +1588,10 @@ impl App {
         &mut self,
         key: KeyEvent,
         mut provider_index: usize,
-        mut scroll: usize,
+        mut query: String,
+        mut selected_model: usize,
     ) -> Result<()> {
+        let filtered = self.filtered_provider_model_indices(provider_index, &query);
         match key.code {
             KeyCode::Esc => {
                 self.state.input_mode = InputMode::Normal;
@@ -1573,20 +1599,36 @@ impl App {
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 provider_index = provider_index.saturating_sub(1);
+                selected_model = 0;
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 if !self.state.providers.is_empty() {
                     provider_index =
                         (provider_index + 1).min(self.state.providers.len().saturating_sub(1));
+                    selected_model = 0;
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                scroll = scroll.saturating_sub(1);
+                selected_model = selected_model.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                scroll = scroll.saturating_add(1);
+                if !filtered.is_empty() {
+                    selected_model = (selected_model + 1).min(filtered.len().saturating_sub(1));
+                }
             }
-            KeyCode::Enter if !self.state.providers.is_empty() => {
+            KeyCode::Backspace => {
+                query.pop();
+                selected_model = 0;
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                query.clear();
+                selected_model = 0;
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+                query.push(c);
+                selected_model = 0;
+            }
+            KeyCode::Enter if !self.state.providers.is_empty() && query.is_empty() => {
                 self.state.input_mode = InputMode::ViewModelList {
                     provider_index,
                     scroll: 0,
@@ -1602,9 +1644,136 @@ impl App {
         }
         self.state.input_mode = InputMode::ModelsOverlay {
             provider_index,
-            scroll,
+            query,
+            selected_model,
         };
         Ok(())
+    }
+
+    fn handle_agent_launcher(
+        &mut self,
+        key: KeyEvent,
+        mut state: AgentLauncherState,
+    ) -> Result<()> {
+        let item_count = self.agent_launcher_items().len();
+        match key.code {
+            KeyCode::Esc => {
+                self.state.input_mode = InputMode::Normal;
+                return Ok(());
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.selected = state.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if item_count > 0 {
+                    state.selected = (state.selected + 1).min(item_count.saturating_sub(1));
+                }
+            }
+            KeyCode::Backspace => {
+                state.query.pop();
+                state.selected = 0;
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.query.clear();
+                state.selected = 0;
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+                state.query.push(c);
+                state.selected = 0;
+            }
+            KeyCode::Enter => {
+                if let Some(selection) = self
+                    .agent_launcher_items()
+                    .get(state.selected)
+                    .cloned()
+                {
+                    match selection {
+                        AgentLauncherSelection::CreateNew => {
+                            let mut agent_state = EditAgentState::new();
+                            agent_state.populate_models(&self.state.providers);
+                            self.state.input_mode = InputMode::AddAgent(agent_state);
+                        }
+                        AgentLauncherSelection::Agent(agent_id) => {
+                            if let Some(index) =
+                                self.state.agents.iter().position(|agent| agent.id == agent_id)
+                            {
+                                self.state.menu_item = MenuItem::Agents;
+                                self.state.menu_index = MenuItem::Agents as usize;
+                                self.state.selected_agent = index;
+                                self.sync_slot_bar_from_selection();
+                                self.state.input_mode = InputMode::Normal;
+                                self.state.status_message =
+                                    Some((format!("Selected agent '{agent_id}'"), false));
+                            } else {
+                                self.state.input_mode = InputMode::Normal;
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        let item_count = self.agent_launcher_items_for_query(&state.query).len();
+        if item_count > 0 {
+            state.selected = state.selected.min(item_count - 1);
+        } else {
+            state.selected = 0;
+        }
+        self.state.input_mode = InputMode::AgentLauncher(state);
+        Ok(())
+    }
+
+    fn filtered_provider_model_indices(&self, provider_index: usize, query: &str) -> Vec<usize> {
+        let Some(provider) = self.state.providers.get(provider_index) else {
+            return Vec::new();
+        };
+        crate::search::fuzzy_indices(
+            query,
+            provider.models.iter().enumerate().map(|(idx, model)| {
+                (
+                    idx,
+                    format!(
+                        "{} {} {} {}",
+                        model.name,
+                        model.id,
+                        model.description,
+                        model.kind.clone().unwrap_or_default()
+                    ),
+                )
+            }),
+        )
+    }
+
+    fn agent_launcher_items(&self) -> Vec<AgentLauncherSelection> {
+        let query = match &self.state.input_mode {
+            InputMode::AgentLauncher(state) => state.query.as_str(),
+            _ => "",
+        };
+        self.agent_launcher_items_for_query(query)
+    }
+
+    fn agent_launcher_items_for_query(&self, query: &str) -> Vec<AgentLauncherSelection> {
+        let mut items = crate::search::fuzzy_indices(
+            query,
+            self.state.agents.iter().enumerate().filter(|(_, agent)| agent.enabled).map(
+                |(idx, agent)| {
+                    let model = agent.model.as_deref().unwrap_or("unconfigured");
+                    (
+                        idx,
+                        format!("{} {} {}", agent.id, model, agent.workspace.as_deref().unwrap_or("")),
+                    )
+                },
+            ),
+        )
+        .into_iter()
+        .filter_map(|idx| self.state.agents.get(idx))
+        .filter(|agent| agent.enabled)
+        .map(|agent| AgentLauncherSelection::Agent(agent.id.clone()))
+        .collect::<Vec<_>>();
+        items.push(AgentLauncherSelection::CreateNew);
+        items
     }
 
     fn handle_cron_overlay(&mut self, key: KeyEvent, mut scroll: usize) -> Result<()> {
@@ -3041,6 +3210,12 @@ impl App {
                 state.next_model();
                 self.state.input_mode = set_mode(state);
             }
+            KeyCode::Char('u')
+                if key.modifiers.contains(KeyModifiers::CONTROL) && state.is_model_picker_active() =>
+            {
+                state.clear_model_query();
+                self.state.input_mode = set_mode(state);
+            }
             // Ctrl+S saves the form from any field
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(error) = state.validate() {
@@ -3081,13 +3256,19 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(value) = state.current_value_mut() {
+                if state.is_model_picker_active()
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+                {
+                    state.push_model_query(c);
+                } else if let Some(value) = state.current_value_mut() {
                     value.push(c);
                 }
                 self.state.input_mode = set_mode(state);
             }
             KeyCode::Backspace => {
-                if let Some(value) = state.current_value_mut() {
+                if state.is_model_picker_active() {
+                    state.pop_model_query();
+                } else if let Some(value) = state.current_value_mut() {
                     value.pop();
                 }
                 self.state.input_mode = set_mode(state);
@@ -3133,6 +3314,12 @@ impl App {
                 }
                 self.state.input_mode = InputMode::CreateSession(state);
             }
+            KeyCode::Char('u')
+                if key.modifiers.contains(KeyModifiers::CONTROL) && state.field_index == 1 =>
+            {
+                state.clear_query();
+                self.state.input_mode = InputMode::CreateSession(state);
+            }
             KeyCode::Enter => {
                 // Submit — create session and open chat
                 match state.mode {
@@ -3171,6 +3358,17 @@ impl App {
                         }
                     }
                 }
+            }
+            KeyCode::Char(c)
+                if state.field_index == 1
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                state.push_query_char(c);
+                self.state.input_mode = InputMode::CreateSession(state);
+            }
+            KeyCode::Backspace if state.field_index == 1 => {
+                state.pop_query_char();
+                self.state.input_mode = InputMode::CreateSession(state);
             }
             _ => {}
         }
@@ -4600,14 +4798,25 @@ impl App {
             }
             InputMode::ModelsOverlay {
                 provider_index,
-                scroll,
+                query,
+                selected_model,
             } => {
                 super::components::overlays::render_models_overlay(
                     frame,
                     frame.area(),
                     &self.state,
                     *provider_index,
-                    *scroll,
+                    query,
+                    *selected_model,
+                    &self.effect_state,
+                );
+            }
+            InputMode::AgentLauncher(state) => {
+                super::components::overlays::render_agent_launcher_overlay(
+                    frame,
+                    frame.area(),
+                    &self.state,
+                    state,
                     &self.effect_state,
                 );
             }

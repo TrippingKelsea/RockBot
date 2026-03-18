@@ -50,6 +50,7 @@ pub enum TuiAction {
     OpenVault,         // Alt+V: vault/credentials overlay
     OpenSettings,      // Alt+S: settings overlay (note: not 's' which is StartGateway)
     OpenModels,        // Alt+M: models overlay
+    OpenAgentLauncher, // Alt+A: configured agents launcher
     OpenCron,          // Alt+C: cron jobs overlay
 }
 
@@ -346,6 +347,7 @@ impl Default for KeybindingConfig {
             KeyBinding::new(modified(Km::ALT, Char('v')), TuiAction::OpenVault),
             KeyBinding::new(modified(Km::ALT, Char('s')), TuiAction::OpenSettings),
             KeyBinding::new(modified(Km::ALT, Char('m')), TuiAction::OpenModels),
+            KeyBinding::new(modified(Km::ALT, Char('a')), TuiAction::OpenAgentLauncher),
             KeyBinding::new(modified(Km::ALT, Char('c')), TuiAction::OpenCron),
         ];
 
@@ -366,6 +368,7 @@ impl Default for KeybindingConfig {
             KeyBinding::new(modified(Km::ALT, Char('v')), TuiAction::OpenVault),
             KeyBinding::new(modified(Km::ALT, Char('s')), TuiAction::OpenSettings),
             KeyBinding::new(modified(Km::ALT, Char('m')), TuiAction::OpenModels),
+            KeyBinding::new(modified(Km::ALT, Char('a')), TuiAction::OpenAgentLauncher),
             KeyBinding::new(modified(Km::ALT, Char('c')), TuiAction::OpenCron),
         ];
 

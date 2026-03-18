@@ -773,6 +773,7 @@ pub fn render_edit_agent_modal(
         );
     } else {
         let is_active = state.field_index == 1;
+        let filtered = state.filtered_model_indices();
         let display = if let Some(idx) = state.selected_model_index {
             let model = &state.available_models[idx];
             format!("◀ {} ▶", model.label)
@@ -781,11 +782,22 @@ pub fn render_edit_agent_modal(
         } else {
             format!("◀ {} (custom) ▶", state.model)
         };
-        let hint = format!(
-            "{}/{} models available — ←→ to cycle",
-            state.selected_model_index.map_or(0, |i| i + 1),
-            state.available_models.len()
-        );
+        let hint = if state.model_query.is_empty() {
+            format!(
+                "{} of {} models — type to search, ←→ to cycle",
+                filtered
+                    .iter()
+                    .position(|candidate| Some(*candidate) == state.selected_model_index)
+                    .map_or(0, |i| i + 1),
+                filtered.len()
+            )
+        } else {
+            format!(
+                "search: '{}' — {} matches",
+                state.model_query,
+                filtered.len()
+            )
+        };
         let border_style = if is_active {
             Style::default().fg(Color::Cyan)
         } else {
@@ -804,6 +816,10 @@ pub fn render_edit_agent_modal(
             vec![
                 Line::from(Span::styled(&display, text_style)),
                 Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
+                Line::from(Span::styled(
+                    "Ctrl+U clears search",
+                    Style::default().fg(Color::DarkGray),
+                )),
             ]
         } else {
             vec![Line::from(Span::styled(&display, text_style))]
@@ -1014,7 +1030,8 @@ pub fn render_create_session_modal(frame: &mut Frame, area: Rect, state: &Create
                 .border_style(picker_border)
                 .title("Model");
 
-            let (display, hint) = if state.available_models.is_empty() {
+            let filtered = state.filtered_model_indices();
+            let (display, hint) = if filtered.is_empty() {
                 (
                     "(no models available)".to_string(),
                     "Start gateway and configure providers".to_string(),
@@ -1024,9 +1041,13 @@ pub fn render_create_session_modal(frame: &mut Frame, area: Rect, state: &Create
                 (
                     format!("◀ {} ▶", model.label),
                     format!(
-                        "{}/{} — ←→ to cycle",
-                        state.selected_model_index + 1,
-                        state.available_models.len()
+                        "{} of {} — query '{}' — ←→ to cycle",
+                        filtered
+                            .iter()
+                            .position(|candidate| *candidate == state.selected_model_index)
+                            .map_or(0, |i| i + 1),
+                        filtered.len(),
+                        state.model_query
                     ),
                 )
             };
@@ -1044,7 +1065,8 @@ pub fn render_create_session_modal(frame: &mut Frame, area: Rect, state: &Create
                 .border_style(picker_border)
                 .title("Agent");
 
-            let (display, hint) = if state.available_agents.is_empty() {
+            let filtered = state.filtered_agent_indices();
+            let (display, hint) = if filtered.is_empty() {
                 (
                     "(no agents available)".to_string(),
                     "Create an agent first".to_string(),
@@ -1054,9 +1076,13 @@ pub fn render_create_session_modal(frame: &mut Frame, area: Rect, state: &Create
                 (
                     format!("◀ {} ▶", name),
                     format!(
-                        "{}/{} — ←→ to cycle",
-                        state.selected_agent_index + 1,
-                        state.available_agents.len()
+                        "{} of {} — query '{}' — ←→ to cycle",
+                        filtered
+                            .iter()
+                            .position(|candidate| *candidate == state.selected_agent_index)
+                            .map_or(0, |i| i + 1),
+                        filtered.len(),
+                        state.agent_query
                     ),
                 )
             };
@@ -1072,7 +1098,7 @@ pub fn render_create_session_modal(frame: &mut Frame, area: Rect, state: &Create
 
     // Help
     let help_lines = vec![Line::from(Span::styled(
-        "←→:Cycle │ Tab/↑↓:Navigate │ Enter:Create │ Esc:Cancel",
+        "Type:Search │ ←→:Cycle │ Ctrl+U:Clear │ Tab/↑↓:Navigate │ Enter:Create │ Esc:Cancel",
         Style::default().fg(Color::DarkGray),
     ))];
     let help = Paragraph::new(help_lines);

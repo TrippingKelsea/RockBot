@@ -69,6 +69,12 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
   - Noise card shows registration state and connected executor count
   - Exec card shows current tool locality target and a detail overlay for switching
     between the active client, gateway-local execution, and another connected executor
+- **TUI**: Searchable provider/model inventory
+  - `Alt+M` now presents a reorganized provider browser with provider inventory,
+    inline fuzzy search, and Bedrock inference profiles separated from foundation models
+  - Agent/session model pickers now support inline fuzzy search with `nucleo-matcher`
+- **TUI**: `Alt+A` agent launcher for fuzzy switching between configured agents
+  and creating a new agent from anywhere in the client
 - **Docs**: Execution locality hardening proposal and feature evaluation tracker
   - `docs/architecture/execution-locality-proposal.md`
   - `docs/feature-evaluation.md`

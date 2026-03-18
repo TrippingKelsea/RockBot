@@ -12,6 +12,7 @@
 - [Crate Structure](architecture/crates.md) — Workspace layout, dependency graph, feature flags
 - [Execution Locality Proposal](architecture/execution-locality-proposal.md) — Hardening plan for remote execution grounding and provenance
 - [Code Review Round 2 Remediation Plan](architecture/code-review-round2-remediation-plan.md) — Prioritized execution plan for the current security, correctness, and quality findings
+- [Deep Code Review Remediation Plan](architecture/deep-code-review-remediation-plan.md) — Validated current-state triage of the latest full-codebase review and phased remediation order
 - [Encrypted Storage + PKI Refactor Proposal](architecture/encrypted-storage-pki-refactor-proposal.md) — High-level scope for encrypted-by-default redb, distributed vault authority, and role separation
 - [Encrypted Storage + PKI Architecture Plan](architecture/encrypted-storage-pki-architecture-plan.md) — Formal architecture plan for roles, key hierarchy, grants, replication, and rollout
 - [Virtual Disk Architecture Plan](architecture/virtual-disk-architecture-plan.md) — Formal plan for the `rockbot.data` virtual disk container, named volumes, encrypted local persistence, and model storage

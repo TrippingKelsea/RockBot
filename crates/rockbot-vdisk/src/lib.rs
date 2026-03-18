@@ -349,6 +349,19 @@ pub fn blob_volume_name(namespace: &str, key: &str) -> String {
     format!("blob.{namespace}.{key}")
 }
 
+pub fn has_volume(disk_path: &Path, volume_name: &str) -> Result<bool> {
+    if !disk_path.exists() {
+        return Ok(false);
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(disk_path)
+        .with_context(|| format!("failed to open virtual disk {}", disk_path.display()))?;
+    let manifest = VolumeBackend::load_or_initialize_manifest(&mut file)?;
+    Ok(manifest.volumes.contains_key(volume_name))
+}
+
 pub fn import_file(
     disk_path: &Path,
     volume_name: &str,
@@ -357,9 +370,18 @@ pub fn import_file(
 ) -> Result<()> {
     let bytes = std::fs::read(source_path)
         .with_context(|| format!("failed to read blob source {}", source_path.display()))?;
+    import_bytes(disk_path, volume_name, &bytes, key)
+}
+
+pub fn import_bytes(
+    disk_path: &Path,
+    volume_name: &str,
+    bytes: &[u8],
+    key: Option<[u8; 32]>,
+) -> Result<()> {
     let capacity = align_up(bytes.len() as u64 + ALIGNMENT, ALIGNMENT);
     let backend = VolumeBackend::open(disk_path, volume_name, capacity, key)?;
-    backend.write_all(&bytes)?;
+    backend.write_all(bytes)?;
     Ok(())
 }
 
@@ -406,7 +428,7 @@ fn sanitize_volume_component(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::VolumeBackend;
+    use super::{has_volume, import_bytes, VolumeBackend};
     use redb::Database;
     use tempfile::tempdir;
 
@@ -443,5 +465,44 @@ mod tests {
 
         let bytes = std::fs::read(&disk).unwrap();
         assert!(!bytes.windows(5).any(|window| window == b"alive"));
+    }
+
+    #[test]
+    fn imported_legacy_redb_file_opens_as_volume() {
+        let dir = tempdir().unwrap();
+        let source_disk = dir.path().join("source.data");
+        let target_disk = dir.path().join("rockbot.data");
+
+        let source_backend =
+            VolumeBackend::open(&source_disk, "legacy-src", 2 * 1024 * 1024, None).unwrap();
+        let db = Database::builder()
+            .create_with_backend(source_backend)
+            .unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut table = tx
+                .open_table(redb::TableDefinition::<&str, &[u8]>::new("legacy"))
+                .unwrap();
+            table.insert("hello", b"world".as_slice()).unwrap();
+        }
+        tx.commit().unwrap();
+        drop(db);
+
+        let bytes = VolumeBackend::open(&source_disk, "legacy-src", 2 * 1024 * 1024, None)
+            .unwrap()
+            .read_all()
+            .unwrap();
+        import_bytes(&target_disk, "vault", &bytes, None).unwrap();
+        assert!(has_volume(&target_disk, "vault").unwrap());
+
+        let backend =
+            VolumeBackend::open(&target_disk, "vault", 2 * 1024 * 1024, None).unwrap();
+        let db = Database::builder().create_with_backend(backend).unwrap();
+        let tx = db.begin_read().unwrap();
+        let table = tx
+            .open_table(redb::TableDefinition::<&str, &[u8]>::new("legacy"))
+            .unwrap();
+        let value = table.get("hello").unwrap().unwrap();
+        assert_eq!(value.value(), b"world");
     }
 }

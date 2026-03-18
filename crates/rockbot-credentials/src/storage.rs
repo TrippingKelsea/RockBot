@@ -278,6 +278,32 @@ impl CredentialVault {
             .unwrap_or_else(|| data_dir.join(rockbot_store::Store::DEFAULT_DATA_FILE))
     }
 
+    fn migrate_legacy_redb_volume(data_dir: &Path, disk_path: &Path, volume_name: &str) -> Result<()> {
+        let legacy_path = data_dir.join("vault.db");
+        if !legacy_path.exists() {
+            return Ok(());
+        }
+
+        if rockbot_vdisk::has_volume(disk_path, volume_name)
+            .map_err(|e| CredentialError::Internal(format!("Failed to inspect virtual disk: {e}")))?
+        {
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Migrating legacy {} into {} volume",
+            legacy_path.display(),
+            volume_name
+        );
+        rockbot_vdisk::import_file(disk_path, volume_name, &legacy_path, None).map_err(|e| {
+            CredentialError::Internal(format!(
+                "Failed to import legacy vault store {} into virtual disk: {e}",
+                legacy_path.display()
+            ))
+        })?;
+        Ok(())
+    }
+
     /// Opens an existing credential vault at the specified directory.
     /// Returns an error if the vault hasn't been initialized.
     ///
@@ -285,9 +311,12 @@ impl CredentialVault {
     /// they are automatically migrated into the redb database.
     pub fn open<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
+        let disk_path = Self::disk_path_for_dir(&data_dir);
+
+        Self::migrate_legacy_redb_volume(&data_dir, &disk_path, "vault")?;
 
         let store = Store::open_volume(
-            &Self::disk_path_for_dir(&data_dir),
+            &disk_path,
             "vault",
             256 * 1024 * 1024,
             None,

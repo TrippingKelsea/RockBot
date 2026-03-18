@@ -14,6 +14,7 @@ pub enum StoreKind {
     Agents,
     Sessions,
     Cron,
+    Routing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,48 @@ pub struct OpenedStore {
     pub store: Arc<Store>,
     pub descriptor: String,
     pub mode: StoreMode,
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacyFileState {
+    pub path: PathBuf,
+    pub exists: bool,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VolumeState {
+    pub name: String,
+    pub exists: bool,
+    pub len_bytes: Option<u64>,
+    pub capacity_bytes: Option<u64>,
+    pub header_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionSource {
+    Legacy,
+    VirtualDisk,
+    Recovery,
+    Missing,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorePlan {
+    pub kind: StoreKind,
+    pub label: &'static str,
+    pub legacy: LegacyFileState,
+    pub volume: VolumeState,
+    pub resolution: ResolutionSource,
+    pub descriptor: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoragePlanReport {
+    pub storage_root: PathBuf,
+    pub disk_path: PathBuf,
+    pub disk_exists: bool,
+    pub stores: Vec<StorePlan>,
 }
 
 #[derive(Clone)]
@@ -73,6 +116,154 @@ impl StorageRuntime {
 
     pub fn key_for_label(&self, label: &str) -> Result<Option<[u8; 32]>> {
         storage_key_for_label(&self.config, self.pki_manager(), label)
+    }
+
+    pub fn plan(&self) -> Result<StoragePlanReport> {
+        let vault_path = self.config.credentials.vault_path.clone();
+        Ok(StoragePlanReport {
+            storage_root: self.storage_root.clone(),
+            disk_path: self.disk_path.clone(),
+            disk_exists: self.disk_path.exists(),
+            stores: vec![
+                self.plan_store(StoreKind::Vault, &vault_path)?,
+                self.plan_store(StoreKind::Agents, &vault_path)?,
+                self.plan_store(StoreKind::Sessions, &vault_path)?,
+                self.plan_store(StoreKind::Cron, &vault_path)?,
+                self.plan_store(StoreKind::Routing, &vault_path)?,
+            ],
+        })
+    }
+
+    pub fn plan_store(&self, kind: StoreKind, vault_path: &Path) -> Result<StorePlan> {
+        let label = kind.label();
+        let legacy_path = kind.legacy_path(&self.storage_root, vault_path);
+        let legacy = LegacyFileState {
+            exists: legacy_path.exists(),
+            size_bytes: std::fs::metadata(&legacy_path).ok().map(|m| m.len()),
+            path: legacy_path.clone(),
+        };
+
+        let volume = if let Some(volume_name) = kind.volume_name() {
+            let info = rockbot_vdisk::volume_info(&self.disk_path, volume_name)?;
+            let header_kind = rockbot_vdisk::read_volume_prefix(&self.disk_path, volume_name, 4)?
+                .map(|prefix| {
+                    if prefix.as_slice() == b"redb" {
+                        "plaintext_redb".to_string()
+                    } else if prefix.is_empty() {
+                        "empty".to_string()
+                    } else {
+                        "opaque_or_encrypted".to_string()
+                    }
+                });
+            VolumeState {
+                name: volume_name.to_string(),
+                exists: info.is_some(),
+                len_bytes: info.as_ref().map(|i| i.len),
+                capacity_bytes: info.as_ref().map(|i| i.capacity),
+                header_kind,
+            }
+        } else {
+            VolumeState {
+                name: label.to_string(),
+                exists: false,
+                len_bytes: None,
+                capacity_bytes: None,
+                header_kind: None,
+            }
+        };
+
+        let (resolution, descriptor) = match kind {
+            StoreKind::Vault => {
+                if legacy.exists {
+                    (
+                        ResolutionSource::VirtualDisk,
+                        format!("virtual disk {} volume 'vault' (plaintext)", self.disk_path.display()),
+                    )
+                } else if volume.exists {
+                    (
+                        ResolutionSource::VirtualDisk,
+                        format!("virtual disk {} volume 'vault' (plaintext)", self.disk_path.display()),
+                    )
+                } else {
+                    (ResolutionSource::Missing, "unavailable".to_string())
+                }
+            }
+            StoreKind::Agents => {
+                if legacy.exists {
+                    (ResolutionSource::Legacy, format!("legacy store {}", legacy.path.display()))
+                } else if volume.exists {
+                    (
+                        ResolutionSource::VirtualDisk,
+                        encryption_mode_log(
+                            self.key_for_label("agents")?.is_some(),
+                            &format!("virtual disk {} volume 'agents'", self.disk_path.display()),
+                        ),
+                    )
+                } else {
+                    (ResolutionSource::Missing, "unavailable".to_string())
+                }
+            }
+            StoreKind::Sessions => {
+                if legacy.exists {
+                    (ResolutionSource::Legacy, format!("legacy store {}", legacy.path.display()))
+                } else if volume.exists {
+                    (
+                        ResolutionSource::VirtualDisk,
+                        encryption_mode_log(
+                            self.key_for_label("sessions")?.is_some(),
+                            &format!("virtual disk {} volume 'sessions'", self.disk_path.display()),
+                        ),
+                    )
+                } else {
+                    (
+                        ResolutionSource::Recovery,
+                        format!(
+                            "recovery store {}",
+                            self.storage_root.join("runtime").join("sessions.recovery.redb").display()
+                        ),
+                    )
+                }
+            }
+            StoreKind::Cron => {
+                if legacy.exists {
+                    (ResolutionSource::Legacy, format!("legacy store {}", legacy.path.display()))
+                } else if volume.exists {
+                    (
+                        ResolutionSource::VirtualDisk,
+                        encryption_mode_log(
+                            self.key_for_label("cron")?.is_some(),
+                            &format!("virtual disk {} volume 'cron'", self.disk_path.display()),
+                        ),
+                    )
+                } else {
+                    (ResolutionSource::Missing, "unavailable".to_string())
+                }
+            }
+            StoreKind::Routing => {
+                if legacy.exists {
+                    (ResolutionSource::Legacy, format!("legacy store {}", legacy.path.display()))
+                } else if volume.exists {
+                    (
+                        ResolutionSource::VirtualDisk,
+                        encryption_mode_log(
+                            self.key_for_label("routing")?.is_some(),
+                            &format!("virtual disk {} volume 'routing'", self.disk_path.display()),
+                        ),
+                    )
+                } else {
+                    (ResolutionSource::Missing, "unavailable".to_string())
+                }
+            }
+        };
+
+        Ok(StorePlan {
+            kind,
+            label,
+            legacy,
+            volume,
+            resolution,
+            descriptor,
+        })
     }
 
     pub async fn open_sessions_store(&self) -> Result<OpenedStore> {
@@ -179,6 +370,38 @@ impl StorageRuntime {
         })
     }
 
+    pub async fn open_routing_store(&self) -> Result<OpenedStore> {
+        let key = self.key_for_label("routing")?;
+        let legacy_path = self.storage_root.join("data").join("routing.redb");
+        if legacy_path.exists() {
+            match Store::open(&legacy_path) {
+                Ok(store) => {
+                    return Ok(OpenedStore {
+                        store: Arc::new(store),
+                        descriptor: format!("legacy store {}", legacy_path.display()),
+                        mode: StoreMode::Persistent,
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Could not open legacy routing store {}: {err}. Falling back to virtual-disk routing volume.",
+                        legacy_path.display()
+                    );
+                }
+            }
+        }
+
+        let store = Store::open_volume(&self.disk_path, "routing", 64 * 1024 * 1024, key)?;
+        Ok(OpenedStore {
+            store: Arc::new(store),
+            descriptor: encryption_mode_log(
+                key.is_some(),
+                &format!("virtual disk {} volume 'routing'", self.disk_path.display()),
+            ),
+            mode: StoreMode::Persistent,
+        })
+    }
+
     pub async fn open_vault_volume(&self, data_dir: &Path) -> Result<OpenedStore> {
         self.open_vault_volume_sync(data_dir)
     }
@@ -241,6 +464,32 @@ impl StorageRuntime {
             descriptor: format!("recovery store {}", recovery_path.display()),
             mode: StoreMode::Recovery,
         })
+    }
+}
+
+impl StoreKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            StoreKind::Vault => "vault",
+            StoreKind::Agents => "agents",
+            StoreKind::Sessions => "sessions",
+            StoreKind::Cron => "cron",
+            StoreKind::Routing => "routing",
+        }
+    }
+
+    pub fn volume_name(self) -> Option<&'static str> {
+        Some(self.label())
+    }
+
+    pub fn legacy_path(self, storage_root: &Path, vault_path: &Path) -> PathBuf {
+        match self {
+            StoreKind::Vault => vault_path.join("vault.db"),
+            StoreKind::Agents => vault_path.join("agents.redb"),
+            StoreKind::Sessions => storage_root.join("data").join("sessions.redb"),
+            StoreKind::Cron => storage_root.join("data").join("cron.redb"),
+            StoreKind::Routing => storage_root.join("data").join("routing.redb"),
+        }
     }
 }
 
@@ -315,5 +564,61 @@ pub fn encryption_mode_log(encrypted: bool, base: &str) -> String {
         format!("{base} (encrypted)")
     } else {
         format!("{base} (plaintext)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn cfg_with_root(root: &Path) -> Config {
+        let mut cfg = Config::default();
+        cfg.credentials.vault_path = root.join("vault");
+        cfg.security.storage.enabled = false;
+        cfg
+    }
+
+    #[tokio::test]
+    async fn sessions_plan_prefers_legacy_when_present() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        let legacy = root.join("data").join("sessions.redb");
+        std::fs::write(&legacy, b"redb").unwrap();
+
+        let runtime = StorageRuntime::new_with_root_sync(&cfg_with_root(root), root.to_path_buf()).unwrap();
+        let plan = runtime.plan_store(StoreKind::Sessions, &root.join("vault")).unwrap();
+
+        assert_eq!(plan.resolution, ResolutionSource::Legacy);
+        assert!(plan.descriptor.contains("legacy store"));
+    }
+
+    #[tokio::test]
+    async fn sessions_open_uses_recovery_when_legacy_is_invalid() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("data").join("sessions.redb"), b"not-redb").unwrap();
+
+        let runtime = StorageRuntime::new_with_root_sync(&cfg_with_root(root), root.to_path_buf()).unwrap();
+        let opened = runtime.open_sessions_store().await.unwrap();
+
+        assert_eq!(opened.mode, StoreMode::Recovery);
+        assert!(opened.descriptor.contains("sessions.recovery.redb"));
+    }
+
+    #[tokio::test]
+    async fn agents_plan_prefers_vdisk_when_legacy_missing() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("vault")).unwrap();
+        let cfg = cfg_with_root(root);
+        let runtime = StorageRuntime::new_with_root_sync(&cfg, root.to_path_buf()).unwrap();
+        let _ = Store::open_volume(runtime.disk_path(), "agents", 128 * 1024 * 1024, None).unwrap();
+
+        let plan = runtime.plan_store(StoreKind::Agents, &root.join("vault")).unwrap();
+        assert_eq!(plan.resolution, ResolutionSource::VirtualDisk);
+        assert!(plan.descriptor.contains("volume 'agents'"));
     }
 }

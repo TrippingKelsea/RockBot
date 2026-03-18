@@ -619,6 +619,13 @@ pub enum DoctorCommands {
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
+    /// Diagnose storage and migration state
+    #[cfg(feature = "doctor-ai")]
+    Storage {
+        /// Path to config file (defaults to standard location)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
     /// Download/update the doctor AI model
     #[cfg(feature = "doctor-ai")]
     Download,

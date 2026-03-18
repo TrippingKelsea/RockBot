@@ -117,3 +117,20 @@ pub fn migration_prompt(raw_toml: &str, known_renames: &str) -> String {
          <|im_start|>assistant\n"
     )
 }
+
+/// Explain storage-state issues and suggest safe migration or recovery steps.
+pub fn storage_prompt(storage_summary: &str) -> String {
+    format!(
+        "<|im_start|>system\n\
+         You are a storage migration and recovery doctor for RockBot.\n\
+         Explain storage-state problems clearly and conservatively.\n\
+         Prefer safe, reversible actions. Mention when legacy and virtual-disk stores coexist.\n\
+         Be concise and actionable.\n\
+         <|im_end|>\n\
+         <|im_start|>user\n\
+         Analyze this RockBot storage report and explain the likely state, risks, and next migration or repair steps.\n\
+         Storage report:\n{storage_summary}\n\
+         <|im_end|>\n\
+         <|im_start|>assistant\n"
+    )
+}

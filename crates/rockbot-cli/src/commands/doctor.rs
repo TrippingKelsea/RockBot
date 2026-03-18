@@ -24,6 +24,11 @@ pub async fn run(command: &Option<DoctorCommands>, config_path: &PathBuf) -> Res
             run_migrate(path).await
         }
         #[cfg(feature = "doctor-ai")]
+        Some(DoctorCommands::Storage { config }) => {
+            let path = config.as_ref().unwrap_or(config_path);
+            run_storage(path).await
+        }
+        #[cfg(feature = "doctor-ai")]
         Some(DoctorCommands::Download) => run_download().await,
         #[cfg(feature = "doctor-ai")]
         Some(DoctorCommands::Status) => run_status().await,
@@ -217,6 +222,28 @@ async fn run_migrate(config_path: &PathBuf) -> Result<()> {
             .unwrap_or_default();
 
         println!("  {confidence} {}{arrow}{version}", note.old_path);
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "doctor-ai")]
+async fn run_storage(config_path: &PathBuf) -> Result<()> {
+    use rockbot_doctor::{inspect_storage, summarize_report, DoctorAi};
+
+    println!("Doctor AI: Inspecting storage state...\n");
+    let report = inspect_storage(config_path);
+    let summary = summarize_report(&report);
+    println!("{summary}");
+
+    let raw_toml = tokio::fs::read_to_string(config_path).await.unwrap_or_default();
+    let doctor_config = try_parse_doctor_config_from_raw(&raw_toml);
+    let doctor = DoctorAi::init(doctor_config).await?;
+    let analysis = doctor.diagnose_storage_report(&report).await;
+
+    if !analysis.trim().is_empty() {
+        println!("Doctor AI Assessment:\n");
+        println!("{analysis}");
     }
 
     Ok(())

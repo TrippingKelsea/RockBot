@@ -13,6 +13,7 @@ rockbot-chat = { path = "../rockbot-chat" }
 # Inference engine (reuses overseer's candle/GGUF infrastructure)
 rockbot-overseer = { path = "../rockbot-overseer" }
 rockbot-config = { path = "../rockbot-config" }
+rockbot-vdisk = { path = "../rockbot-vdisk" }
 
 # TOML surgery (preserves comments/formatting)
 toml = { workspace = true }

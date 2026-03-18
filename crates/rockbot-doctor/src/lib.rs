@@ -20,6 +20,7 @@ pub mod learned;
 pub mod migration;
 pub mod prompts;
 pub mod repair;
+pub mod storage;
 
 use rockbot_overseer::inference::{InferenceConfig, InferenceEngine};
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,7 @@ pub use diagnosis::{ConfigDiagnosis, DiagnosisKind};
 pub use learned::{LearnedFix, LearnedStore};
 pub use migration::{MigrationNote, MigrationSource};
 pub use repair::DoctorFix;
+pub use storage::{inspect_storage, summarize_report, StorageReport};
 
 /// Speaker role in a Doctor AI conversation.
 #[derive(Debug, Clone)]
@@ -303,6 +305,13 @@ impl DoctorAi {
                 tracing::warn!("Failed to save learned fix: {e}");
             }
         }
+    }
+
+    /// Explain storage state and recommend migration/recovery steps.
+    pub async fn diagnose_storage_report(&self, report: &StorageReport) -> String {
+        let summary = storage::summarize_report(report);
+        let prompt = prompts::storage_prompt(&summary);
+        self.generate(&prompt).await
     }
 
     /// Check for outdated config fields that need migration.

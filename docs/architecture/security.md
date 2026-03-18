@@ -38,8 +38,8 @@ transport, and human-in-the-loop approval for sensitive operations.
 The gateway separates public bootstrap traffic from the authenticated control
 plane:
 
-- **Public HTTPS listener** — `/`, `/static/*`, `/health`, `GET /api/cert/ca`,
-  and optional enrollment
+- **Public HTTPS listener** — `/`, `/static/*`, `/health`, public `/ws` for
+  browser challenge/response auth, `GET /api/cert/ca`, and optional enrollment
 - **Client listener** — authenticated WebSocket control plane, remote exec,
   native chat traffic, and mTLS client sessions
 

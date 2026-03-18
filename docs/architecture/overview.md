@@ -145,8 +145,9 @@ PKI system (`rockbot-pki`) provides a full certificate authority:
 - **Client certificates** — issued per role (gateway, agent, tui)
 - **Mutual TLS** — the dedicated client listener can enforce mTLS without
   blocking browser bootstrap or enrollment on the public listener
-- **Public bootstrap surface** — `/`, `/static/*`, `/health`, `GET /api/cert/ca`,
-  and optionally `POST /api/cert/sign`
+- **Public bootstrap surface** — `/`, `/static/*`, `/health`, public `/ws` for
+  browser challenge/response auth, `GET /api/cert/ca`, and optionally
+  `POST /api/cert/sign`
 - **Remote enrollment** — `POST /api/cert/sign` with a pre-shared key lets
   new clients obtain certificates without direct CA access when enabled
 - **Revocation** — `rockbot cert client revoke` updates the CRL

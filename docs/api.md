@@ -15,6 +15,7 @@ When TLS is configured (default), use `https://` and `wss://` schemes.
 | GET | `/` | Browser bootstrap shell |
 | GET | `/static/app.css` | Embedded web bootstrap stylesheet |
 | GET | `/static/app.js` | Embedded web bootstrap application |
+| GET | `/ws` | Browser WebSocket bootstrap/auth channel |
 
 ### Certificates (PKI)
 
@@ -50,7 +51,9 @@ token created via `rockbot cert enroll create`, and
 ## WebSocket Protocol
 
 Native clients connect to `wss://host:client_port/ws` (or `ws://` with
-`http-insecure`).
+`http-insecure`). Browser bootstrap clients connect to `wss://host:public_port/ws`
+and must authenticate with a certificate/key challenge-response before using
+the control plane.
 
 All messages are JSON with a `"type"` field.
 
@@ -66,6 +69,8 @@ All messages are JSON with a `"type"` field.
 | `remote_capabilities` | Advertise remote execution capabilities |
 | `remote_tool_response` | Return result of a remote tool execution |
 | `api_request` | Tunnel a management/data request over the authenticated WS control plane |
+| `web_auth_begin` | Begin browser auth with a PEM client certificate |
+| `web_auth_complete` | Complete browser auth with a signature over the server challenge |
 
 ### Server → Client
 
@@ -87,6 +92,8 @@ All messages are JSON with a `"type"` field.
 | `remote_tool_request` | Request to execute a tool locally |
 | `cron_dispatch` | Cron job dispatch to targeted client |
 | `api_response` | Response to a tunneled WS API request |
+| `web_auth_challenge` | Challenge blob for browser certificate/key auth |
+| `web_auth_result` | Browser auth success/failure result |
 
 ## Rust API Documentation
 

@@ -134,7 +134,7 @@ enrollment_psk = "some-secret-token"
 |-------|------|---------|-------------|
 | `gateway.port` | `u16` | `18080` | Public HTTPS bootstrap port |
 | `gateway.client_port` | `u16` | `18081` | Dedicated authenticated client listener |
-| `gateway.public.serve_webapp` | `bool` | `true` | Serve `/` and `/static/*` |
+| `gateway.public.serve_webapp` | `bool` | `true` | Serve `/`, `/static/*`, and the browser auth bootstrap shell |
 | `gateway.public.serve_ca` | `bool` | `true` | Serve `GET /api/cert/ca` |
 | `gateway.public.enrollment_enabled` | `bool` | `true` | Enable `POST /api/cert/sign` |
 | `pki.tls_cert` | `Option<PathBuf>` | None | Path to gateway TLS certificate (PEM) |

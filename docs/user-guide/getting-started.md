@@ -123,7 +123,8 @@ served from the public listener. It exposes only:
 - `/api/cert/sign` when `gateway.public.enrollment_enabled = true`
 
 The page lets you import a client certificate/key bundle into browser storage
-for future authenticated control-plane use.
+and authenticate to the browser WebSocket control plane without exposing the
+full REST management surface publicly.
 
 ## Mutual TLS (mTLS)
 

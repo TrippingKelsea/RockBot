@@ -16,6 +16,8 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 - **Web bootstrap shell**: `/` and `/static/*` now serve a minimal browser
   bootstrap app with health display, CA download, and IndexedDB-backed client
   certificate/key import persistence
+  - Browser bootstrap clients can authenticate over the public WebSocket with a
+    certificate challenge/response flow after importing key material
 - **Gateway bootstrap**: deterministic role-targeted bootstrap config commands
   - `rockbot config init gateway --https-port ... --client-port ...`
   - `rockbot config init client --gateway-ip ... --https-port ... --client-port ...`

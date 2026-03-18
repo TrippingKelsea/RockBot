@@ -71,8 +71,10 @@ client_port = 18182              # Dedicated client / mTLS listener
 ```
 
 The public listener is intentionally narrow: browser bootstrap shell, `/static/*`,
-health, CA publication, and optional enrollment. The client listener is for the
-authenticated control plane: TUI, agent, remote-exec, and native WS API traffic.
+health, CA publication, optional enrollment, and a browser WebSocket used only
+to authenticate the imported client identity and transition into the control
+plane. The client listener is for native TUI, agent, remote-exec, and mTLS WS
+traffic.
 
 ### mTLS Modes
 
@@ -224,8 +226,10 @@ The browser app is delivered from:
 
 The embedded page is a bootstrap shell, not the old public admin SPA. It
 supports importing a client certificate/key bundle into browser storage and
-fetching health / CA material from the public listener. Sensitive runtime APIs
-belong on the authenticated WebSocket control plane instead of public REST.
+fetching health / CA material from the public listener. It can then authenticate
+to the public WebSocket using a challenge/response flow signed by the imported
+private key. Sensitive runtime APIs belong on the authenticated WebSocket
+control plane instead of public REST.
 
 ---
 

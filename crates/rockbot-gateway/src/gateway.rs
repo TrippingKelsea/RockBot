@@ -22,7 +22,6 @@ fn tool_locality_label(locality: &rockbot_agent::agent::ToolExecutionLocality) -
 }
 
 /// Simple base64 encoding (using standard alphabet)
-#[cfg(feature = "remote-exec")]
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity((input.len() + 2) / 3 * 4);
@@ -83,6 +82,7 @@ use rockbot_config::message::{Message, MessageRole};
 use rockbot_session::SessionManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -291,8 +291,19 @@ struct WsConnection {
     /// Client identity for targeted cron dispatch and human-readable display.
     /// Set by the client sending a `client_identify` WS message after connecting.
     identity: Option<ClientIdentity>,
+    listener_kind: ListenerKind,
+    browser_auth: BrowserAuthState,
     #[allow(dead_code)]
     connected_at: std::time::Instant,
+}
+
+#[derive(Debug, Default)]
+struct BrowserAuthState {
+    authenticated: bool,
+    pending_cert_pem: Option<String>,
+    pending_challenge: Option<Vec<u8>>,
+    cert_name: Option<String>,
+    cert_role: Option<String>,
 }
 
 /// WebSocket message types (client -> server)
@@ -375,6 +386,10 @@ enum WsMessageType {
         #[serde(default)]
         body: Option<serde_json::Value>,
     },
+    #[serde(rename = "web_auth_begin")]
+    WebAuthBegin { certificate_pem: String },
+    #[serde(rename = "web_auth_complete")]
+    WebAuthComplete { signature: String },
 }
 
 /// WebSocket response types (server -> client)
@@ -487,6 +502,17 @@ enum WsResponseType {
         body: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         content_type: Option<String>,
+    },
+    #[serde(rename = "web_auth_challenge")]
+    WebAuthChallenge { challenge: String },
+    #[serde(rename = "web_auth_result")]
+    WebAuthResult {
+        authenticated: bool,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cert_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cert_role: Option<String>,
     },
 }
 
@@ -1650,7 +1676,7 @@ impl Gateway {
         match (req.method(), path.as_str()) {
             // Web UI
             (&Method::GET, "/") | (&Method::GET, "/index.html") => self.handle_web_ui().await,
-            (&Method::GET, "/ws") => self.handle_websocket_upgrade(req).await,
+            (&Method::GET, "/ws") => self.handle_websocket_upgrade(req, ListenerKind::Client).await,
             // A2A Protocol
             (&Method::GET, "/.well-known/agent.json") => self.handle_agent_card().await,
             (&Method::POST, "/a2a") => self.handle_a2a_request(req).await,
@@ -1820,6 +1846,7 @@ impl Gateway {
             {
                 self.handle_web_ui_asset(p).await
             }
+            (&Method::GET, "/ws") => self.handle_websocket_upgrade(req, ListenerKind::Public).await,
             (&Method::GET, "/api/cert/ca") if self.config.public.serve_ca => {
                 self.handle_cert_ca_info().await
             }
@@ -3872,6 +3899,7 @@ impl Gateway {
     async fn handle_websocket_upgrade(
         &self,
         req: Request<IncomingBody>,
+        listener_kind: ListenerKind,
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
         // Validate upgrade headers
         let upgrade_hdr = req
@@ -3918,7 +3946,7 @@ impl Gateway {
 
                     info!("WebSocket connection established: {}", conn_id_clone);
                     gateway
-                        .handle_websocket_connection(ws_stream, conn_id_clone)
+                        .handle_websocket_connection(ws_stream, conn_id_clone, listener_kind)
                         .await;
                 }
                 Err(e) => {
@@ -3942,6 +3970,7 @@ impl Gateway {
         &self,
         ws_stream: tokio_tungstenite::WebSocketStream<S>,
         conn_id: String,
+        listener_kind: ListenerKind,
     ) where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -3960,6 +3989,8 @@ impl Gateway {
                     sender: outbound_tx.clone(),
                     user_id: None,
                     identity: None,
+                    listener_kind,
+                    browser_auth: BrowserAuthState::default(),
                     connected_at: std::time::Instant::now(),
                 },
             );
@@ -4050,15 +4081,158 @@ impl Gateway {
             .read()
             .await
             .get(conn_id)
-            .and_then(|c| c.identity.as_ref())
-            .map(|id| {
-                if let Some(ref label) = id.label {
-                    format!("{}({})", id.hostname, label)
+            .map(|conn| {
+                if let Some(id) = conn.identity.as_ref() {
+                    if let Some(ref label) = id.label {
+                        format!("{}({})", id.hostname, label)
+                    } else {
+                        id.hostname.clone()
+                    }
+                } else if let Some(cert_name) = conn.browser_auth.cert_name.as_ref() {
+                    format!("browser:{cert_name}")
                 } else {
-                    id.hostname.clone()
+                    conn_id[..8.min(conn_id.len())].to_string()
                 }
             })
             .unwrap_or_else(|| conn_id[..8.min(conn_id.len())].to_string())
+    }
+
+    async fn ws_listener_kind(&self, conn_id: &str) -> Option<ListenerKind> {
+        self.ws_connections
+            .read()
+            .await
+            .get(conn_id)
+            .map(|conn| conn.listener_kind)
+    }
+
+    async fn is_ws_authenticated(&self, conn_id: &str) -> bool {
+        self.ws_connections
+            .read()
+            .await
+            .get(conn_id)
+            .map(|conn| match conn.listener_kind {
+                ListenerKind::Client => true,
+                ListenerKind::Public => conn.browser_auth.authenticated,
+            })
+            .unwrap_or(false)
+    }
+
+    async fn begin_browser_web_auth(
+        &self,
+        conn_id: &str,
+    ) -> anyhow::Result<(String, String, String)> {
+        let cert_pem = {
+            let conns = self.ws_connections.read().await;
+            let conn = conns
+                .get(conn_id)
+                .ok_or_else(|| anyhow::anyhow!("WebSocket connection not found"))?;
+            conn.browser_auth
+                .pending_cert_pem
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("No pending certificate for this connection"))?
+        };
+
+        let mut cursor = Cursor::new(cert_pem.as_bytes());
+        let cert_der = rustls_pemfile::certs(&mut cursor)
+            .next()
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("No PEM certificate found"))?;
+        let fingerprint = rockbot_pki::sha256_fingerprint(cert_der.as_ref());
+
+        let pki_dir = self
+            .pki
+            .pki_dir
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Gateway PKI directory is not configured"))?;
+        let mgr = PkiManager::new(pki_dir)?;
+        let entry = mgr
+            .list_clients()
+            .into_iter()
+            .find(|entry| {
+                entry.status == rockbot_pki::CertStatus::Active
+                    && entry.fingerprint_sha256 == fingerprint
+            })
+            .ok_or_else(|| anyhow::anyhow!("Certificate is not active in the local PKI index"))?;
+
+        let rng = ring::rand::SystemRandom::new();
+        let mut challenge = vec![0u8; 32];
+        ring::rand::SecureRandom::fill(&rng, &mut challenge)
+            .map_err(|_| anyhow::anyhow!("Failed to generate browser auth challenge"))?;
+        let challenge_b64 = base64_encode(&challenge);
+        let cert_name = entry.name.clone();
+        let cert_role = entry.role.to_string();
+
+        {
+            let mut conns = self.ws_connections.write().await;
+            let conn = conns
+                .get_mut(conn_id)
+                .ok_or_else(|| anyhow::anyhow!("WebSocket connection not found"))?;
+            conn.browser_auth.pending_challenge = Some(challenge);
+            conn.browser_auth.cert_name = Some(cert_name.clone());
+            conn.browser_auth.cert_role = Some(cert_role.clone());
+            conn.browser_auth.authenticated = false;
+        }
+
+        Ok((challenge_b64, cert_name, cert_role))
+    }
+
+    async fn complete_browser_web_auth(
+        &self,
+        conn_id: &str,
+        signature_b64: &str,
+    ) -> anyhow::Result<(String, String)> {
+        let (cert_pem, challenge, cert_name, cert_role) = {
+            let conns = self.ws_connections.read().await;
+            let conn = conns
+                .get(conn_id)
+                .ok_or_else(|| anyhow::anyhow!("WebSocket connection not found"))?;
+            (
+                conn.browser_auth
+                    .pending_cert_pem
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("No pending certificate"))?,
+                conn.browser_auth
+                    .pending_challenge
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("No pending challenge"))?,
+                conn.browser_auth
+                    .cert_name
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("No pending certificate identity"))?,
+                conn.browser_auth
+                    .cert_role
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("No pending certificate role"))?,
+            )
+        };
+
+        let mut cursor = Cursor::new(cert_pem.as_bytes());
+        let cert_der = rustls_pemfile::certs(&mut cursor)
+            .next()
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("No PEM certificate found"))?;
+        let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref())
+            .map_err(|_| anyhow::anyhow!("Failed to parse certificate"))?;
+        let spki = cert.tbs_certificate.subject_pki.raw.to_owned();
+        let signature = base64_decode(signature_b64)
+            .map_err(|e| anyhow::anyhow!("Invalid auth signature encoding: {e}"))?;
+
+        let verifier =
+            ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_ASN1, spki);
+        verifier
+            .verify(&challenge, &signature)
+            .map_err(|_| anyhow::anyhow!("Browser auth signature verification failed"))?;
+
+        {
+            let mut conns = self.ws_connections.write().await;
+            let conn = conns
+                .get_mut(conn_id)
+                .ok_or_else(|| anyhow::anyhow!("WebSocket connection not found"))?;
+            conn.browser_auth.authenticated = true;
+            conn.browser_auth.pending_challenge = None;
+        }
+
+        Ok((cert_name, cert_role))
     }
 
     /// Process a single incoming WebSocket message
@@ -4080,6 +4254,26 @@ impl Gateway {
                 return;
             }
         };
+
+        let requires_public_auth = !matches!(
+            msg,
+            WsMessageType::Ping
+                | WsMessageType::HealthCheck
+                | WsMessageType::WebAuthBegin { .. }
+                | WsMessageType::WebAuthComplete { .. }
+        );
+        if requires_public_auth
+            && self.ws_listener_kind(conn_id).await == Some(ListenerKind::Public)
+            && !self.is_ws_authenticated(conn_id).await
+        {
+            let resp = WsResponseType::Error {
+                message: "This public WebSocket connection is not authenticated yet".to_string(),
+            };
+            let _ = outbound_tx.send(WsMessage::Text(
+                serde_json::to_string(&resp).unwrap_or_default(),
+            ));
+            return;
+        }
 
         match msg {
             WsMessageType::Ping => {
@@ -4259,6 +4453,62 @@ impl Gateway {
             } => {
                 self.handle_ws_api_request(outbound_tx, request_id, method, path, body)
                     .await;
+            }
+            WsMessageType::WebAuthBegin { certificate_pem } => {
+                {
+                    let mut conns = self.ws_connections.write().await;
+                    if let Some(conn) = conns.get_mut(conn_id) {
+                        conn.browser_auth.pending_cert_pem = Some(certificate_pem);
+                        conn.browser_auth.pending_challenge = None;
+                        conn.browser_auth.authenticated = false;
+                    }
+                }
+
+                match self.begin_browser_web_auth(conn_id).await {
+                    Ok((challenge, _, _)) => {
+                        let resp = WsResponseType::WebAuthChallenge { challenge };
+                        let _ = outbound_tx.send(WsMessage::Text(
+                            serde_json::to_string(&resp).unwrap_or_default(),
+                        ));
+                    }
+                    Err(err) => {
+                        let resp = WsResponseType::WebAuthResult {
+                            authenticated: false,
+                            message: err.to_string(),
+                            cert_name: None,
+                            cert_role: None,
+                        };
+                        let _ = outbound_tx.send(WsMessage::Text(
+                            serde_json::to_string(&resp).unwrap_or_default(),
+                        ));
+                    }
+                }
+            }
+            WsMessageType::WebAuthComplete { signature } => {
+                match self.complete_browser_web_auth(conn_id, &signature).await {
+                    Ok((cert_name, cert_role)) => {
+                        let resp = WsResponseType::WebAuthResult {
+                            authenticated: true,
+                            message: "Browser WebSocket authenticated".to_string(),
+                            cert_name: Some(cert_name),
+                            cert_role: Some(cert_role),
+                        };
+                        let _ = outbound_tx.send(WsMessage::Text(
+                            serde_json::to_string(&resp).unwrap_or_default(),
+                        ));
+                    }
+                    Err(err) => {
+                        let resp = WsResponseType::WebAuthResult {
+                            authenticated: false,
+                            message: err.to_string(),
+                            cert_name: None,
+                            cert_role: None,
+                        };
+                        let _ = outbound_tx.send(WsMessage::Text(
+                            serde_json::to_string(&resp).unwrap_or_default(),
+                        ));
+                    }
+                }
             }
         }
     }

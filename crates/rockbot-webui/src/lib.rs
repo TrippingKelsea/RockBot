@@ -33,6 +33,7 @@ pub fn get_dashboard_html() -> &'static str {
       <dl class="facts">
         <div><dt>Health</dt><dd id="health-text">Loading...</dd></div>
         <div><dt>CA Bundle</dt><dd><a href="/api/cert/ca" target="_blank" rel="noreferrer">Download public CA</a></dd></div>
+        <div><dt>WS Auth</dt><dd id="ws-auth-text">Not connected</dd></div>
       </dl>
     </section>
 
@@ -271,6 +272,7 @@ const APP_JS: &str = r#"
 const DB_NAME = 'rockbot-web-bootstrap';
 const STORE_NAME = 'identity';
 const ID_KEY = 'client-identity';
+let activeSocket = null;
 
 function el(id) { return document.getElementById(id); }
 
@@ -344,6 +346,11 @@ async function refreshIdentity() {
   const identity = await idbGet(ID_KEY);
   setPill('identity-pill', identity ? 'pill-ok' : 'pill-idle', identity ? 'Identity ready' : 'No key imported');
   el('identity-summary').textContent = summarizeIdentity(identity);
+  if (identity) {
+    void ensureAuthenticatedSocket(identity);
+  } else {
+    updateWsAuth('No stored identity', 'pill-idle');
+  }
 }
 
 async function refreshHealth() {
@@ -383,10 +390,114 @@ async function saveIdentity() {
 }
 
 async function clearIdentity() {
+  if (activeSocket) {
+    activeSocket.close();
+    activeSocket = null;
+  }
   await idbDelete(ID_KEY);
   el('cert-file').value = '';
   el('key-file').value = '';
+  updateWsAuth('Not connected', 'pill-idle');
   await refreshIdentity();
+}
+
+function updateWsAuth(text, cls) {
+  el('ws-auth-text').textContent = text;
+  setPill('identity-pill', cls, cls === 'pill-ok' ? 'Identity ready' : el('identity-pill').textContent);
+}
+
+function pemBody(pem) {
+  return pem
+    .replace(/-----BEGIN [^-]+-----/g, '')
+    .replace(/-----END [^-]+-----/g, '')
+    .replace(/\s+/g, '');
+}
+
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+async function importPrivateKey(privateKeyPem) {
+  return window.crypto.subtle.importKey(
+    'pkcs8',
+    base64ToArrayBuffer(pemBody(privateKeyPem)),
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['sign'],
+  );
+}
+
+async function signChallenge(privateKeyPem, challengeBase64) {
+  const key = await importPrivateKey(privateKeyPem);
+  const signature = await window.crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    key,
+    base64ToArrayBuffer(challengeBase64),
+  );
+  return arrayBufferToBase64(signature);
+}
+
+async function ensureAuthenticatedSocket(identity) {
+  if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+    return;
+  }
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const socket = new WebSocket(`${scheme}://${window.location.host}/ws`);
+  activeSocket = socket;
+  updateWsAuth('Connecting...', 'pill-idle');
+
+  socket.addEventListener('open', () => {
+    socket.send(JSON.stringify({
+      type: 'web_auth_begin',
+      certificate_pem: identity.certificate,
+    }));
+  });
+
+  socket.addEventListener('message', async (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.type === 'web_auth_challenge') {
+      try {
+        const signature = await signChallenge(identity.privateKey, payload.challenge);
+        socket.send(JSON.stringify({
+          type: 'web_auth_complete',
+          signature,
+        }));
+      } catch (error) {
+        updateWsAuth(`Key import failed: ${error}`, 'pill-warn');
+      }
+    } else if (payload.type === 'web_auth_result') {
+      if (payload.authenticated) {
+        updateWsAuth(`Authenticated as ${payload.cert_name} (${payload.cert_role})`, 'pill-ok');
+      } else {
+        updateWsAuth(payload.message || 'Authentication failed', 'pill-warn');
+      }
+    }
+  });
+
+  socket.addEventListener('close', () => {
+    if (activeSocket === socket) {
+      activeSocket = null;
+      updateWsAuth('Disconnected', 'pill-warn');
+    }
+  });
+
+  socket.addEventListener('error', () => {
+    updateWsAuth('WebSocket error', 'pill-warn');
+  });
 }
 
 function bindDropzone() {

@@ -271,10 +271,11 @@ impl GatewayClient {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => Err(ClientError::Disconnected),
             Err(_) => {
-                self.pending_api_requests
-                    .lock()
-                    .await
-                    .remove(msg.get("request_id").and_then(serde_json::Value::as_str).unwrap_or_default());
+                self.pending_api_requests.lock().await.remove(
+                    msg.get("request_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default(),
+                );
                 Err(ClientError::Timeout)
             }
         }
@@ -360,7 +361,9 @@ impl GatewayClient {
             .map_err(|e| ClientError::TlsConfig(format!("Invalid client certificate PEM: {e}")))?;
         let key = rustls_pemfile::private_key(&mut &key_pem[..])
             .map_err(|e| ClientError::TlsConfig(format!("Invalid client key PEM: {e}")))?
-            .ok_or_else(|| ClientError::TlsConfig("No private key found in client key file".into()))?;
+            .ok_or_else(|| {
+                ClientError::TlsConfig("No private key found in client key file".into())
+            })?;
 
         Ok(Some((certs, key)))
     }

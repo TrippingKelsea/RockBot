@@ -234,13 +234,22 @@ pub fn render_models_overlay(
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
             " Providers ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
-    frame.render_widget(Paragraph::new(provider_rows).block(provider_block), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(provider_rows).block(provider_block),
+        chunks[0],
+    );
 
     let rhs = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(8), Constraint::Fill(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(8),
+            Constraint::Fill(1),
+        ])
         .split(chunks[1]);
 
     let search = Paragraph::new(vec![
@@ -298,11 +307,16 @@ pub fn render_models_overlay(
                     Some(other) => other,
                     None => "model",
                 };
-                let tokens = model
-                    .max_output_tokens
-                    .map_or_else(|| format!("{}k ctx", model.context_window / 1000), |tokens| {
-                        format!("{}k ctx / {}k out", model.context_window / 1000, tokens / 1000)
-                    });
+                let tokens = model.max_output_tokens.map_or_else(
+                    || format!("{}k ctx", model.context_window / 1000),
+                    |tokens| {
+                        format!(
+                            "{}k ctx / {}k out",
+                            model.context_window / 1000,
+                            tokens / 1000
+                        )
+                    },
+                );
                 let style = if row == selected {
                     Style::default().fg(Color::Cyan)
                 } else {
@@ -320,7 +334,9 @@ pub fn render_models_overlay(
 
     let models_block = Block::default().title(Span::styled(
         format!(" Results ({}) ", filtered.len()),
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(
         Paragraph::new(rows)
@@ -406,15 +422,16 @@ pub fn render_agent_launcher_overlay(
         };
         Some(Line::from(vec![
             Span::styled(
-                if row == launcher.selected { "▶ " } else { "  " },
+                if row == launcher.selected {
+                    "▶ "
+                } else {
+                    "  "
+                },
                 style,
             ),
             Span::styled(agent.id.clone(), style),
             Span::styled(
-                format!(
-                    "  [{}]",
-                    agent.model.as_deref().unwrap_or("unconfigured")
-                ),
+                format!("  [{}]", agent.model.as_deref().unwrap_or("unconfigured")),
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
@@ -537,7 +554,10 @@ fn render_provider_detail_at(frame: &mut Frame, area: Rect, state: &AppState, id
     if !provider.models.is_empty() {
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(
-            format!("{} targets available — type to search, Enter to create an agent", provider.models.len()),
+            format!(
+                "{} targets available — type to search, Enter to create an agent",
+                provider.models.len()
+            ),
             Style::default().fg(Color::DarkGray),
         )));
     }

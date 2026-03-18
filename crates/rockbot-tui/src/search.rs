@@ -25,11 +25,6 @@ where
         }
     }
 
-    matches.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
+    matches.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     matches.into_iter().map(|(idx, _)| idx).collect()
 }

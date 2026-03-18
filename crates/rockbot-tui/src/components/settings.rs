@@ -418,18 +418,18 @@ fn render_theme(frame: &mut Frame, area: Rect, state: &AppState) {
     );
     render_theme_preview(frame, layout.preview, state, &theme);
 
-    let status = state
-        .settings_save_feedback
-        .as_ref()
-        .map_or((
+    let status = state.settings_save_feedback.as_ref().map_or(
+        (
             "Autosave on change",
             palette::text_secondary(&state.tui_config),
-        ), |(msg, is_error)| {
+        ),
+        |(msg, is_error)| {
             (
                 msg.as_str(),
                 if *is_error { Color::Red } else { Color::Green },
             )
-        });
+        },
+    );
 
     frame.render_widget(
         Paragraph::new(vec![

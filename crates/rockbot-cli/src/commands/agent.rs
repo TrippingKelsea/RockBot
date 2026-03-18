@@ -57,9 +57,12 @@ pub async fn run(command: &AgentCommands, config_path: &PathBuf) -> Result<()> {
             gateway,
             exec,
         } => {
-            let gateway_target = gateway
-                .clone()
-                .unwrap_or_else(|| format!("{}:{}", config.client.gateway_host, config.client.client_port));
+            let gateway_target = gateway.clone().unwrap_or_else(|| {
+                format!(
+                    "{}:{}",
+                    config.client.gateway_host, config.client.client_port
+                )
+            });
             run_agent_session(agent_id, &gateway_target, config.effective_pki(), *exec).await?;
         }
     }

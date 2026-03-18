@@ -167,7 +167,10 @@ vault_provider = false
 
     tokio::fs::write(output_path, toml).await?;
 
-    println!("Gateway bootstrap config created at {}", output_path.display());
+    println!(
+        "Gateway bootstrap config created at {}",
+        output_path.display()
+    );
     if listen_ips.is_empty() {
         println!("   HTTPS/Web UI listener: {resolved_bind_host}:{https_port}");
         println!("   Client/mTLS listener:  {resolved_bind_host}:{client_port}");
@@ -242,7 +245,10 @@ vault_provider = false
 
     tokio::fs::write(output_path, toml).await?;
 
-    println!("Client bootstrap config created at {}", output_path.display());
+    println!(
+        "Client bootstrap config created at {}",
+        output_path.display()
+    );
     println!("   Gateway HTTPS/Web UI: {gateway_ip}:{https_port}");
     println!("   Gateway client port:  {gateway_ip}:{client_port}");
 

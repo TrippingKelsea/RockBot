@@ -13,9 +13,7 @@ static TOKENIZER: OnceLock<CoreBPE> = OnceLock::new();
 /// Returns a reference to the shared cl100k_base tokenizer, initializing it on
 /// first call.
 fn get_tokenizer() -> Option<&'static CoreBPE> {
-    TOKENIZER
-        .get_or_init(init_tokenizer)
-        .into()
+    TOKENIZER.get_or_init(init_tokenizer).into()
 }
 
 #[allow(clippy::expect_used)]

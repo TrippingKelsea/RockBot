@@ -89,7 +89,8 @@ fn render_client_detail(frame: &mut Frame, area: Rect, state: &AppState) {
             Span::styled("RTT: ", Style::default().fg(Color::Cyan)),
             Span::raw(
                 state
-                    .ws_last_rtt_ms.map_or_else(|| "--".to_string(), |ms| format!("{ms} ms")),
+                    .ws_last_rtt_ms
+                    .map_or_else(|| "--".to_string(), |ms| format!("{ms} ms")),
             ),
         ]),
         Line::from(vec![

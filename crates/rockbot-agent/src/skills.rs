@@ -305,23 +305,26 @@ impl SkillManager {
         let name = frontmatter
             .get("name")
             .and_then(|v| v.as_str())
-            .map_or_else(|| {
-                let fname = path
-                    .file_stem()
-                    .and_then(|f| f.to_str())
-                    .unwrap_or("unnamed");
-                // "commit.skill" -> "commit", "SKILL" -> derive from parent dir
-                let base = fname.strip_suffix(".skill").unwrap_or(fname);
-                if base == "SKILL" {
-                    path.parent()
-                        .and_then(|p| p.file_name())
+            .map_or_else(
+                || {
+                    let fname = path
+                        .file_stem()
                         .and_then(|f| f.to_str())
-                        .unwrap_or("unnamed")
-                        .to_string()
-                } else {
-                    base.to_string()
-                }
-            }, String::from);
+                        .unwrap_or("unnamed");
+                    // "commit.skill" -> "commit", "SKILL" -> derive from parent dir
+                    let base = fname.strip_suffix(".skill").unwrap_or(fname);
+                    if base == "SKILL" {
+                        path.parent()
+                            .and_then(|p| p.file_name())
+                            .and_then(|f| f.to_str())
+                            .unwrap_or("unnamed")
+                            .to_string()
+                    } else {
+                        base.to_string()
+                    }
+                },
+                String::from,
+            );
 
         let description = frontmatter
             .get("description")

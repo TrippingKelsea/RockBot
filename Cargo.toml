@@ -188,7 +188,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # Package metadata for all crates
 [workspace.package]
-version = "0.3.81"
+version = "0.3.82"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

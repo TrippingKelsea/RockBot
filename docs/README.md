@@ -14,6 +14,7 @@
 - [Code Review Round 2 Remediation Plan](architecture/code-review-round2-remediation-plan.md) — Prioritized execution plan for the current security, correctness, and quality findings
 - [Encrypted Storage + PKI Refactor Proposal](architecture/encrypted-storage-pki-refactor-proposal.md) — High-level scope for encrypted-by-default redb, distributed vault authority, and role separation
 - [Encrypted Storage + PKI Architecture Plan](architecture/encrypted-storage-pki-architecture-plan.md) — Formal architecture plan for roles, key hierarchy, grants, replication, and rollout
+- [Virtual Disk Architecture Plan](architecture/virtual-disk-architecture-plan.md) — Formal plan for the `rockbot.data` virtual disk container, named volumes, encrypted local persistence, and model storage
 - [PKI and mTLS](architecture/pki.md) — Certificate authority, mutual TLS, enrollment, x.509 extensions
 - [Vault Replication](architecture/vault-replication.md) — PKI/credential sync over Noise protocol (draft)
 - [Security Model](architecture/security.md) — Credential flow, capabilities, trust boundaries

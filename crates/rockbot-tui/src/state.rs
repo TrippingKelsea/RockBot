@@ -1552,7 +1552,7 @@ impl ProviderAuthType {
     pub fn label(&self) -> &'static str {
         match self {
             Self::ApiKey => "API Key",
-            Self::SessionKey => "Session Key (Claude Code)",
+            Self::SessionKey => "Session Key",
             Self::None => "None",
             Self::AwsCredentials => "AWS Credentials",
         }

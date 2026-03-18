@@ -37,18 +37,6 @@ enum AgentLauncherSelection {
     CreateNew,
 }
 
-/// Check if Claude Code OAuth credentials are available
-pub fn has_claude_credentials() -> bool {
-    #[cfg(feature = "anthropic")]
-    {
-        rockbot_llm_anthropic::AnthropicProvider::has_credentials()
-    }
-    #[cfg(not(feature = "anthropic"))]
-    {
-        false
-    }
-}
-
 fn debug_vault_log(message: &str) {
     if std::env::var("ROCKBOT_TUI_DEBUG_VAULT").ok().as_deref() != Some("1") {
         return;
@@ -3208,22 +3196,16 @@ impl App {
         // Save auth mode preference to config file
         self.save_provider_auth_mode(state);
 
-        // For session key auth, just verify Claude Code credentials exist
+        // Session-key style auth is handled outside the TUI; the UI only records the
+        // selected auth mode and points the user at the provider-specific setup flow.
         if state.auth_type == ProviderAuthType::SessionKey {
-            if has_claude_credentials() {
-                self.state.status_message = Some((
-                    format!(
-                        "✅ {} configured with Claude Code OAuth",
-                        state.provider_name
-                    ),
-                    false,
-                ));
-            } else {
-                self.state.status_message = Some((
-                    "❌ Run 'claude' in terminal to authenticate with Claude Code".to_string(),
-                    true,
-                ));
-            }
+            self.state.status_message = Some((
+                format!(
+                    "ℹ {} uses external session-key auth. Complete its login flow outside the TUI.",
+                    state.provider_name
+                ),
+                false,
+            ));
             return;
         }
 

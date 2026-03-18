@@ -174,7 +174,7 @@ pub(crate) fn render_provider_details(frame: &mut Frame, area: Rect, state: &App
 fn auth_type_label(auth_type: &str) -> &str {
     match auth_type {
         "aws_credentials" => "AWS Credentials",
-        "oauth" => "OAuth (Claude Code)",
+        "oauth" => "OAuth / Session Key",
         "api_key" => "API Key",
         "none" => "None required",
         _ => auth_type,
@@ -258,9 +258,9 @@ fn render_auth_hints(
             ]));
         }
         "oauth" => {
-            content.push(Line::from("Uses Claude Code OAuth credentials."));
+            content.push(Line::from("Uses external session-key or OAuth credentials."));
             content.push(Line::from(Span::styled(
-                "  Run: claude (to authenticate)",
+                "  Complete the provider login flow outside the TUI.",
                 Style::default().fg(Color::Yellow),
             )));
         }

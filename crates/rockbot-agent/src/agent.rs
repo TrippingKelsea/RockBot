@@ -484,6 +484,8 @@ pub enum ToolExecutionLocality {
     RemoteClient(String),
 }
 
+const COMPACTION_SUMMARY_KEY: &str = "compaction_summary";
+
 impl Agent {
     /// Create a new agent with the given configuration
     #[allow(clippy::too_many_arguments)]
@@ -1932,8 +1934,12 @@ impl Agent {
             }
         };
 
-        let summary_message =
+        let mut summary_message =
             Message::system(summary_text, SystemLevel::Info).with_session_id(&context.session_id);
+        summary_message.metadata.extra.insert(
+            COMPACTION_SUMMARY_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
 
         context.messages.insert(0, summary_message);
 
@@ -1997,7 +2003,14 @@ impl Agent {
         let mut skipped_incomplete_tool_uses = 0usize;
 
         for (idx, message) in context.messages.iter().enumerate() {
-            if matches!(message.metadata.role, MessageRole::System) {
+            if matches!(message.metadata.role, MessageRole::System)
+                && !message
+                    .metadata
+                    .extra
+                    .get(COMPACTION_SUMMARY_KEY)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
                 continue;
             }
 
@@ -5211,5 +5224,46 @@ mod tests {
             ..req
         };
         assert!(!req2.stream);
+    }
+
+    #[tokio::test]
+    async fn test_compaction_summary_system_message_is_preserved_in_llm_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = build_test_agent(temp.path(), None).await;
+        let mut summary =
+            Message::system("summary", SystemLevel::Info).with_session_id("test-agent:session");
+        summary.metadata.extra.insert(
+            COMPACTION_SUMMARY_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        let mut other_system = Message::system("instructions", SystemLevel::Info)
+            .with_session_id("test-agent:session");
+        other_system
+            .metadata
+            .extra
+            .insert("unrelated".to_string(), serde_json::Value::Bool(true));
+        let context = ProcessingContext {
+            session_id: "test-agent:session".to_string(),
+            messages: vec![
+                other_system,
+                summary,
+                Message::text("latest user message").with_role(MessageRole::User),
+            ],
+            available_tools: vec![],
+            token_count: 0,
+            workspace_override: None,
+            remote_executor_target: None,
+            remote_executor_strict: false,
+            remote_workspace_override: None,
+            delegation_depth: 0,
+        };
+
+        let messages = agent.llm_messages_from_context(&context);
+
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].role, rockbot_llm::MessageRole::System));
+        assert_eq!(messages[0].content, "summary");
+        assert!(matches!(messages[1].role, rockbot_llm::MessageRole::User));
+        assert_eq!(messages[1].content, "latest user message");
     }
 }

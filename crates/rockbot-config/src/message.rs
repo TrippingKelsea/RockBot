@@ -230,6 +230,7 @@ impl Message {
             message: message.into(),
             level,
         })
+        .with_role(MessageRole::System)
     }
 
     /// Create an error message
@@ -465,6 +466,13 @@ mod tests {
         assert_eq!(message.metadata.agent_id, Some("agent-456".to_string()));
         assert!(matches!(message.metadata.role, MessageRole::Assistant));
         assert_eq!(message.extract_text(), Some("Test message".to_string()));
+    }
+
+    #[test]
+    fn test_system_message_sets_system_role() {
+        let message = Message::system("System note", SystemLevel::Info);
+        assert!(matches!(message.metadata.role, MessageRole::System));
+        assert_eq!(message.extract_text(), Some("System note".to_string()));
     }
 
     #[test]

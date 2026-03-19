@@ -55,9 +55,9 @@ pub enum FindingSeverity {
 }
 
 pub fn inspect_storage(config_path: &Path) -> StorageReport {
-    let cfg = tokio::runtime::Runtime::new()
+    let cfg = std::fs::read_to_string(config_path)
         .ok()
-        .and_then(|rt| rt.block_on(rockbot_config::Config::from_file(&config_path.to_path_buf())).ok())
+        .and_then(|content| rockbot_config::Config::from_toml(&content).ok())
         .unwrap_or_default();
     let runtime = StorageRuntime::new_with_root_sync(
         &cfg,
@@ -147,7 +147,11 @@ pub fn summarize_report(report: &StorageReport) -> String {
         "Storage root: {}\nVirtual disk: {} ({})\n",
         report.storage_root.display(),
         report.disk_path.display(),
-        if report.disk_exists { "present" } else { "missing" }
+        if report.disk_exists {
+            "present"
+        } else {
+            "missing"
+        }
     ));
 
     out.push_str("Store plan:\n");
@@ -208,11 +212,13 @@ pub fn summarize_report(report: &StorageReport) -> String {
 pub fn recommended_actions(report: &StorageReport) -> Vec<String> {
     let mut actions = Vec::new();
 
-    if report
-        .legacy_files
-        .iter()
-        .any(|f| f.exists && report.plans.iter().any(|p| p.label == f.label && p.source != "legacy"))
-    {
+    if report.legacy_files.iter().any(|f| {
+        f.exists
+            && report
+                .plans
+                .iter()
+                .any(|p| p.label == f.label && p.source != "legacy")
+    }) {
         actions.push(
             "Legacy standalone stores still coexist with runtime-selected non-legacy stores. Treat this node as mid-migration and prefer explicit repair over assuming the vdisk is authoritative.".to_string(),
         );

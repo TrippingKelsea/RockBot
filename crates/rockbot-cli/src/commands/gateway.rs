@@ -501,9 +501,15 @@ async fn register_compiled_llm_providers(
     {
         let base_url =
             std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
-        let provider = rockbot_llm_ollama::OllamaProvider::with_base_url(base_url);
-        tracing::info!("Registered Ollama provider");
-        registry.register_provider(Arc::new(provider)).await;
+        match rockbot_llm_ollama::OllamaProvider::with_base_url(base_url) {
+            Ok(provider) => {
+                tracing::info!("Registered Ollama provider");
+                registry.register_provider(Arc::new(provider)).await;
+            }
+            Err(err) => {
+                tracing::warn!("Skipping Ollama provider registration: {err}");
+            }
+        }
     }
 
     Ok(())

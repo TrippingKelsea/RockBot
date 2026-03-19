@@ -9,6 +9,7 @@ use rockbot_llm::{
     Usage,
 };
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 
@@ -121,11 +122,12 @@ impl OllamaProvider {
         }
     }
 
-    pub fn with_base_url(base_url: String) -> Self {
-        Self {
+    pub fn with_base_url(base_url: String) -> Result<Self> {
+        let base_url = validate_base_url(&base_url)?;
+        Ok(Self {
             client: Self::build_client(),
-            base_url: base_url.trim_end_matches('/').to_string(),
-        }
+            base_url,
+        })
     }
 
     fn build_client() -> reqwest::Client {
@@ -173,6 +175,43 @@ impl OllamaProvider {
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
         }
+    }
+}
+
+fn validate_base_url(base_url: &str) -> Result<String> {
+    let parsed = Url::parse(base_url).map_err(|e| LlmError::ApiError {
+        message: format!("Invalid Ollama base URL '{base_url}': {e}"),
+    })?;
+
+    let host = parsed.host_str().unwrap_or_default();
+    let is_local = matches!(host, "localhost" | "127.0.0.1" | "::1");
+    if !is_local && parsed.scheme() != "https" {
+        return Err(LlmError::ApiError {
+            message: format!(
+                "Remote Ollama hosts must use https:// (got '{}')",
+                parsed.scheme()
+            ),
+        });
+    }
+
+    Ok(base_url.trim_end_matches('/').to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn test_validate_base_url_rejects_remote_http() {
+        let err = validate_base_url("http://example.com:11434").unwrap_err();
+        assert!(matches!(err, LlmError::ApiError { .. }));
+    }
+
+    #[test]
+    fn test_validate_base_url_allows_local_http() {
+        let url = validate_base_url("http://localhost:11434").unwrap();
+        assert_eq!(url, "http://localhost:11434");
     }
 }
 

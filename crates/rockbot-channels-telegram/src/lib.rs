@@ -174,6 +174,12 @@ impl TelegramChannel {
         }
     }
 
+    fn escape_html(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+
     /// Start message handler loop
     async fn start_message_loop(
         bot: Bot,
@@ -337,8 +343,8 @@ impl Channel for TelegramChannel {
 
         let sent_message = self
             .bot
-            .send_message(chat_id, &text)
-            .parse_mode(ParseMode::MarkdownV2)
+            .send_message(chat_id, Self::escape_html(&text))
+            .parse_mode(ParseMode::Html)
             .await
             .map_err(|e| ChannelError::MessageSendFailed {
                 message: format!("Failed to send Telegram message: {e}"),
@@ -473,5 +479,11 @@ mod tests {
         let schema = channel.credential_schema().unwrap();
         assert_eq!(schema.provider_id, "telegram");
         assert_eq!(schema.category, CredentialCategory::Communication);
+    }
+
+    #[test]
+    fn test_escape_html_for_telegram_messages() {
+        let escaped = TelegramChannel::escape_html("<b>& hello > world");
+        assert_eq!(escaped, "&lt;b&gt;&amp; hello &gt; world");
     }
 }

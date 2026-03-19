@@ -345,19 +345,23 @@ impl CronScheduler {
     /// Start the background scheduler loop. Must provide an executor.
     /// Can be called on `&self` (or `Arc<Self>`) — uses interior mutability.
     pub async fn start(&self, executor: Arc<dyn CronExecutor>) {
-        let (cmd_tx, cmd_rx) = mpsc::channel::<SchedulerCommand>(64);
         {
             let mut tx_guard = self.cmd_tx.lock().await;
+            if tx_guard.is_some() {
+                warn!("Cron scheduler start requested while already running");
+                return;
+            }
+            let (cmd_tx, cmd_rx) = mpsc::channel::<SchedulerCommand>(64);
             *tx_guard = Some(cmd_tx);
+
+            let jobs = Arc::clone(&self.jobs);
+            let store = Arc::clone(&self.store);
+            let tick_interval = self.tick_interval;
+
+            tokio::spawn(async move {
+                Self::run_loop(jobs, store, executor, cmd_rx, tick_interval).await;
+            });
         }
-
-        let jobs = Arc::clone(&self.jobs);
-        let store = Arc::clone(&self.store);
-        let tick_interval = self.tick_interval;
-
-        tokio::spawn(async move {
-            Self::run_loop(jobs, store, executor, cmd_rx, tick_interval).await;
-        });
 
         info!("Cron scheduler background task started");
     }
@@ -657,6 +661,7 @@ impl CronScheduler {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -806,5 +811,48 @@ mod tests {
             assert_eq!(jobs.len(), 1);
             assert_eq!(jobs[0].name, "persist-test");
         }
+    }
+
+    struct CountingExecutor {
+        count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl CronExecutor for CountingExecutor {
+        async fn execute(&self, _job: &CronJob) -> std::result::Result<(), String> {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_start_is_idempotent() {
+        let temp_db = NamedTempFile::new().unwrap();
+        let scheduler = CronScheduler::new(temp_db.path())
+            .await
+            .unwrap()
+            .with_tick_interval(Duration::from_millis(10));
+
+        let mut job = CronJob::new(
+            "run-once",
+            CronSchedule::At { at_ms: 0 },
+            CronPayload::SystemEvent {
+                event: "tick".into(),
+                data: None,
+            },
+        );
+        job.state.next_run_at_ms = Some(0);
+        scheduler.add_job(job).await.unwrap();
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(CountingExecutor {
+            count: Arc::clone(&count),
+        });
+
+        scheduler.start(executor.clone()).await;
+        scheduler.start(executor).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }

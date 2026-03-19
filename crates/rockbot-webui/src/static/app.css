@@ -352,10 +352,203 @@ input[type="file"] {
   line-height: 1.55;
 }
 
+.hidden {
+  display: none !important;
+}
+
+.app-shell {
+  margin-top: 1rem;
+}
+
+.app-toolbar {
+  margin-bottom: 1rem;
+}
+
+.workspace-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+}
+
+.workspace-grid.lower {
+  margin-top: 1rem;
+}
+
+.stack-form,
+.settings-grid {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.stack-form label,
+.settings-grid label {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-grid button {
+  grid-column: 1 / -1;
+}
+
+input:not([type="file"]),
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.8rem 0.9rem;
+  color: var(--text);
+  background: rgba(2, 6, 23, 0.6);
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.agent-list,
+.doc-list,
+.object-list,
+.topology-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.agent-card,
+.doc-card,
+.object-card,
+.topology-card,
+.zone-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-strong);
+  padding: 0.95rem;
+}
+
+.agent-card.active,
+.doc-card.active {
+  border-color: rgba(45, 212, 191, 0.42);
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.22);
+}
+
+.agent-card button,
+.doc-card button,
+.object-card button {
+  width: 100%;
+}
+
+.agent-card-title,
+.doc-card-title,
+.topology-card-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.agent-card-meta,
+.doc-card-meta,
+.topology-card-meta,
+.zone-card-meta,
+.object-card-meta {
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.meta-strip {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 1rem;
+}
+
+.meta-chip {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-strong);
+  padding: 0.85rem 0.95rem;
+}
+
+.meta-chip strong,
+.object-row strong {
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+.editor-shell {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  margin-top: 1rem;
+}
+
+.compact h4 {
+  margin: 0;
+}
+
+.doc-editor {
+  min-height: 28rem;
+  margin-top: 1rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  line-height: 1.55;
+}
+
+.object-row {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1.5fr) minmax(160px, 0.8fr) auto;
+  align-items: end;
+}
+
+.object-controls {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.checkbox-line {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+  color: var(--dim);
+}
+
+.checkbox-line input {
+  width: auto;
+}
+
+.topology-columns {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 1rem;
+}
+
+.empty-state {
+  color: var(--dim);
+  padding: 1rem;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  background: rgba(2, 6, 23, 0.35);
+}
+
 @media (max-width: 900px) {
   .masthead,
   .panel-grid,
-  .form-grid {
+  .form-grid,
+  .workspace-grid,
+  .editor-shell,
+  .topology-columns,
+  .settings-grid,
+  .meta-strip {
     grid-template-columns: 1fr;
   }
 

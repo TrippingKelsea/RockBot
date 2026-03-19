@@ -121,11 +121,11 @@ impl Default for BootstrapShellModel {
                 },
             ],
             nav_items: vec![
-                "Sessions".to_string(),
                 "Agents".to_string(),
-                "Providers".to_string(),
-                "Credentials".to_string(),
-                "Cron".to_string(),
+                "Markdown State".to_string(),
+                "Replication".to_string(),
+                "Topology".to_string(),
+                "Zones".to_string(),
             ],
         }
     }

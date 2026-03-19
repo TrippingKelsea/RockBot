@@ -96,6 +96,170 @@ pub fn BootstrapApp(model: BootstrapShellModel) -> impl IntoView {
                         .collect_view()}
                 </ol>
             </section>
+
+            <section id="authenticated-app" class="app-shell hidden" aria-labelledby="workspace-title">
+                <div class="panel app-toolbar">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-eyebrow">Control Plane</p>
+                            <h2 id="workspace-title">Agent workspace</h2>
+                        </div>
+                        <span id="workspace-pill" class="pill pill-idle">Locked</span>
+                    </div>
+                    <p id="workspace-status" class="help">
+                        Authenticate with a client identity to load agent topology, markdown state,
+                        and replication controls.
+                    </p>
+                </div>
+
+                <div class="workspace-grid">
+                    <section class="panel agent-sidebar" aria-labelledby="agents-title">
+                        <div class="panel-header">
+                            <div>
+                                <p class="section-eyebrow">Agents</p>
+                                <h3 id="agents-title">Create and select</h3>
+                            </div>
+                            <span id="agent-count-pill" class="pill pill-idle">0 agents</span>
+                        </div>
+
+                        <form id="agent-create-form" class="stack-form">
+                            <label>
+                                <span>Agent ID</span>
+                                <input id="agent-create-id" type="text" placeholder="hex-worker" />
+                            </label>
+                            <label>
+                                <span>Model</span>
+                                <input id="agent-create-model" type="text" placeholder="bedrock/..." />
+                            </label>
+                            <label>
+                                <span>Owner Agent</span>
+                                <input id="agent-create-owner" type="text" placeholder="Hex" />
+                            </label>
+                            <label>
+                                <span>Zone</span>
+                                <input id="agent-create-zone" type="text" placeholder="zone:hex" />
+                            </label>
+                            <label>
+                                <span>System Prompt</span>
+                                <textarea id="agent-create-prompt" rows="6" placeholder="Describe the agent's role and constraints."></textarea>
+                            </label>
+                            <button class="btn btn-primary" type="submit">Create Agent</button>
+                        </form>
+
+                        <div id="agent-list" class="agent-list" aria-live="polite"></div>
+                    </section>
+
+                    <section class="panel agent-detail" aria-labelledby="agent-detail-title">
+                        <div class="panel-header">
+                            <div>
+                                <p class="section-eyebrow">Agent</p>
+                                <h3 id="agent-detail-title">No agent selected</h3>
+                            </div>
+                            <span id="selected-agent-pill" class="pill pill-idle">Idle</span>
+                        </div>
+
+                        <form id="agent-settings-form" class="settings-grid">
+                            <label>
+                                <span>Owner Agent</span>
+                                <input id="agent-owner-input" type="text" />
+                            </label>
+                            <label>
+                                <span>Zone</span>
+                                <input id="agent-zone-input" type="text" />
+                            </label>
+                            <label>
+                                <span>Model</span>
+                                <input id="agent-model-input" type="text" />
+                            </label>
+                            <label>
+                                <span>Parent Agent</span>
+                                <input id="agent-parent-input" type="text" />
+                            </label>
+                            <button id="agent-settings-save" class="btn btn-secondary" type="submit">Save Agent Settings</button>
+                        </form>
+
+                        <div class="meta-strip">
+                            <div class="meta-chip">
+                                <strong>Creator</strong>
+                                <span id="agent-creator-value">-</span>
+                            </div>
+                            <div class="meta-chip">
+                                <strong>Workspace</strong>
+                                <span id="agent-vdisk-value">-</span>
+                            </div>
+                            <div class="meta-chip">
+                                <strong>Status</strong>
+                                <span id="agent-status-value">-</span>
+                            </div>
+                        </div>
+
+                        <div class="editor-shell">
+                            <aside class="doc-list-panel">
+                                <div class="panel-header compact">
+                                    <div>
+                                        <p class="section-eyebrow">Documents</p>
+                                        <h4>Markdown state</h4>
+                                    </div>
+                                    <span id="doc-pill" class="pill pill-idle">No document</span>
+                                </div>
+                                <div id="doc-list" class="doc-list"></div>
+                            </aside>
+
+                            <div class="doc-editor-panel">
+                                <div class="panel-header compact">
+                                    <div>
+                                        <p class="section-eyebrow">Editor</p>
+                                        <h4 id="doc-editor-title">Select a markdown document</h4>
+                                    </div>
+                                    <button id="doc-save-btn" class="btn btn-primary" type="button">Save Markdown</button>
+                                </div>
+                                <textarea id="doc-editor" class="doc-editor" spellcheck="false"></textarea>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="workspace-grid lower">
+                    <section class="panel replication-panel" aria-labelledby="replication-title">
+                        <div class="panel-header">
+                            <div>
+                                <p class="section-eyebrow">Replication</p>
+                                <h3 id="replication-title">Large object policy</h3>
+                            </div>
+                            <span id="replication-pill" class="pill pill-idle">No objects</span>
+                        </div>
+                        <p class="help">
+                            Promote large objects for replication selectively. Canonical markdown documents remain
+                            replicated through the agent state store; this table is for larger attached objects.
+                        </p>
+                        <div id="object-list" class="object-list"></div>
+                    </section>
+
+                    <section class="panel topology-panel" aria-labelledby="topology-title">
+                        <div class="panel-header">
+                            <div>
+                                <p class="section-eyebrow">Topology</p>
+                                <h3 id="topology-title">Zones and communication graph</h3>
+                            </div>
+                            <span id="topology-pill" class="pill pill-idle">No topology</span>
+                        </div>
+                        <div class="topology-columns">
+                            <div>
+                                <h4>Nodes</h4>
+                                <div id="topology-nodes" class="topology-list"></div>
+                            </div>
+                            <div>
+                                <h4>Edges</h4>
+                                <div id="topology-edges" class="topology-list"></div>
+                            </div>
+                            <div>
+                                <h4>Zones</h4>
+                                <div id="topology-zones" class="topology-list"></div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </section>
         </main>
     }
 }

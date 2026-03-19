@@ -872,6 +872,60 @@ impl StorageRuntime {
     pub async fn delete_agent_context_file(&self, agent_id: &str, filename: &str) -> Result<()> {
         delete_agent_context_file_with_runtime(self, agent_id, filename).await
     }
+
+    pub async fn list_agent_objects(&self, agent_id: &str) -> Result<Vec<AgentObjectRecord>> {
+        let store = self.open_agent_state_store_sync(agent_id)?;
+        let mut objects: Vec<AgentObjectRecord> = store
+            .list_json::<AgentObjectRecord>(tables::AGENT_OBJECTS)?
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect();
+        objects.sort_by(|a, b| a.object_id.cmp(&b.object_id));
+        Ok(objects)
+    }
+
+    pub async fn upsert_agent_object(
+        &self,
+        agent_id: &str,
+        record: &AgentObjectRecord,
+    ) -> Result<()> {
+        let store = self.open_agent_state_store_sync(agent_id)?;
+        store.put_json(tables::AGENT_OBJECTS, &record.object_id, record)?;
+        Ok(())
+    }
+
+    pub async fn list_topology_nodes(&self) -> Result<Vec<TopologyNodeRecord>> {
+        let store = self.open_topology_store_sync()?;
+        let mut nodes: Vec<TopologyNodeRecord> = store
+            .list_json::<TopologyNodeRecord>(tables::TOPOLOGY_NODES)?
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect();
+        nodes.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        Ok(nodes)
+    }
+
+    pub async fn list_topology_edges(&self) -> Result<Vec<TopologyEdgeRecord>> {
+        let store = self.open_topology_store_sync()?;
+        let mut edges: Vec<TopologyEdgeRecord> = store
+            .list_json::<TopologyEdgeRecord>(tables::TOPOLOGY_EDGES)?
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect();
+        edges.sort_by(|a, b| a.edge_id.cmp(&b.edge_id));
+        Ok(edges)
+    }
+
+    pub async fn list_zones(&self) -> Result<Vec<ZoneRecord>> {
+        let store = self.open_topology_store_sync()?;
+        let mut zones: Vec<ZoneRecord> = store
+            .list_json::<ZoneRecord>(tables::ZONES)?
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect();
+        zones.sort_by(|a, b| a.zone_id.cmp(&b.zone_id));
+        Ok(zones)
+    }
 }
 
 impl StoreKind {

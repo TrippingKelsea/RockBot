@@ -1696,6 +1696,7 @@ impl Gateway {
                 self.handle_health_check().await
             }
             (&Method::GET, "/api/metrics") => self.handle_metrics().await,
+            (&Method::GET, "/api/topology") => Ok(self.handle_get_topology().await),
             (&Method::GET, "/api/agents") => self.handle_list_agents().await,
             (&Method::POST, "/api/agents") => self.handle_create_agent(req).await,
             // Agent context files API (must precede generic agent PUT/DELETE)
@@ -1709,8 +1710,14 @@ impl Gateway {
             (&Method::GET, p) if p.starts_with("/api/agents/") && p.ends_with("/files") => {
                 Ok(self.handle_list_agent_files(&path).await)
             }
+            (&Method::GET, p) if p.starts_with("/api/agents/") && p.ends_with("/objects") => {
+                Ok(self.handle_list_agent_objects(&path).await)
+            }
             (&Method::PUT, p) if p.starts_with("/api/agents/") && p.contains("/files/") => {
                 Ok(self.handle_put_agent_file(&path, req).await)
+            }
+            (&Method::PUT, p) if p.starts_with("/api/agents/") && p.contains("/objects/") => {
+                Ok(self.handle_put_agent_object(&path, req).await)
             }
             (&Method::DELETE, p) if p.starts_with("/api/agents/") && p.contains("/files/") => {
                 Ok(self.handle_delete_agent_file(&path).await)
@@ -3639,6 +3646,206 @@ impl Gateway {
         Some(agent_id)
     }
 
+    fn parse_agent_objects_list_path(path: &str) -> Option<&str> {
+        let stripped = path.strip_prefix("/api/agents/")?;
+        let agent_id = stripped.strip_suffix("/objects")?;
+        if agent_id.is_empty() || !Self::is_valid_agent_id(agent_id) {
+            return None;
+        }
+        Some(agent_id)
+    }
+
+    fn parse_agent_object_path(path: &str) -> Option<(&str, &str)> {
+        let stripped = path.strip_prefix("/api/agents/")?;
+        let (agent_id, object_id) = stripped.split_once("/objects/")?;
+        if agent_id.is_empty() || object_id.is_empty() || !Self::is_valid_agent_id(agent_id) {
+            return None;
+        }
+        Some((agent_id, object_id))
+    }
+
+    async fn handle_get_topology(&self) -> Response<GatewayBody> {
+        let storage_root = self
+            .credentials_config
+            .vault_path
+            .parent()
+            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
+        let runtime = match rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
+            &Config::default(),
+            storage_root,
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                return Self::json_error(
+                    &format!("Failed to open topology runtime: {err}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        };
+        let nodes = match runtime.list_topology_nodes().await {
+            Ok(nodes) => nodes,
+            Err(err) => {
+                return Self::json_error(
+                    &format!("Failed to load topology nodes: {err}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        };
+        let edges = match runtime.list_topology_edges().await {
+            Ok(edges) => edges,
+            Err(err) => {
+                return Self::json_error(
+                    &format!("Failed to load topology edges: {err}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        };
+        let zones = match runtime.list_zones().await {
+            Ok(zones) => zones,
+            Err(err) => {
+                return Self::json_error(
+                    &format!("Failed to load zones: {err}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        };
+
+        let body = serde_json::json!({
+            "nodes": nodes,
+            "edges": edges,
+            "zones": zones,
+        })
+        .to_string();
+        Self::json_response(&body, StatusCode::OK)
+    }
+
+    async fn handle_list_agent_objects(&self, path: &str) -> Response<GatewayBody> {
+        let Some(agent_id) = Self::parse_agent_objects_list_path(path) else {
+            return Self::json_error("Invalid path", StatusCode::BAD_REQUEST);
+        };
+        let storage_root = self
+            .credentials_config
+            .vault_path
+            .parent()
+            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
+        let runtime = match rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
+            &Config::default(),
+            storage_root,
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                return Self::json_error(
+                    &format!("Failed to open agent object store: {err}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        };
+        match runtime.list_agent_objects(agent_id).await {
+            Ok(objects) => Self::json_response(
+                &serde_json::to_string(&objects).unwrap_or_default(),
+                StatusCode::OK,
+            ),
+            Err(err) => Self::json_error(
+                &format!("Failed to list agent objects: {err}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        }
+    }
+
+    async fn handle_put_agent_object<B>(&self, path: &str, req: Request<B>) -> Response<GatewayBody>
+    where
+        B: hyper::body::Body<Data = hyper::body::Bytes> + Send,
+        B::Error: std::fmt::Debug,
+    {
+        let Some((agent_id, object_id)) = Self::parse_agent_object_path(path) else {
+            return Self::json_error("Invalid path", StatusCode::BAD_REQUEST);
+        };
+
+        #[derive(Deserialize)]
+        struct UpdateObjectRequest {
+            content_type: Option<String>,
+            size_bytes: Option<u64>,
+            hash: Option<String>,
+            replication_class: Option<rockbot_storage_runtime::ReplicationClass>,
+            promoted_for_replication: Option<bool>,
+            last_replicated_at: Option<String>,
+        }
+
+        let body = match Self::collect_limited_body_generic(req, MAX_HTTP_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return resp,
+        };
+        let payload: UpdateObjectRequest = match serde_json::from_slice(&body) {
+            Ok(payload) => payload,
+            Err(err) => {
+                return Self::json_error(
+                    &format!("Invalid JSON: {err}"),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        };
+
+        let storage_root = self
+            .credentials_config
+            .vault_path
+            .parent()
+            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
+        let runtime = match rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
+            &Config::default(),
+            storage_root,
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                return Self::json_error(
+                    &format!("Failed to open agent object store: {err}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        };
+        let existing = runtime
+            .list_agent_objects(agent_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|record| record.object_id == object_id);
+        let record = rockbot_storage_runtime::AgentObjectRecord {
+            object_id: object_id.to_string(),
+            content_type: payload
+                .content_type
+                .or_else(|| existing.as_ref().map(|record| record.content_type.clone()))
+                .unwrap_or_else(|| "application/octet-stream".to_string()),
+            size_bytes: payload
+                .size_bytes
+                .or_else(|| existing.as_ref().map(|record| record.size_bytes))
+                .unwrap_or(0),
+            hash: payload
+                .hash
+                .or_else(|| existing.as_ref().map(|record| record.hash.clone()))
+                .unwrap_or_default(),
+            replication_class: payload
+                .replication_class
+                .or_else(|| existing.as_ref().map(|record| record.replication_class.clone()))
+                .unwrap_or(rockbot_storage_runtime::ReplicationClass::ManualPromote),
+            promoted_for_replication: payload
+                .promoted_for_replication
+                .or_else(|| existing.as_ref().map(|record| record.promoted_for_replication))
+                .unwrap_or(false),
+            last_replicated_at: payload
+                .last_replicated_at
+                .or_else(|| existing.and_then(|record| record.last_replicated_at)),
+        };
+        match runtime.upsert_agent_object(agent_id, &record).await {
+            Ok(()) => Self::json_response(
+                &serde_json::json!({"status":"updated","object_id": object_id}).to_string(),
+                StatusCode::OK,
+            ),
+            Err(err) => Self::json_error(
+                &format!("Failed to update object metadata: {err}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        }
+    }
+
     /// List context files for an agent
     async fn handle_list_agent_files(&self, path: &str) -> Response<GatewayBody> {
         let Some(agent_id) = Self::parse_agent_files_list_path(path) else {
@@ -4562,22 +4769,35 @@ impl Gateway {
             (Method::GET, "/api/agents") => {
                 self.handle_list_agents().await.map_err(|e| e.to_string())
             }
+            (Method::GET, "/api/topology") => Ok(self.handle_get_topology().await),
             (Method::POST, "/api/agents") => self
                 .handle_create_agent(req)
                 .await
                 .map_err(|e| e.to_string()),
-            (Method::PUT, p) if p.starts_with("/api/agents/") && !p.contains("/files/") => self
+            (Method::PUT, p)
+                if p.starts_with("/api/agents/")
+                    && !p.contains("/files/")
+                    && !p.contains("/objects/") =>
+            {
+                self
                 .handle_update_agent(req)
                 .await
-                .map_err(|e| e.to_string()),
+                .map_err(|e| e.to_string())
+            }
             (Method::GET, p) if p.starts_with("/api/agents/") && p.ends_with("/files") => {
                 Ok(self.handle_list_agent_files(path).await)
+            }
+            (Method::GET, p) if p.starts_with("/api/agents/") && p.ends_with("/objects") => {
+                Ok(self.handle_list_agent_objects(path).await)
             }
             (Method::GET, p) if p.starts_with("/api/agents/") && p.contains("/files/") => {
                 Ok(self.handle_get_agent_file(path).await)
             }
             (Method::PUT, p) if p.starts_with("/api/agents/") && p.contains("/files/") => {
                 Ok(self.handle_put_agent_file(path, req).await)
+            }
+            (Method::PUT, p) if p.starts_with("/api/agents/") && p.contains("/objects/") => {
+                Ok(self.handle_put_agent_object(path, req).await)
             }
             (Method::DELETE, p) if p.starts_with("/api/agents/") && p.contains("/files/") => {
                 Ok(self.handle_delete_agent_file(path).await)
@@ -5448,6 +5668,9 @@ impl Gateway {
                 "status": "active",
                 "model": cfg.model,
                 "parent_id": cfg.parent_id,
+                "creator_agent_id": cfg.creator_agent_id,
+                "owner_agent_id": cfg.owner_agent_id,
+                "zone_id": cfg.zone_id,
                 "system_prompt": cfg.system_prompt,
                 "workspace": cfg.workspace.as_ref().map(|p| p.display().to_string()),
                 "primary": cfg.primary,
@@ -5467,6 +5690,9 @@ impl Gateway {
                     "status": "pending",
                     "model": p.config.model,
                     "parent_id": p.config.parent_id,
+                    "creator_agent_id": p.config.creator_agent_id,
+                    "owner_agent_id": p.config.owner_agent_id,
+                    "zone_id": p.config.zone_id,
                     "system_prompt": p.config.system_prompt,
                     "workspace": p.config.workspace.as_ref().map(|p| p.display().to_string()),
                     "primary": p.config.primary,
@@ -5493,6 +5719,9 @@ impl Gateway {
                     "status": status,
                     "model": cfg.model,
                     "parent_id": cfg.parent_id,
+                    "creator_agent_id": cfg.creator_agent_id,
+                    "owner_agent_id": cfg.owner_agent_id,
+                    "zone_id": cfg.zone_id,
                     "system_prompt": cfg.system_prompt,
                     "workspace": cfg.workspace.as_ref().map(|p| p.display().to_string()),
                     "primary": cfg.primary,

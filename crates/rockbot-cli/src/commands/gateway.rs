@@ -13,7 +13,7 @@ use rockbot_security::SecurityManager;
 use rockbot_session::SessionManager;
 #[cfg(feature = "overseer")]
 use rockbot_storage::Store;
-use rockbot_storage_runtime::StorageRuntime;
+use rockbot_storage_runtime::{StorageRuntime, StoreKind};
 use rockbot_tools::ToolRegistry;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -115,7 +115,12 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     if let (Some(vault_result), Some(pki_manager)) = (vault_result.as_ref(), pki_manager) {
         bootstrap_local_vault_node(&config, pki_manager, &vault_result.manager).await;
     }
-    let opened_sessions = storage_runtime.open_sessions_store().await?;
+    let opened_sessions = if probe_store(config_path, StoreKind::Sessions).unwrap_or(false) {
+        storage_runtime.open_sessions_store().await?
+    } else {
+        warn!("Sessions store probe failed. Using recovery session store.");
+        storage_runtime.open_sessions_recovery_store().await?
+    };
     let session_manager = Arc::new(
         SessionManager::new_with_store(
             opened_sessions.store,
@@ -127,7 +132,13 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
 
     let mut vault_store: Option<Arc<rockbot_storage::Store>> = None;
     if vault_result.is_some() {
-        match storage_runtime.open_agents_store(&vault_path).await {
+        let agents_probe_ok = probe_store(config_path, StoreKind::Agents).unwrap_or(false);
+        match if agents_probe_ok {
+            storage_runtime.open_agents_store(&vault_path).await
+        } else {
+            warn!("Agents store probe failed. Skipping virtual-disk agent store and falling back to TOML persistence.");
+            Err(anyhow::anyhow!("agent store probe failed"))
+        } {
             Ok(opened_agents) => {
                 let store = opened_agents.store;
                 #[cfg(feature = "overseer")]
@@ -201,12 +212,9 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                     }
                 })?;
 
-                let workspace = agent_config
-                    .workspace
-                    .as_ref()
-                    .unwrap_or(&defaults.workspace);
+                let memory_root = agent_storage_root.join("runtime").join("memory");
                 let memory_manager =
-                    Arc::new(MemoryManager::new(workspace.clone()).await.map_err(|e| {
+                    Arc::new(MemoryManager::new(memory_root).await.map_err(|e| {
                         rockbot_gateway::error::GatewayError::InvalidRequest {
                             message: e.to_string(),
                         }
@@ -288,11 +296,8 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         info!("Creating agent: {}", agent_id);
 
         // Create memory manager for this agent
-        let workspace = agent_config
-            .workspace
-            .as_ref()
-            .unwrap_or(&config.agents.defaults.workspace);
-        let memory_manager = Arc::new(MemoryManager::new(workspace.clone()).await?);
+        let memory_root = storage_runtime.storage_root().join("runtime").join("memory");
+        let memory_manager = Arc::new(MemoryManager::new(memory_root).await?);
 
         // Create agent
         let invoker = gateway.agent_invoker();
@@ -363,6 +368,25 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     gateway.start().await?;
 
     Ok(())
+}
+
+fn probe_store(config_path: &Path, kind: StoreKind) -> Result<bool> {
+    let exe = std::env::current_exe()?;
+    let store = match kind {
+        StoreKind::Vault => "vault",
+        StoreKind::Agents => "agents",
+        StoreKind::Sessions => "sessions",
+        StoreKind::Cron => "cron",
+        StoreKind::Routing => "routing",
+    };
+    let status = Command::new(exe)
+        .arg("storage")
+        .arg("probe")
+        .arg("--config")
+        .arg(config_path)
+        .arg(store)
+        .status()?;
+    Ok(status.success())
 }
 
 async fn bootstrap_local_vault_node(

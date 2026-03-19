@@ -10,6 +10,13 @@ Release channels: `v0.2.16` (development), `v0.2.16-preview`, `v0.2.16-release`.
 
 ## [Unreleased]
 
+### Changed
+- **Storage runtime**: `storage repair` now probes stores out-of-process and repairs by reimporting or quarantining vdisk volumes instead of touching suspect `redb` volumes directly in-process
+- **Gateway startup**: sessions and agents stores are now probed before opening so a bad embedded volume no longer needs to take down startup
+- **PKI layout**: generated gateway TLS material now defaults under `pki/certs` and `pki/keys` instead of the config root
+- **Vault key layout**: default keyfile-based vault unlock now uses `~/.config/rockbot/pki/keys/vault.key` with compatibility fallback for the legacy top-level `vault.key`
+- **Agent memory paths**: eager memory/episodes persistence no longer targets the configured workspace tree by default; it now uses managed runtime storage paths under the RockBot storage root
+
 ### Added
 - **Web UI**: new `rockbot-ui-model` crate for shared UI-facing view models and semantic state
 - **Web UI**: `rockbot-webui` now renders the public bootstrap shell through Leptos components instead of a single hand-built HTML blob

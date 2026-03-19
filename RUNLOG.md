@@ -16,3 +16,30 @@
   - Desired future behavior:
     - allow multiple roles on enrollment token creation
     - update docs/help text accordingly once implemented
+
+- Storage/runtime mismatch: bad embedded stores were still being "repaired" by directly opening them.
+  - Observed:
+    - `gateway run` and `storage repair` could still abort in `redb` even after storage planning was added
+  - Root cause:
+    - repair/startup paths were still touching suspect vdisk volumes in-process
+  - Desired behavior:
+    - probe out-of-process
+    - reimport from legacy when available
+    - otherwise quarantine/remove the suspect volume and fall back cleanly
+
+- PKI layout mismatch: generated gateway TLS materials and vault keyfile were escaping the `pki/` hierarchy.
+  - Observed paths:
+    - `~/.config/rockbot/gateway.crt`
+    - `~/.config/rockbot/gateway.key`
+    - `~/.config/rockbot/vault.key`
+  - Desired behavior:
+    - gateway TLS under `pki/certs` and `pki/keys`
+    - vault key under `pki/keys`
+
+- Agent memory storage mismatch: agent startup was eagerly creating persistence under the configured workspace tree.
+  - Observed path:
+    - `~/.config/rockbot/workspace/memory/`
+  - Desired behavior:
+    - no eager workspace-tree materialization on startup
+    - managed storage path first
+    - eventually move durable agent memory under `rockbot.data`

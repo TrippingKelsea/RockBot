@@ -97,9 +97,9 @@ async fn init_gateway_config(
     let config_dir = output_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let cert_path = config_dir.join("gateway.crt");
-    let key_path = config_dir.join("gateway.key");
     let pki_dir = config_dir.join("pki");
+    let cert_path = pki_dir.join("certs").join("gateway.crt");
+    let key_path = pki_dir.join("keys").join("gateway.key");
 
     if !cert_path.exists() || !key_path.exists() || force {
         super::cert::generate_self_signed_cert(&cert_path, &key_path, listen_ips, 365).await?;

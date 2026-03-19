@@ -497,6 +497,24 @@ pub fn replace_bytes(
     Ok(())
 }
 
+pub fn remove_volume(disk_path: &Path, volume_name: &str) -> Result<bool> {
+    if !disk_path.exists() {
+        return Ok(false);
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(disk_path)
+        .with_context(|| format!("failed to open virtual disk {}", disk_path.display()))?;
+    let mut manifest = VolumeBackend::load_or_initialize_manifest(&mut file)?;
+    let removed = manifest.volumes.remove(volume_name).is_some();
+    if removed {
+        VolumeBackend::persist_manifest(&mut file, &manifest)?;
+    }
+    Ok(removed)
+}
+
 pub fn materialize_file(
     disk_path: &Path,
     volume_name: &str,

@@ -34,6 +34,12 @@ pub enum StoreMode {
     Recovery,
 }
 
+#[derive(Debug, Clone)]
+pub struct RepairOutcome {
+    pub kind: StoreKind,
+    pub action: String,
+}
+
 #[derive(Clone)]
 pub struct OpenedStore {
     pub store: Arc<Store>,
@@ -458,6 +464,56 @@ impl StorageRuntime {
 
     pub async fn open_agents_watch_store(&self, vault_path: &Path) -> Result<OpenedStore> {
         self.open_agents_store(vault_path).await
+    }
+
+    pub async fn open_sessions_recovery_store(&self) -> Result<OpenedStore> {
+        let key = self.key_for_label("sessions")?;
+        self.open_recovery_store("sessions.recovery.redb", key).await
+    }
+
+    pub fn remove_volume(&self, kind: StoreKind) -> Result<bool> {
+        match kind.volume_name() {
+            Some(name) => rockbot_vdisk::remove_volume(&self.disk_path, name),
+            None => Ok(false),
+        }
+    }
+
+    pub fn repair_store(&self, kind: StoreKind, vault_path: &Path) -> Result<RepairOutcome> {
+        let plan = self.plan_store(kind, vault_path)?;
+        let action = match kind {
+            StoreKind::Vault => {
+                if plan.legacy.exists {
+                    rockbot_vdisk::replace_file(&self.disk_path, "vault", &plan.legacy.path, None)?;
+                    "reimported vault volume from legacy vault.db".to_string()
+                } else {
+                    "no legacy vault.db available; left vault volume unchanged".to_string()
+                }
+            }
+            StoreKind::Agents | StoreKind::Sessions | StoreKind::Cron | StoreKind::Routing => {
+                if plan.legacy.exists {
+                    let key = self.key_for_label(kind.label())?;
+                    rockbot_vdisk::replace_file(
+                        &self.disk_path,
+                        kind.volume_name().unwrap_or(kind.label()),
+                        &plan.legacy.path,
+                        key,
+                    )?;
+                    format!("reimported {} volume from legacy store", kind.label())
+                } else if plan.volume.exists {
+                    self.remove_volume(kind)?;
+                    match kind {
+                        StoreKind::Sessions => "removed suspect sessions volume; gateway will use recovery store".to_string(),
+                        StoreKind::Agents => "removed suspect agents volume; gateway will fall back to non-vdisk agent persistence".to_string(),
+                        StoreKind::Cron => "removed suspect cron volume; gateway will recreate or fall back in memory".to_string(),
+                        StoreKind::Routing => "removed suspect routing volume; gateway will recreate it on demand".to_string(),
+                        StoreKind::Vault => unreachable!(),
+                    }
+                } else {
+                    "nothing to repair".to_string()
+                }
+            }
+        };
+        Ok(RepairOutcome { kind, action })
     }
 
     async fn open_recovery_store(

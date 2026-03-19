@@ -517,7 +517,7 @@ pub enum CredentialsCommands {
         /// Use password-based encryption instead of keyfile
         #[arg(short, long)]
         password: bool,
-        /// Use a specific key file (default: ~/.config/rockbot/vault.key)
+        /// Use a specific key file (default: ~/.config/rockbot/pki/keys/vault.key)
         #[arg(short, long, value_name = "PATH")]
         keyfile: Option<PathBuf>,
         /// Use an Age public key for encryption
@@ -676,6 +676,23 @@ pub enum StorageCommands {
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
+    #[command(hide = true)]
+    Probe {
+        /// Path to config file (defaults to standard location)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        #[arg(value_enum)]
+        store: StorageProbeStore,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum StorageProbeStore {
+    Vault,
+    Agents,
+    Sessions,
+    Cron,
+    Routing,
 }
 
 /// Migration commands

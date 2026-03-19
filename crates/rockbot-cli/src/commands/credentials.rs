@@ -12,6 +12,22 @@ use uuid::Uuid;
 
 use crate::{load_config, CredentialsCommands, PermissionsCommands};
 
+fn default_vault_key_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+        .join("rockbot")
+        .join("pki")
+        .join("keys")
+        .join("vault.key")
+}
+
+fn legacy_vault_key_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+        .join("rockbot")
+        .join("vault.key")
+}
+
 /// Run credentials commands
 pub async fn run(command: &CredentialsCommands, config_path: &PathBuf) -> Result<()> {
     let config = load_config(config_path).await?;
@@ -165,10 +181,7 @@ async fn init_vault(
     } else {
         // Keyfile (default) - generate or use specified
         let kf_path = keyfile.cloned().unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
-                .join("rockbot")
-                .join("vault.key")
+            default_vault_key_path()
         });
 
         // Create parent directory if needed
@@ -489,21 +502,21 @@ async fn unlock_vault(
                 p.clone()
             } else {
                 // Try default path first
-                let default_path = dirs::config_dir()
-                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
-                    .join("rockbot")
-                    .join("vault.key");
+                let default_path = default_vault_key_path();
+                let legacy_path = legacy_vault_key_path();
 
                 if default_path.exists() {
                     default_path
+                } else if legacy_path.exists() {
+                    legacy_path
                 } else if let Some(hint) = path_hint {
                     let hint_path = PathBuf::from(hint);
                     if hint_path.exists() {
                         println!("Using key file: {hint}");
                         hint_path
                     } else {
-                        anyhow::bail!(
-                            "Key file not found. Use --keyfile <path>\n\
+                    anyhow::bail!(
+                        "Key file not found. Use --keyfile <path>\n\
                              (Previously used: {hint})"
                         );
                     }
@@ -577,15 +590,17 @@ async fn unlock_manager_for_cli(config: &Config) -> Result<CredentialManager> {
                 .as_deref()
                 .map(PathBuf::from)
                 .or_else(|| {
-                    let default_path = dirs::config_dir()
-                        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
-                        .join("rockbot")
-                        .join("vault.key");
-                    default_path.exists().then_some(default_path)
+                    let default_path = default_vault_key_path();
+                    let legacy_path = legacy_vault_key_path();
+                    if default_path.exists() {
+                        Some(default_path)
+                    } else {
+                        legacy_path.exists().then_some(legacy_path)
+                    }
                 })
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "This vault uses a keyfile. Use `rockbot credentials unlock --keyfile <path>` or place the key at ~/.config/rockbot/vault.key."
+                        "This vault uses a keyfile. Use `rockbot credentials unlock --keyfile <path>` or place the key at ~/.config/rockbot/pki/keys/vault.key."
                     )
                 })?;
             manager.unlock_with_keyfile(&keyfile_path).await?;

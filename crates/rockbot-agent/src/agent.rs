@@ -543,7 +543,9 @@ impl Agent {
 
         // Set up episodic memory store if enabled
         let episodic_store = if config.episodic_memory {
-            let episodes_dir = workspace.join("episodes");
+            let episodes_dir = rockbot_storage_runtime::default_storage_root()
+                .join("runtime")
+                .join("episodes");
             Some(Arc::new(rockbot_memory::EpisodicStore::new(episodes_dir)))
         } else {
             None

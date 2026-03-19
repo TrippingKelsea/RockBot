@@ -4295,7 +4295,7 @@ impl Gateway {
             .map_err(|e| anyhow::anyhow!("Invalid auth signature encoding: {e}"))?;
 
         let verifier = ring::signature::UnparsedPublicKey::new(
-            &ring::signature::ECDSA_P256_SHA256_FIXED,
+            &ring::signature::ECDSA_P256_SHA256_ASN1,
             spki,
         );
         verifier

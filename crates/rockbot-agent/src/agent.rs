@@ -1912,8 +1912,9 @@ impl Agent {
         let mut messages = Vec::new();
         let mut pending_tool_results: HashSet<String> = HashSet::new();
         let mut skipped_orphan_tool_results = 0usize;
+        let mut skipped_incomplete_tool_uses = 0usize;
 
-        for message in &context.messages {
+        for (idx, message) in context.messages.iter().enumerate() {
             if matches!(message.metadata.role, MessageRole::System) {
                 continue;
             }
@@ -1938,6 +1939,33 @@ impl Agent {
 
             if let rockbot_llm::MessageRole::Assistant = role {
                 if let Some(ref calls) = tool_calls {
+                    let required_ids: HashSet<_> = calls.iter().map(|call| call.id.clone()).collect();
+                    let mut satisfied_ids = HashSet::new();
+
+                    for next in context.messages.iter().skip(idx + 1) {
+                        if matches!(next.metadata.role, MessageRole::System) {
+                            continue;
+                        }
+                        if !matches!(next.metadata.role, MessageRole::Tool) {
+                            break;
+                        }
+                        if let Some(tool_result_id) = next
+                            .metadata
+                            .extra
+                            .get("tool_call_id")
+                            .and_then(|v| v.as_str())
+                        {
+                            if required_ids.contains(tool_result_id) {
+                                satisfied_ids.insert(tool_result_id.to_string());
+                            }
+                        }
+                    }
+
+                    if satisfied_ids.len() != required_ids.len() {
+                        skipped_incomplete_tool_uses += 1;
+                        continue;
+                    }
+
                     for call in calls {
                         pending_tool_results.insert(call.id.clone());
                     }
@@ -1968,6 +1996,12 @@ impl Agent {
             warn!(
                 "Skipped {} orphan tool result message(s) while building LLM context for agent {}",
                 skipped_orphan_tool_results, self.config.id
+            );
+        }
+        if skipped_incomplete_tool_uses > 0 {
+            warn!(
+                "Skipped {} assistant tool-use message(s) without immediate matching tool results while building LLM context for agent {}",
+                skipped_incomplete_tool_uses, self.config.id
             );
         }
 

@@ -271,6 +271,11 @@ impl SecurityManager {
         Ok(context)
     }
 
+    /// Build the default restriction set derived from the configured security policy.
+    pub fn default_restrictions(&self) -> SecurityRestrictions {
+        build_restrictions(&self.config)
+    }
+
     /// Check if access to a resource is allowed
     pub async fn check_access(
         &self,

@@ -7,11 +7,12 @@
 use rockbot_credentials_schema::{
     AuthMethod, CredentialCategory, CredentialField, CredentialSchema,
 };
-use rockbot_security::Capabilities;
+use rockbot_security::{enforce_command, Capabilities, EnforcementResult, SecurityRestrictions};
 use rockbot_tools::{message::ToolResult, Tool, ToolError, ToolExecutionContext};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -20,6 +21,20 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
 
 const MAX_MCP_RESPONSE_BYTES: usize = 1024 * 1024;
+const BLOCKED_MCP_ENV_KEYS: &[&str] = &[
+    "BASH_ENV",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "ENV",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "NODE_OPTIONS",
+    "PATH",
+    "PYTHONPATH",
+    "RUBYLIB",
+];
 
 /// JSON-RPC 2.0 request
 #[derive(Debug, Serialize)]
@@ -178,19 +193,70 @@ pub struct McpServerManager {
     servers: RwLock<HashMap<String, Arc<Mutex<McpConnection>>>>,
     /// Discovered tools: key = "server_name:tool_name"
     tool_defs: RwLock<HashMap<String, (String, McpToolDef)>>,
+    restrictions: SecurityRestrictions,
 }
 
 impl Default for McpServerManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(SecurityRestrictions::default())
     }
 }
 
 impl McpServerManager {
-    pub fn new() -> Self {
+    pub fn new(restrictions: SecurityRestrictions) -> Self {
         Self {
             servers: RwLock::new(HashMap::new()),
             tool_defs: RwLock::new(HashMap::new()),
+            restrictions,
+        }
+    }
+
+    fn sanitized_env(&self, env: &HashMap<String, String>) -> HashMap<String, String> {
+        env.iter()
+            .filter(|(key, _)| {
+                !BLOCKED_MCP_ENV_KEYS
+                    .iter()
+                    .any(|blocked| key.eq_ignore_ascii_case(blocked))
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    fn validate_server_command(&self, name: &str, config: &McpServerConfig) -> Result<(), ToolError> {
+        let command_path = Path::new(&config.command);
+        if !command_path.is_absolute() {
+            return Err(ToolError::ExecutionFailed {
+                message: format!(
+                    "MCP server '{name}' command must be an absolute path: {}",
+                    config.command
+                ),
+            });
+        }
+
+        let allowlist_configured = self
+            .restrictions
+            .allowed_executables
+            .as_ref()
+            .map(|allowed| !allowed.is_empty())
+            .unwrap_or(false)
+            || !self.restrictions.allowed_command_patterns.is_empty();
+        if !allowlist_configured {
+            return Err(ToolError::ExecutionFailed {
+                message: format!(
+                    "MCP server '{name}' requires an explicit process allowlist in security.capabilities.process.allowed_commands"
+                ),
+            });
+        }
+
+        let command = std::iter::once(config.command.as_str())
+            .chain(config.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        match enforce_command(&command, &config.command, &self.restrictions) {
+            EnforcementResult::Allowed => Ok(()),
+            EnforcementResult::Denied { reason } => Err(ToolError::ExecutionFailed {
+                message: format!("MCP server '{name}' is blocked by security policy: {reason}"),
+            }),
         }
     }
 
@@ -205,9 +271,13 @@ impl McpServerManager {
             config.command, config.args
         );
 
+        self.validate_server_command(name, config)?;
+        let sanitized_env = self.sanitized_env(&config.env);
+
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
-            .envs(&config.env)
+            .env_clear()
+            .envs(sanitized_env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
@@ -610,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_mcp_server_manager_creation() {
-        let manager = McpServerManager::new();
+        let manager = McpServerManager::new(SecurityRestrictions::default());
         // Should start with empty servers and tools
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -621,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_mcp_proxy_tool_naming() {
-        let manager = Arc::new(McpServerManager::new());
+        let manager = Arc::new(McpServerManager::new(SecurityRestrictions::default()));
         let tool_def = McpToolDef {
             name: "read_file".to_string(),
             description: Some("Read a file".to_string()),
@@ -634,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_mcp_proxy_tool_no_description() {
-        let manager = Arc::new(McpServerManager::new());
+        let manager = Arc::new(McpServerManager::new(SecurityRestrictions::default()));
         let tool_def = McpToolDef {
             name: "list".to_string(),
             description: None,
@@ -643,5 +713,57 @@ mod tests {
         let proxy = McpProxyTool::new("server".to_string(), tool_def, manager);
         assert_eq!(proxy.name(), "mcp_server_list");
         assert_eq!(proxy.description(), "MCP tool");
+    }
+
+    #[test]
+    fn test_validate_server_command_requires_absolute_path_and_allowlist() {
+        let manager = McpServerManager::new(SecurityRestrictions::default());
+        let err = manager
+            .validate_server_command(
+                "test",
+                &McpServerConfig {
+                    command: "npx".to_string(),
+                    args: vec![],
+                    env: HashMap::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn test_validate_server_command_rejects_unallowlisted_executable() {
+        let mut restrictions = SecurityRestrictions::default();
+        restrictions.allowed_executables = Some(
+            ["/usr/bin/allowed".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        let manager = McpServerManager::new(restrictions);
+        let err = manager
+            .validate_server_command(
+                "test",
+                &McpServerConfig {
+                    command: "/usr/bin/blocked".to_string(),
+                    args: vec!["--flag".to_string()],
+                    env: HashMap::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("blocked by security policy"));
+    }
+
+    #[test]
+    fn test_sanitized_env_strips_sensitive_variables() {
+        let manager = McpServerManager::new(SecurityRestrictions::default());
+        let env = HashMap::from([
+            ("PATH".to_string(), "/tmp/bin".to_string()),
+            ("LD_PRELOAD".to_string(), "/tmp/hijack.so".to_string()),
+            ("NODE_ENV".to_string(), "test".to_string()),
+        ]);
+        let sanitized = manager.sanitized_env(&env);
+        assert_eq!(sanitized.get("NODE_ENV").map(String::as_str), Some("test"));
+        assert!(!sanitized.contains_key("PATH"));
+        assert!(!sanitized.contains_key("LD_PRELOAD"));
     }
 }

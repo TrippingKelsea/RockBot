@@ -516,7 +516,9 @@ impl Agent {
         // Start MCP servers and register discovered tools
         #[cfg(feature = "tools-mcp")]
         if !config.mcp_servers.is_empty() {
-            let mcp_manager = Arc::new(rockbot_tools_mcp::McpServerManager::new());
+            let mcp_manager = Arc::new(rockbot_tools_mcp::McpServerManager::new(
+                security_manager.default_restrictions(),
+            ));
             for (name, entry) in &config.mcp_servers {
                 let mcp_config = rockbot_tools_mcp::McpServerConfig {
                     command: entry.command.clone(),

@@ -1780,11 +1780,7 @@ impl Agent {
             };
             let text = msg.extract_text().unwrap_or_default();
             // Cap each message at 500 chars for summarization input
-            let capped = if text.len() > 500 {
-                &text[..500]
-            } else {
-                &text
-            };
+            let capped = Self::truncate_utf8(&text, 500);
             summary_input.push_str(&format!("[{role}]: {capped}\n"));
             if summary_input.len() > 6000 {
                 summary_input.push_str("[...earlier messages omitted...]\n");
@@ -4123,6 +4119,12 @@ The user wants me to explore the codebase. I should start by listing the directo
         }
     }
 
+    fn truncate_utf8(text: &str, max_chars: usize) -> &str {
+        text.char_indices()
+            .nth(max_chars)
+            .map_or(text, |(idx, _)| &text[..idx])
+    }
+
     /// Strip `<think>...</think>` reasoning blocks from model output.
     /// These blocks contain internal reasoning that should not be shown to the user.
     fn strip_think_blocks(text: &str) -> String {
@@ -4569,6 +4571,14 @@ mod tests {
     #[test]
     fn test_strip_think_blocks_no_think() {
         assert_eq!(Agent::strip_think_blocks("Hello world"), "Hello world");
+    }
+
+    #[test]
+    fn test_truncate_utf8_keeps_valid_boundary() {
+        let text = "a".repeat(499) + "é";
+        let truncated = Agent::truncate_utf8(&text, 500);
+        assert!(truncated.ends_with('é'));
+        assert_eq!(truncated.chars().count(), 500);
     }
 
     #[test]

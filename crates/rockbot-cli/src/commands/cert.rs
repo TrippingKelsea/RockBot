@@ -1106,6 +1106,13 @@ pub async fn generate_self_signed_cert(
 
     let cert = params.self_signed(&key_pair)?;
 
+    if let Some(parent) = cert_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if let Some(parent) = key_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
     tokio::fs::write(cert_path, cert.pem()).await?;
     tokio::fs::write(key_path, key_pair.serialize_pem()).await?;
 

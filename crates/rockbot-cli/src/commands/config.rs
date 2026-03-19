@@ -269,3 +269,40 @@ async fn ensure_output_path(output_path: &Path, force: bool) -> Result<()> {
     tokio::fs::create_dir_all(config_dir).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_init_gateway_config_creates_missing_pki_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let output_path = temp.path().join("missing").join("rockbot.toml");
+
+        init_gateway_config(&output_path, false, "127.0.0.1", &[], 8443, 8444)
+            .await
+            .unwrap();
+
+        assert!(output_path.exists());
+        assert!(
+            output_path
+                .parent()
+                .unwrap()
+                .join("pki")
+                .join("certs")
+                .join("gateway.crt")
+                .exists()
+        );
+        assert!(
+            output_path
+                .parent()
+                .unwrap()
+                .join("pki")
+                .join("keys")
+                .join("gateway.key")
+                .exists()
+        );
+    }
+}

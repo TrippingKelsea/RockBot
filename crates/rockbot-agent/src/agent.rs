@@ -4326,6 +4326,18 @@ The user wants me to explore the codebase. I should start by listing the directo
         }
 
         // Numbered step lists without any tool output
+        let has_plan_intro = [
+            "here's what i would do",
+            "here is what i would do",
+            "here's the plan",
+            "here is the plan",
+            "plan:",
+            "steps:",
+            "approach:",
+            "i would:",
+        ]
+        .iter()
+        .any(|p| lower.contains(p));
         let numbered_lines = lines
             .iter()
             .filter(|l| {
@@ -4333,7 +4345,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                 trimmed.starts_with("1.") || trimmed.starts_with("- ") || trimmed.starts_with("* ")
             })
             .count();
-        if numbered_lines >= 3 && text.len() < 2000 {
+        if has_plan_intro && numbered_lines >= 3 && text.len() < 2000 {
             return true;
         }
 
@@ -4695,6 +4707,13 @@ mod tests {
     fn test_step_list_is_acknowledgment() {
         let steps = "Here's what I would do:\n1. Read the files\n- Analyze the structure\n- Report findings\n* Check for errors";
         assert!(Agent::looks_like_acknowledgment(steps));
+    }
+
+    #[test]
+    fn test_markdown_result_list_is_not_acknowledgment() {
+        let results =
+            "Files updated:\n- src/main.rs\n- src/lib.rs\n- Cargo.toml\nThe build now passes.";
+        assert!(!Agent::looks_like_acknowledgment(results));
     }
 
     // --- looks_like_continuation_intent tests ---

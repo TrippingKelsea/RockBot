@@ -4,7 +4,6 @@
 //! HTTP API endpoints, and coordinates agent execution.
 #![allow(
     clippy::expect_used,
-    clippy::unwrap_used,
     clippy::single_match_else,
     clippy::redundant_closure_for_method_calls,
     clippy::unnecessary_map_or,

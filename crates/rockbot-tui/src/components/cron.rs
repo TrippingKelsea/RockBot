@@ -108,8 +108,7 @@ pub(crate) fn render_cron_detail(frame: &mut Frame, area: Rect, state: &AppState
                 format!("{status_label} ({last_status})"),
                 last_run.to_string(),
             ])
-            .style(status_style)
-            .style(row_style)
+            .style(row_style.patch(status_style))
         })
         .collect();
 

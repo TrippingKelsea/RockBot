@@ -15,6 +15,8 @@ use tracing::{debug, info, warn};
 /// Result type for config operations
 pub type Result<T> = std::result::Result<T, ConfigError>;
 
+const MAX_CONFIG_FILE_SIZE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Main configuration structure for RockBot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -1252,6 +1254,12 @@ impl Config {
     /// Load configuration from a TOML file
     pub async fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
+        let metadata = tokio::fs::metadata(path)
+            .await
+            .map_err(|_| ConfigError::FileNotFound {
+                path: path.to_path_buf(),
+            })?;
+        validate_config_file_size(metadata.len())?;
         let content =
             tokio::fs::read_to_string(path)
                 .await
@@ -1391,6 +1399,18 @@ impl ConfigWatcher {
     pub async fn next_update(&mut self) -> Option<Config> {
         self.rx.recv().await
     }
+}
+
+fn validate_config_file_size(len: u64) -> Result<()> {
+    if len > MAX_CONFIG_FILE_SIZE_BYTES {
+        return Err(ConfigError::Invalid {
+            message: format!(
+                "Config file exceeds {} bytes",
+                MAX_CONFIG_FILE_SIZE_BYTES
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Expand environment variables in configuration strings
@@ -1638,6 +1658,17 @@ mod tests {
         match err {
             ConfigError::EnvVarNotFound { vars } => {
                 assert_eq!(vars, vec!["MISSING_A".to_string(), "MISSING_B".to_string()]);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_config_file_size_rejects_oversized_files() {
+        let err = validate_config_file_size(MAX_CONFIG_FILE_SIZE_BYTES + 1).unwrap_err();
+        match err {
+            ConfigError::Invalid { message } => {
+                assert!(message.contains("exceeds"));
             }
             other => panic!("unexpected error: {other}"),
         }

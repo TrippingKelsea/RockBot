@@ -177,6 +177,8 @@ pub struct Gateway {
     pending_agents: Arc<RwLock<Vec<PendingAgent>>>,
     /// Serializes create/update/delete flows so config, store, and runtime stay in sync.
     agent_mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Tracks in-flight work that already holds an agent handle.
+    agent_inflight: AgentRequestTracker,
     /// Agent factory for creating new agents
     agent_factory: Option<AgentFactory>,
     /// Session manager
@@ -567,6 +569,48 @@ pub struct GatewayHealth {
     pub memory_usage: MemoryUsage,
 }
 
+#[derive(Clone, Default)]
+struct AgentRequestTracker {
+    counts: Arc<std::sync::Mutex<HashMap<String, usize>>>,
+}
+
+impl AgentRequestTracker {
+    fn enter(&self, agent_id: &str) -> AgentRequestGuard {
+        let mut counts = self.counts.lock().unwrap_or_else(|err| err.into_inner());
+        *counts.entry(agent_id.to_string()).or_insert(0) += 1;
+        AgentRequestGuard {
+            tracker: self.clone(),
+            agent_id: agent_id.to_string(),
+        }
+    }
+
+    fn in_flight(&self, agent_id: &str) -> usize {
+        let counts = self.counts.lock().unwrap_or_else(|err| err.into_inner());
+        counts.get(agent_id).copied().unwrap_or(0)
+    }
+}
+
+struct AgentRequestGuard {
+    tracker: AgentRequestTracker,
+    agent_id: String,
+}
+
+impl Drop for AgentRequestGuard {
+    fn drop(&mut self) {
+        let mut counts = self
+            .tracker
+            .counts
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(count) = counts.get_mut(&self.agent_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.agent_id);
+            }
+        }
+    }
+}
+
 /// Memory usage statistics
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemoryUsage {
@@ -793,6 +837,7 @@ impl Gateway {
             agents: Arc::new(RwLock::new(HashMap::new())),
             pending_agents: Arc::new(RwLock::new(Vec::new())),
             agent_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            agent_inflight: AgentRequestTracker::default(),
             agent_factory: None,
             session_manager,
             credential_manager,
@@ -1057,7 +1102,11 @@ impl Gateway {
     /// Agents created with this invoker can delegate work to sibling agents
     /// via the `invoke_agent` tool.
     pub fn agent_invoker(&self) -> Arc<dyn rockbot_tools::AgentInvoker> {
-        Arc::new(GatewayInvoker::new(Arc::clone(&self.agents)))
+        Arc::new(GatewayInvoker::new(
+            Arc::clone(&self.agents),
+            Arc::clone(&self.agent_mutation_lock),
+            self.agent_inflight.clone(),
+        ))
     }
 
     /// Get the shared blackboard for swarm coordination.
@@ -1075,6 +1124,8 @@ impl Gateway {
     pub async fn start_cron_scheduler(&self) {
         let executor = Arc::new(GatewayCronExecutor {
             agents: Arc::clone(&self.agents),
+            agent_mutation_lock: Arc::clone(&self.agent_mutation_lock),
+            agent_inflight: self.agent_inflight.clone(),
             ws_connections: Arc::clone(&self.ws_connections),
         });
         self.cron_scheduler.start(executor).await;
@@ -6297,6 +6348,13 @@ impl Gateway {
 
         let _mutation_guard = self.agent_mutation_lock.lock().await;
 
+        if self.agent_inflight.in_flight(&agent_id) > 0 {
+            return Ok(Self::json_error(
+                &format!("Agent '{agent_id}' is busy handling requests"),
+                StatusCode::CONFLICT,
+            ));
+        }
+
         let had_active = self.agents.read().await.contains_key(&agent_id);
         let had_pending = self
             .pending_agents
@@ -6506,10 +6564,11 @@ impl Gateway {
             }
         };
 
-        // Get agent reference
-        let agent = {
+        let (_request_guard, agent) = {
+            let _mutation_guard = self.agent_mutation_lock.lock().await;
+            let request_guard = self.agent_inflight.enter(&agent_id);
             let agents = self.agents.read().await;
-            match agents.get(&agent_id) {
+            let agent = match agents.get(&agent_id) {
                 Some(a) => a.clone(),
                 None => {
                     return Ok(Self::json_error(
@@ -6517,7 +6576,9 @@ impl Gateway {
                         StatusCode::NOT_FOUND,
                     ));
                 }
-            }
+            };
+            drop(agents);
+            (request_guard, agent)
         };
 
         let session_id = format!("{agent_id}:{}", message_request.session_key);
@@ -6600,12 +6661,20 @@ impl Gateway {
         agent_id: &str,
         request: MessageRequest,
     ) -> Result<AgentResponse> {
-        let agents = self.agents.read().await;
-        let agent = agents
-            .get(agent_id)
-            .ok_or_else(|| GatewayError::InvalidRequest {
-                message: format!("Agent '{agent_id}' not found"),
-            })?;
+        let (_request_guard, agent) = {
+            let _mutation_guard = self.agent_mutation_lock.lock().await;
+            let request_guard = self.agent_inflight.enter(agent_id);
+            let agents = self.agents.read().await;
+            let agent =
+                agents
+                    .get(agent_id)
+                    .cloned()
+                    .ok_or_else(|| GatewayError::InvalidRequest {
+                        message: format!("Agent '{agent_id}' not found"),
+                    })?;
+            drop(agents);
+            (request_guard, agent)
+        };
 
         // Create session ID from session key
         let session_id = format!("{}:{}", agent_id, request.session_key);
@@ -7354,6 +7423,7 @@ impl Clone for Gateway {
             agents: Arc::clone(&self.agents),
             pending_agents: Arc::clone(&self.pending_agents),
             agent_mutation_lock: Arc::clone(&self.agent_mutation_lock),
+            agent_inflight: self.agent_inflight.clone(),
             agent_factory: self.agent_factory.clone(),
             session_manager: Arc::clone(&self.session_manager),
             credential_manager: self.credential_manager.clone(),
@@ -7397,12 +7467,22 @@ impl Clone for Gateway {
 #[derive(Clone)]
 pub struct GatewayInvoker {
     agents: Arc<tokio::sync::RwLock<HashMap<String, Arc<Agent>>>>,
+    agent_mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    agent_inflight: AgentRequestTracker,
 }
 
 impl GatewayInvoker {
     /// Create a new invoker from the gateway's agent map.
-    pub fn new(agents: Arc<tokio::sync::RwLock<HashMap<String, Arc<Agent>>>>) -> Self {
-        Self { agents }
+    fn new(
+        agents: Arc<tokio::sync::RwLock<HashMap<String, Arc<Agent>>>>,
+        agent_mutation_lock: Arc<tokio::sync::Mutex<()>>,
+        agent_inflight: AgentRequestTracker,
+    ) -> Self {
+        Self {
+            agents,
+            agent_mutation_lock,
+            agent_inflight,
+        }
     }
 }
 
@@ -7424,15 +7504,20 @@ impl rockbot_tools::AgentInvoker for GatewayInvoker {
             });
         }
 
-        let agents = self.agents.read().await;
-        let agent =
-            agents
-                .get(agent_id)
-                .ok_or_else(|| rockbot_tools::ToolError::ExecutionFailed {
-                    message: format!("invoke_agent: agent '{agent_id}' not found"),
-                })?;
-        let agent = Arc::clone(agent);
-        drop(agents);
+        let (_request_guard, agent) = {
+            let _mutation_guard = self.agent_mutation_lock.lock().await;
+            let request_guard = self.agent_inflight.enter(agent_id);
+            let agents = self.agents.read().await;
+            let agent =
+                agents
+                    .get(agent_id)
+                    .ok_or_else(|| rockbot_tools::ToolError::ExecutionFailed {
+                        message: format!("invoke_agent: agent '{agent_id}' not found"),
+                    })?;
+            let agent = Arc::clone(agent);
+            drop(agents);
+            (request_guard, agent)
+        };
 
         let msg = rockbot_config::message::Message::text(message)
             .with_session_id(session_id)
@@ -7525,6 +7610,8 @@ struct ErrorResponse {
 /// Executes cron jobs by invoking agents locally or dispatching to remote clients.
 struct GatewayCronExecutor {
     agents: Arc<RwLock<HashMap<String, Arc<Agent>>>>,
+    agent_mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    agent_inflight: AgentRequestTracker,
     ws_connections: Arc<RwLock<HashMap<String, WsConnection>>>,
 }
 
@@ -7549,12 +7636,17 @@ impl GatewayCronExecutor {
             .as_deref()
             .ok_or_else(|| "Cron job has no agent_id configured".to_string())?;
 
-        let agents = self.agents.read().await;
-        let agent = agents
-            .get(agent_id)
-            .ok_or_else(|| format!("Agent '{}' not found", agent_id))?
-            .clone();
-        drop(agents);
+        let (_request_guard, agent) = {
+            let _mutation_guard = self.agent_mutation_lock.lock().await;
+            let request_guard = self.agent_inflight.enter(agent_id);
+            let agents = self.agents.read().await;
+            let agent = agents
+                .get(agent_id)
+                .ok_or_else(|| format!("Agent '{}' not found", agent_id))?
+                .clone();
+            drop(agents);
+            (request_guard, agent)
+        };
 
         let message_text = match &job.payload {
             crate::cron::CronPayload::AgentTurn { message, .. } => message.clone(),

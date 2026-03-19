@@ -1147,134 +1147,139 @@ impl Agent {
             )
             .await?;
 
-        // Build initial streaming request
-        let llm_request = self.build_llm_request_streaming(&mut context).await?;
+        let result = async {
+            // Build initial streaming request
+            let llm_request = self.build_llm_request_streaming(&mut context).await?;
 
-        trajectory.record(
-            TrajectoryEvent::LlmRequest {
-                model: llm_request.model.clone(),
-                message_count: llm_request.messages.len(),
-                tools_available: llm_request.tools.as_ref().map_or(0, std::vec::Vec::len),
-            },
-            0,
-            0,
-        );
+            trajectory.record(
+                TrajectoryEvent::LlmRequest {
+                    model: llm_request.model.clone(),
+                    message_count: llm_request.messages.len(),
+                    tools_available: llm_request.tools.as_ref().map_or(0, std::vec::Vec::len),
+                },
+                0,
+                0,
+            );
 
-        // Use streaming for the initial LLM call
-        let (initial_response, _streamed_text) =
-            self.call_llm_streaming(llm_request, &stream_tx).await?;
+            // Use streaming for the initial LLM call
+            let (initial_response, _streamed_text) =
+                self.call_llm_streaming(llm_request, &stream_tx).await?;
 
-        // Process the response through the tool loop (tool calls use non-streaming)
-        let (response_message, tool_results, token_usage) = self
-            .process_llm_response_streaming(
-                &db_session_id,
-                &mut context,
-                initial_response,
-                self.approval_callback.clone(),
-                &stream_tx,
-            )
-            .await?;
+            // Process the response through the tool loop (tool calls use non-streaming)
+            let (response_message, tool_results, token_usage) = self
+                .process_llm_response_streaming(
+                    &db_session_id,
+                    &mut context,
+                    initial_response,
+                    self.approval_callback.clone(),
+                    &stream_tx,
+                )
+                .await?;
 
-        if !self.guardrail_pipeline.is_empty() {
-            let response_text = response_message.extract_text().unwrap_or_default();
-            if let GuardrailResult::Block(reason) =
-                self.guardrail_pipeline.check_output(&response_text).await
-            {
-                return Err(AgentError::ExecutionFailed {
-                    message: format!("Output blocked by guardrail: {reason}"),
+            if !self.guardrail_pipeline.is_empty() {
+                let response_text = response_message.extract_text().unwrap_or_default();
+                if let GuardrailResult::Block(reason) =
+                    self.guardrail_pipeline.check_output(&response_text).await
+                {
+                    return Err(AgentError::ExecutionFailed {
+                        message: format!("Output blocked by guardrail: {reason}"),
+                    }
+                    .into());
                 }
-                .into());
             }
+
+            trajectory.record(
+                TrajectoryEvent::LlmResponse {
+                    content_preview: preview(&response_message.extract_text().unwrap_or_default(), 200),
+                    tool_call_names: tool_results.iter().map(|r| r.tool_name.clone()).collect(),
+                    tokens: token_usage.clone(),
+                },
+                1,
+                token_usage.total_tokens,
+            );
+
+            self.session_manager
+                .add_message(&db_session_id, response_message.clone())
+                .await?;
+
+            let mut session = self
+                .session_manager
+                .get_session(&db_session_id)
+                .await?
+                .ok_or_else(|| AgentError::ExecutionFailed {
+                    message: "Session disappeared during processing".to_string(),
+                })?;
+            session.add_tokens(token_usage.prompt_tokens, token_usage.completion_tokens);
+            self.session_manager.update_session(&session).await?;
+
+            let processing_time_ms = start_time.elapsed().as_millis() as u64;
+            self.update_stats(token_usage.total_tokens, processing_time_ms)
+                .await;
+
+            // Record observability metrics
+            crate::metrics::record_agent_message(&self.config.id);
+            let model_label = self.config.model.as_deref().unwrap_or("default");
+            crate::metrics::record_llm_request(
+                &self.config.id,
+                model_label,
+                start_time.elapsed(),
+                token_usage.prompt_tokens,
+                token_usage.completion_tokens,
+            );
+
+            // Fire PostMessage hook
+            let post_event = HookEvent::PostMessage {
+                agent_id: self.config.id.clone(),
+                session_id: db_session_id.clone(),
+                response: response_message.clone(),
+            };
+            self.hook_registry.fire(&post_event).await;
+
+            trajectory.record(
+                TrajectoryEvent::Complete {
+                    total_iterations: 1,
+                    total_tool_calls: tool_results.len(),
+                    final_tokens: token_usage.clone(),
+                    duration_ms: processing_time_ms,
+                },
+                1,
+                token_usage.total_tokens,
+            );
+
+            let handoff = tool_results.iter().find_map(|tr| {
+                if let ToolResult::Handoff {
+                    ref target_agent_id,
+                    ref context,
+                    ref message_override,
+                } = tr.result
+                {
+                    Some(HandoffSignal {
+                        target_agent_id: target_agent_id.clone(),
+                        context: context.clone(),
+                        message_override: message_override.clone(),
+                    })
+                } else {
+                    None
+                }
+            });
+
+            Ok(AgentResponse {
+                message: response_message,
+                tool_results,
+                tokens_used: token_usage,
+                processing_time_ms,
+                trajectory: Some(trajectory),
+                handoff,
+            })
         }
-
-        trajectory.record(
-            TrajectoryEvent::LlmResponse {
-                content_preview: preview(&response_message.extract_text().unwrap_or_default(), 200),
-                tool_call_names: tool_results.iter().map(|r| r.tool_name.clone()).collect(),
-                tokens: token_usage.clone(),
-            },
-            1,
-            token_usage.total_tokens,
-        );
-
-        self.session_manager
-            .add_message(&db_session_id, response_message.clone())
-            .await?;
-
-        let mut session = self
-            .session_manager
-            .get_session(&db_session_id)
-            .await?
-            .ok_or_else(|| AgentError::ExecutionFailed {
-                message: "Session disappeared during processing".to_string(),
-            })?;
-        session.add_tokens(token_usage.prompt_tokens, token_usage.completion_tokens);
-        self.session_manager.update_session(&session).await?;
-
-        let processing_time_ms = start_time.elapsed().as_millis() as u64;
-        self.update_stats(token_usage.total_tokens, processing_time_ms)
-            .await;
-
-        // Record observability metrics
-        crate::metrics::record_agent_message(&self.config.id);
-        let model_label = self.config.model.as_deref().unwrap_or("default");
-        crate::metrics::record_llm_request(
-            &self.config.id,
-            model_label,
-            start_time.elapsed(),
-            token_usage.prompt_tokens,
-            token_usage.completion_tokens,
-        );
-
-        // Fire PostMessage hook
-        let post_event = HookEvent::PostMessage {
-            agent_id: self.config.id.clone(),
-            session_id: db_session_id.clone(),
-            response: response_message.clone(),
-        };
-        self.hook_registry.fire(&post_event).await;
-
-        trajectory.record(
-            TrajectoryEvent::Complete {
-                total_iterations: 1,
-                total_tool_calls: tool_results.len(),
-                final_tokens: token_usage.clone(),
-                duration_ms: processing_time_ms,
-            },
-            1,
-            token_usage.total_tokens,
-        );
+        .await;
 
         {
             let mut state = self.state.write().await;
             state.active_contexts.remove(&db_session_id);
         }
 
-        let handoff = tool_results.iter().find_map(|tr| {
-            if let ToolResult::Handoff {
-                ref target_agent_id,
-                ref context,
-                ref message_override,
-            } = tr.result
-            {
-                Some(HandoffSignal {
-                    target_agent_id: target_agent_id.clone(),
-                    context: context.clone(),
-                    message_override: message_override.clone(),
-                })
-            } else {
-                None
-            }
-        });
-
-        Ok(AgentResponse {
-            message: response_message,
-            tool_results,
-            tokens_used: token_usage,
-            processing_time_ms,
-            trajectory: Some(trajectory),
-            handoff,
-        })
+        result
     }
 
     /// Call LLM with streaming, forwarding chunks to the sender.
@@ -4626,7 +4631,11 @@ pub struct AgentHealthStatus {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
-    use rockbot_llm::{Choice, Message as LlmMessage, MockLlmProvider, Usage};
+    use async_trait::async_trait;
+    use rockbot_llm::{
+        Choice, CompletionStream, LlmError, LlmProvider, Message as LlmMessage, MockLlmProvider,
+        ProviderCapabilities, Usage,
+    };
     use rockbot_security::{SandboxConfig, SecurityConfig};
     use rockbot_tools::ToolConfig;
     use std::collections::HashMap;
@@ -4666,6 +4675,19 @@ mod tests {
         workspace: &std::path::Path,
         approval_callback: Option<ApprovalCallback>,
     ) -> Agent {
+        build_test_agent_with_provider(
+            workspace,
+            Arc::new(MockLlmProvider::new()),
+            approval_callback,
+        )
+        .await
+    }
+
+    async fn build_test_agent_with_provider(
+        workspace: &std::path::Path,
+        llm_provider: Arc<dyn LlmProvider>,
+        approval_callback: Option<ApprovalCallback>,
+    ) -> Agent {
         let tool_registry = Arc::new(
             ToolRegistry::new(ToolConfig {
                 profile: "standard".to_string(),
@@ -4696,7 +4718,7 @@ mod tests {
 
         Agent::new(
             test_agent_config(workspace),
-            Arc::new(MockLlmProvider::new()),
+            llm_provider,
             tool_registry,
             memory_manager,
             security_manager,
@@ -4708,6 +4730,64 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    struct FailingStreamingProvider;
+
+    #[async_trait]
+    impl LlmProvider for FailingStreamingProvider {
+        fn id(&self) -> &str {
+            "failing-stream"
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: false,
+                supports_embeddings: false,
+                max_tokens: Some(4000),
+                context_window: 128000,
+            }
+        }
+
+        async fn chat_completion(
+            &self,
+            _request: ChatCompletionRequest,
+        ) -> rockbot_llm::Result<ChatCompletionResponse> {
+            Err(LlmError::ApiError {
+                message: "forced failure".to_string(),
+            })
+        }
+
+        async fn stream_completion(
+            &self,
+            _request: ChatCompletionRequest,
+        ) -> rockbot_llm::Result<CompletionStream> {
+            Err(LlmError::ApiError {
+                message: "forced streaming failure".to_string(),
+            })
+        }
+
+        async fn generate_embedding(&self, _text: &str) -> rockbot_llm::Result<Vec<f32>> {
+            Err(LlmError::ApiError {
+                message: "unsupported".to_string(),
+            })
+        }
+
+        async fn list_models(&self) -> rockbot_llm::Result<Vec<rockbot_llm::ModelInfo>> {
+            Ok(vec![])
+        }
+
+        async fn get_model_info(&self, _model_id: &str) -> rockbot_llm::Result<rockbot_llm::ModelInfo> {
+            Err(LlmError::ModelNotFound {
+                model: "mock".to_string(),
+            })
+        }
+
+        async fn is_configured(&self) -> bool {
+            true
+        }
     }
 
     fn single_tool_response(name: &str, arguments: &str) -> ChatCompletionResponse {
@@ -4754,6 +4834,31 @@ mod tests {
             remote_workspace_override: None,
             delegation_depth: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn test_streaming_error_cleans_up_active_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = build_test_agent_with_provider(
+            temp.path(),
+            Arc::new(FailingStreamingProvider),
+            None,
+        )
+        .await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let _err = agent
+            .process_message_streaming(
+                "stream-cleanup".to_string(),
+                Message::text("trigger failure"),
+                None,
+                tx,
+            )
+            .await
+            .unwrap_err();
+
+        let state = agent.state.read().await;
+        assert_eq!(state.active_contexts.len(), 0);
     }
 
     #[test]

@@ -7,6 +7,11 @@
 - [Sandboxing Tools](user-guide/sandboxing.md) — Firecracker and Wasmtime host prerequisites for hardened code execution
 - [TUI Guide](user-guide/tui-guide.md) — Terminal user interface
 
+Current storage model:
+- `rockbot.toml` is bootstrap/defaults/config only
+- `rockbot.data` stores shared control-plane state
+- `agents/{id}.data` stores canonical per-agent local state
+
 ## Architecture
 
 - [Overview](architecture/overview.md) — High-level architecture and data flow

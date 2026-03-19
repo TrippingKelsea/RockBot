@@ -160,6 +160,10 @@ Quick agent switcher and creation launcher.
 | `Ctrl+U` | Clear search |
 | `Esc` | Close overlay |
 
+Creating an agent from the launcher or model picker writes runtime state through
+the gateway. The resulting agent is persisted in the shared registry/topology
+storage and initialized with its own per-agent vdisk.
+
 ### Cron Jobs (Alt+C)
 
 Scheduled task management with inline filter toggle.
@@ -188,6 +192,9 @@ Agents are shown as cards in the top bar. Selecting an agent changes the chat ta
 | `d` | Disable agent |
 | `f` | Browse context files |
 | `Alt+Enter` | Agent detail overlay |
+
+The context-file browser operates on the agent's canonical per-agent vdisk,
+including `SOUL.md`, `SYSTEM-PROMPT.md`, `AGENTS.md`, and `MEMORY.md`.
 
 ## Sessions Mode
 

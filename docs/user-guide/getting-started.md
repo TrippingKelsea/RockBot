@@ -50,8 +50,9 @@ rockbot config init gateway --https-port 18181 --client-port 18182
 ```
 
 This creates a bootstrap-only gateway config and a self-signed TLS
-certificate. Runtime entities such as agents should live in the replicated
-store, not in the TOML file.
+certificate. Runtime entities such as agents should be created through the
+gateway or TUI and persisted in the runtime storage layer, not declared in
+`rockbot.toml`.
 
 ### Minimal Configuration
 
@@ -109,14 +110,20 @@ gateway control-plane requests such as provider, agent, and session management.
 The public HTTPS listener is intentionally minimal: a Leptos-rendered browser
 bootstrap shell, `/static/*`, health, CA publication, and optional enrollment.
 
-### Credential Management UI
+### Agent Persistence Model
 
-For vault setup and inspection from the terminal, you can also launch the
-standalone credential UI:
+RockBot uses three different persistence layers during normal operation:
 
-```bash
-rockbot credentials ui
-```
+- `rockbot.toml` stores bootstrap settings, listener policy, provider config,
+  defaults, and TUI preferences.
+- `rockbot.data` stores shared control-plane state such as the agent registry,
+  sessions, cron jobs, routing, and topology metadata.
+- `agents/{agent_id}.data` stores the canonical per-agent vdisk for that
+  agent's local documents and state.
+
+When you create an agent from the TUI or `POST /api/agents`, RockBot creates a
+registry/topology entry and initializes the per-agent vdisk with documents such
+as `SOUL.md`, `SYSTEM-PROMPT.md`, `AGENTS.md`, and `MEMORY.md`.
 
 ### Open the Web UI Bootstrap
 

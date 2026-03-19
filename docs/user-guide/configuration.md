@@ -17,7 +17,7 @@ automatically while the gateway is running.
 [gateway]        # Gateway listener settings and mTLS policy
 [pki]            # Shared cert/key/CA paths and enrollment bootstrap
 [client]         # Remote gateway bootstrap target for clients/TUI
-[agents]         # Deprecated agent bootstrap/migration section
+[agents]         # Agent defaults only; runtime agents live in storage, not TOML
 [tools]          # Tool profiles and restrictions
 [security]       # Sandbox and capability config
 [credentials]    # Encrypted vault settings
@@ -98,50 +98,18 @@ heartbeat_interval = "5m"                   # Agent heartbeat interval
 max_context_tokens = 128000                 # Max context window (tokens)
 ```
 
-### `[[agents.list]]` (deprecated)
+`[agents.defaults]` provides the default values used when the gateway or TUI
+creates a new runtime agent. It is not the canonical store for created agents.
 
-> **Deprecated:** Agent configs should be stored in the vault instead. On first
-> gateway startup with non-empty `agents.list`, entries are auto-migrated to the
-> vault. After migration, this section can be removed from the TOML config.
+Runtime agents are persisted in two places:
 
-Each agent is defined as an entry in the `agents.list` array:
+- the shared `rockbot.data` control-plane volumes for registry and topology
+  metadata
+- the per-agent `agents/{agent_id}.data` vdisk for that agent's local state and
+  markdown documents
 
-```toml
-[[agents.list]]
-id = "main"                          # Unique agent identifier
-model = "anthropic/claude-sonnet-4-20250514"  # Model override (optional)
-workspace = "/home/user/projects"    # Workspace override (optional)
-enabled = true                       # Enable/disable (default: true)
-parent_id = "orchestrator"           # Parent agent (for subagents, optional)
-system_prompt = "You are a helpful assistant."  # Override (optional)
-temperature = 0.3                    # LLM temperature (default: 0.3)
-max_tokens = 16000                   # Max response tokens (default: 16000)
-max_tool_calls = 32                  # Max tool calls per turn (optional)
-max_context_tokens = 128000          # Context window (default: 128000)
-llm_timeout_secs = 45               # Per-LLM-call timeout (default: 45)
-tool_timeout_secs = 120              # Per-tool-execution timeout (default: 120)
-
-# Advanced features
-planning_mode = "never"              # "never", "auto", "always", "approval_required"
-reflection_enabled = false           # Self-critique after tool loop
-episodic_memory = false              # Cross-session memory recall
-guardrails = ["pii", "prompt_injection"]  # Enabled guardrails
-breakpoint_tools = ["exec"]          # Tools that always require approval
-
-# Expose as a callable tool for other agents
-[agents.list.expose_as_tool]
-tool_name = "code_reviewer"
-description = "Reviews code for quality and security issues"
-
-# MCP server connections
-[agents.list.mcp_servers.filesystem]
-command = "npx"
-args = ["-y", "@anthropic/mcp-server-filesystem", "/home/user"]
-
-# Workflow definition (DAG-based execution)
-# [agents.list.workflow]
-# See orchestration documentation for workflow schema
-```
+The schema may still accept older bootstrap agent lists for compatibility, but
+they are not the documented or recommended way to manage agents.
 
 ---
 

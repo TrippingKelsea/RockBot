@@ -51,7 +51,8 @@ encrypted vault that agents never see directly.
 
 The gateway (`rockbot-gateway`) is the single source of truth. It owns:
 
-- **Agent lifecycle** — creates, configures, and destroys agents
+- **Agent lifecycle** — creates, configures, and destroys agents through the
+  runtime registry and per-agent vdisk model
 - **Provider state** — LLM, channel, and tool provider registries
 - **TLS termination** — serves a public HTTPS bootstrap listener and a
   dedicated authenticated client listener
@@ -59,6 +60,7 @@ The gateway (`rockbot-gateway`) is the single source of truth. It owns:
 - **WebSocket protocol** — real-time streaming, health checks, remote tool dispatch
 - **A2A protocol** — agent-to-agent communication via JSON-RPC
 - **Cron scheduler** — timed jobs with redb persistence
+- **Control-plane storage** — agent registry, topology, sessions, cron, and routing
 
 ### Agents
 
@@ -71,6 +73,11 @@ Each agent (`rockbot-agent`) runs an iterative tool-use loop:
 
 Agents support planning modes, reflection passes, guardrail pipelines,
 trajectory recording, and handoff delegation to other agents.
+
+Agent-local documents and state live in that agent's dedicated vdisk
+(`agents/{id}.data`). The shared storage container keeps only the global
+registry, topology, and other cluster-wide state needed to discover and route
+agents.
 
 ### Credentials
 
@@ -166,10 +173,11 @@ Plain HTTP requires building with the `http-insecure` feature flag.
 | Path | Purpose |
 |------|---------|
 | `~/.config/rockbot/rockbot.toml` | Configuration |
-| `~/.config/rockbot/gateway.crt` | TLS certificate (legacy self-signed) |
-| `~/.config/rockbot/gateway.key` | TLS private key (legacy self-signed) |
+| `~/.config/rockbot/gateway.crt` | TLS certificate (legacy self-signed bootstrap path) |
+| `~/.config/rockbot/gateway.key` | TLS private key (legacy self-signed bootstrap path) |
 | `~/.config/rockbot/pki/` | PKI directory (CA, certs, keys, index, CRL) |
-| `~/.config/rockbot/agents/{id}/` | Per-agent context files |
-| `~/.config/rockbot/data/sessions.redb` | Session history |
-| `~/.config/rockbot/data/cron.redb` | Cron jobs |
-| `~/.local/share/rockbot/credentials/` | Encrypted credential vault |
+| `~/.config/rockbot/rockbot.data` | Shared control-plane virtual disk (registry, sessions, cron, routing, topology) |
+| `~/.config/rockbot/agents/{id}.data` | Per-agent virtual disk with local markdown/state |
+| `~/.config/rockbot/agents/` | Directory containing per-agent virtual disks |
+| `~/.config/rockbot/runtime/` | Recovery stores and ephemeral runtime data |
+| `~/.config/rockbot/vault/` | Encrypted credential vault |

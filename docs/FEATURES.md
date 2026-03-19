@@ -449,15 +449,16 @@ cargo build --release --features "conservative,otel"
 | Agent/Session sub-cards | ✅ | Dynamic builder from AppState |
 | Tab toggles card chain focus | ✅ | Shared with sidebar_focus |
 
-## Vault Agent Storage
+## Agent Runtime Storage
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| AGENTS table in redb | ✅ | rockbot-storage |
-| Agent CRUD via vault | ✅ | store_agent/load_agent/list_agents/delete_agent |
-| Auto-migrate from TOML | ✅ | On gateway startup |
-| Vault-first agent loading | ✅ | Falls back to TOML |
-| Migration detection in doctor | ✅ | agents.list → vault:agents |
+| Shared agent registry volume | ✅ | Shared `rockbot.data` volume for discovery and control-plane metadata |
+| Per-agent vdisk files | ✅ | `agents/{id}.data` stores canonical agent-local docs/state |
+| Agent topology store | ✅ | Global topology and zone metadata in shared storage |
+| Runtime agent CRUD via gateway | ✅ | `POST/PUT/DELETE /api/agents` |
+| TUI-backed agent creation | ✅ | Model picker and launcher route through gateway APIs |
+| TOML bootstrap agent lists | 🚧 | Schema compatibility remains, but this is no longer the documented runtime model |
 
 ## Configurable Keybindings
 

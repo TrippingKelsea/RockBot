@@ -5,6 +5,10 @@ WebSocket control plane. All endpoints serve JSON unless otherwise noted.
 
 When TLS is configured (default), use `https://` and `wss://` schemes.
 
+For agent management, the HTTP and tunneled-WS APIs operate on the runtime
+agent registry and per-agent vdisks. Agent creation does not write
+`rockbot.toml`.
+
 ## Public HTTP Endpoints
 
 ### Health and Status

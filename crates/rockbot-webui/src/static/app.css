@@ -76,6 +76,22 @@ a:focus-visible {
   padding: 1.5rem;
 }
 
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.rockbot-logo {
+  width: 4.5rem;
+  height: 4.5rem;
+  flex: 0 0 auto;
+}
+
 .nav-card {
   padding: 1.25rem;
 }
@@ -124,7 +140,7 @@ h1 {
   display: grid;
   gap: 1rem;
   margin-top: 1rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .panel,
@@ -184,6 +200,25 @@ h1 {
   margin: 1rem 0 0;
   color: var(--dim);
   line-height: 1.65;
+}
+
+.auth-banner {
+  margin-top: 1rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(45, 212, 191, 0.1), rgba(56, 189, 248, 0.08)),
+    var(--panel-strong);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.auth-banner strong {
+  display: block;
+  font-size: 1.02rem;
 }
 
 .facts {
@@ -337,5 +372,11 @@ input[type="file"] {
 
   h1 {
     max-width: none;
+  }
+
+  .brand-lockup,
+  .auth-banner {
+    align-items: start;
+    flex-direction: column;
   }
 }

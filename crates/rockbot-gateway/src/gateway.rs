@@ -4153,18 +4153,32 @@ impl Gateway {
             .ok_or_else(|| anyhow::anyhow!("No PEM certificate found"))?;
         let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref())
             .map_err(|_| anyhow::anyhow!("Failed to parse certificate"))?;
+        let public_key = cert.tbs_certificate.subject_pki.subject_public_key.data.to_vec();
         let spki = cert.tbs_certificate.subject_pki.raw.to_owned();
         let signature = BASE64_STANDARD
             .decode(signature_b64)
             .map_err(|e| anyhow::anyhow!("Invalid auth signature encoding: {e}"))?;
 
-        let verifier = ring::signature::UnparsedPublicKey::new(
-            &ring::signature::ECDSA_P256_SHA256_ASN1,
-            spki,
-        );
-        verifier
-            .verify(&challenge, &signature)
-            .map_err(|_| anyhow::anyhow!("Browser auth signature verification failed"))?;
+        let verify_attempts = [
+            (
+                &ring::signature::ECDSA_P256_SHA256_ASN1,
+                public_key.as_slice(),
+            ),
+            (
+                &ring::signature::ECDSA_P256_SHA256_FIXED,
+                public_key.as_slice(),
+            ),
+            (&ring::signature::ECDSA_P256_SHA256_ASN1, spki.as_slice()),
+            (&ring::signature::ECDSA_P256_SHA256_FIXED, spki.as_slice()),
+        ];
+        let verified = verify_attempts.iter().any(|(algorithm, candidate_key)| {
+            ring::signature::UnparsedPublicKey::new(*algorithm, *candidate_key)
+                .verify(&challenge, &signature)
+                .is_ok()
+        });
+        if !verified {
+            return Err(anyhow::anyhow!("Browser auth signature verification failed"));
+        }
 
         {
             let mut conns = self.ws_connections.write().await;

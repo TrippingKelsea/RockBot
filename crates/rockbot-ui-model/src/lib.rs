@@ -69,8 +69,6 @@ pub struct BootstrapStep {
 pub struct BootstrapShellModel {
     pub hero: HeroModel,
     pub gateway_panel: PanelModel,
-    pub identity_panel: PanelModel,
-    pub workspace_panel: PanelModel,
     pub steps: Vec<BootstrapStep>,
     pub nav_items: Vec<String>,
 }
@@ -102,51 +100,6 @@ impl Default for BootstrapShellModel {
                         label: "CA Bundle".to_string(),
                         value: "Download public CA".to_string(),
                         href: Some("/api/cert/ca".to_string()),
-                    },
-                    FactModel {
-                        label: "WS Auth".to_string(),
-                        value: "Not connected".to_string(),
-                        href: None,
-                    },
-                ],
-            },
-            identity_panel: PanelModel {
-                title: "Browser Identity".to_string(),
-                pill: PillModel::idle("No key imported"),
-                description: Some(
-                    "Import a PEM client certificate and private key. The browser stores the identity locally so you do not need to re-import it every time."
-                        .to_string(),
-                ),
-                facts: vec![
-                    FactModel {
-                        label: "Storage".to_string(),
-                        value: "IndexedDB-backed local identity persistence".to_string(),
-                        href: None,
-                    },
-                    FactModel {
-                        label: "Auth Path".to_string(),
-                        value: "Certificate challenge/response over WebSocket".to_string(),
-                        href: None,
-                    },
-                ],
-            },
-            workspace_panel: PanelModel {
-                title: "Application Surface".to_string(),
-                pill: PillModel::idle("Bootstrap mode"),
-                description: Some(
-                    "The next phase of the WebUI will render sessions, agents, providers, cron, and credentials over the same authenticated WS control plane used by native clients."
-                        .to_string(),
-                ),
-                facts: vec![
-                    FactModel {
-                        label: "Preferred Stack".to_string(),
-                        value: "Leptos + shared UI-model/state crates".to_string(),
-                        href: None,
-                    },
-                    FactModel {
-                        label: "Shared State".to_string(),
-                        value: "Protocol, view-models, and theme semantics shared across TUI and WebUI".to_string(),
-                        href: None,
                     },
                 ],
             },

@@ -78,6 +78,8 @@ function updateWsAuth(text, cls) {
   const node = el('ws-auth-text');
   if (node) node.textContent = text;
   setPill('identity-pill', cls, cls === 'pill-ok' ? 'Identity ready' : el('identity-pill')?.textContent || text);
+  const authPillText = cls === 'pill-ok' ? 'Authenticated surface ready' : 'Public bootstrap only';
+  setPill('auth-surface-pill', cls, authPillText);
 }
 
 async function refreshIdentity() {

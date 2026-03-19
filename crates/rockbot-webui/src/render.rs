@@ -7,8 +7,13 @@ pub fn BootstrapApp(model: BootstrapShellModel) -> impl IntoView {
         <main class="shell" aria-labelledby="app-title">
             <header class="masthead">
                 <div class="brand">
-                    <p class="eyebrow">{model.hero.eyebrow.clone()}</p>
-                    <h1 id="app-title">{model.hero.title.clone()}</h1>
+                    <div class="brand-lockup">
+                        <RockBotLogo />
+                        <div class="brand-copy">
+                            <p class="eyebrow">{model.hero.eyebrow.clone()}</p>
+                            <h1 id="app-title">{model.hero.title.clone()}</h1>
+                        </div>
+                    </div>
                     <p class="lede">{model.hero.body.clone()}</p>
                 </div>
 
@@ -26,8 +31,6 @@ pub fn BootstrapApp(model: BootstrapShellModel) -> impl IntoView {
 
             <section class="panel-grid" aria-label="Bootstrap status">
                 <Panel panel=model.gateway_panel id_prefix="gateway".to_string() />
-                <Panel panel=model.identity_panel id_prefix="identity".to_string() />
-                <Panel panel=model.workspace_panel id_prefix="workspace".to_string() />
             </section>
 
             <section class="identity-controls panel" aria-labelledby="identity-controls-title">
@@ -43,6 +46,14 @@ pub fn BootstrapApp(model: BootstrapShellModel) -> impl IntoView {
                     identity locally in IndexedDB so the browser can re-authenticate without forcing
                     re-import on every page load.
                 </p>
+
+                <div class="auth-banner" aria-live="polite">
+                    <div>
+                        <p class="section-eyebrow">Connection</p>
+                        <strong id="ws-auth-text">Not connected</strong>
+                    </div>
+                    <span id="auth-surface-pill" class="pill pill-idle">Public bootstrap only</span>
+                </div>
 
                 <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Drop PEM files here">
                     <strong>Drop PEM files here</strong>
@@ -157,5 +168,29 @@ fn BootstrapStepCard(step: BootstrapStep) -> impl IntoView {
             <h3>{step.title}</h3>
             <p>{step.body}</p>
         </li>
+    }
+}
+
+#[component]
+fn RockBotLogo() -> impl IntoView {
+    view! {
+        <svg
+            class="rockbot-logo"
+            viewBox="0 0 84 84"
+            role="img"
+            aria-label="RockBot logo"
+        >
+            <defs>
+                <linearGradient id="rockbot-logo-fill" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#2dd4bf"></stop>
+                    <stop offset="100%" stop-color="#38bdf8"></stop>
+                </linearGradient>
+            </defs>
+            <rect x="6" y="6" width="72" height="72" rx="20" fill="rgba(8, 17, 31, 0.72)"></rect>
+            <path
+                d="M24 58V26h18c10.2 0 16 5.3 16 13.4 0 6.2-3.5 10.3-9.5 12L61 58H48.4l-10-10.1H35.7V58H24zm11.7-18.9h5.6c3.6 0 5.5-1.6 5.5-4.3s-1.9-4.2-5.5-4.2h-5.6v8.5z"
+                fill="url(#rockbot-logo-fill)"
+            ></path>
+        </svg>
     }
 }

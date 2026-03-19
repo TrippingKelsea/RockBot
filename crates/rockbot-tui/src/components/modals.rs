@@ -683,10 +683,9 @@ pub fn render_edit_agent_modal(
     state: &EditAgentState,
     agents: &[AgentInfo],
 ) {
-    // System prompt height accounting for both explicit newlines and visual wrapping
-    // Modal is 65% width, minus borders/margin, estimate inner width
-    let modal_inner_width = ((area.width as f32) * 0.65) as usize;
-    let field_inner_width = modal_inner_width.saturating_sub(4).max(1); // borders + margin
+    let modal_width = 72u16;
+    let modal_inner_width = ((area.width as f32) * (modal_width as f32 / 100.0)) as usize;
+    let field_inner_width = modal_inner_width.saturating_sub(10).max(1);
     let prompt_line_count = {
         state
             .system_prompt
@@ -699,13 +698,11 @@ pub fn render_edit_agent_modal(
             .clamp(1, 10)
     };
     let prompt_height = (prompt_line_count as u16) + 2;
+    let base_percent = 78u16;
+    let extra = prompt_height.saturating_sub(3);
+    let modal_percent = (base_percent + extra).min(92);
 
-    // Modal needs to be taller to accommodate the growing prompt
-    let base_percent = 70u16;
-    let extra = prompt_height.saturating_sub(3); // 3 is the default single-line height
-    let modal_percent = (base_percent + extra * 2).min(90);
-
-    let modal_area = centered_rect(65, modal_percent, area);
+    let modal_area = centered_rect(modal_width, modal_percent, area);
     frame.render_widget(Clear, modal_area);
 
     let title = if state.is_edit {
@@ -723,16 +720,22 @@ pub fn render_edit_agent_modal(
     frame.render_widget(block, modal_area);
 
     let constraints = vec![
-        Constraint::Length(3),             // Agent ID
-        Constraint::Length(3),             // Model
-        Constraint::Length(3),             // Parent Agent
-        Constraint::Length(3),             // Workspace
-        Constraint::Length(3),             // Max Tool Calls
-        Constraint::Length(3),             // Temperature
-        Constraint::Length(3),             // Max Tokens
-        Constraint::Length(prompt_height), // System Prompt (grows up to 12)
-        Constraint::Length(2),             // Help/subagent info
-        Constraint::Fill(1),               // Spacer
+        Constraint::Length(2),             // intro
+        Constraint::Length(1),             // section
+        Constraint::Length(3),             // name
+        Constraint::Length(4),             // model
+        Constraint::Length(3),             // zone/role summary
+        Constraint::Length(3),             // owner/creator
+        Constraint::Length(3),             // workspace
+        Constraint::Length(1),             // section
+        Constraint::Length(4),             // topology summary
+        Constraint::Length(1),             // section
+        Constraint::Length(4),             // doc seeds
+        Constraint::Length(1),             // section
+        Constraint::Length(3),             // policy row 1
+        Constraint::Length(3),             // policy row 2
+        Constraint::Length(prompt_height), // system prompt
+        Constraint::Length(2),             // footer
     ];
 
     let chunks = Layout::default()
@@ -741,19 +744,35 @@ pub fn render_edit_agent_modal(
         .constraints(constraints)
         .split(inner);
 
-    // Field 0: Agent ID
+    let section_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(Color::DarkGray);
+
+    frame.render_widget(
+        Paragraph::new("Create a topology-aware worker with seeded docs and sane defaults.")
+            .style(muted),
+        chunks[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new("Identity").style(section_style),
+        chunks[1],
+    );
+
+    // Field 0: Agent ID / Name
     let id_active = state.field_index == 0;
     let id_label = if state.is_edit {
-        "Agent ID (read-only)"
+        "Name / Agent ID (read-only)"
     } else {
-        "Agent ID"
+        "Name"
     };
     render_input_field(
         frame,
-        chunks[0],
+        chunks[2],
         id_label,
         &state.id,
-        "e.g., my-agent",
+        "e.g., research-worker-1",
         id_active,
         false,
         true,
@@ -763,7 +782,7 @@ pub fn render_edit_agent_modal(
     if state.available_models.is_empty() {
         render_input_field(
             frame,
-            chunks[1],
+            chunks[3],
             "Model",
             &state.model,
             "e.g., anthropic/claude-sonnet-4-20250514",
@@ -825,48 +844,151 @@ pub fn render_edit_agent_modal(
             vec![Line::from(Span::styled(&display, text_style))]
         };
         let paragraph = Paragraph::new(content).block(block);
-        frame.render_widget(paragraph, chunks[1]);
+        frame.render_widget(paragraph, chunks[3]);
     }
 
-    // Field 2: Parent Agent (subagent)
+    let identity_summary = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("Zone: ", Style::default().fg(Color::Gray)),
+            Span::styled("current runtime zone", Style::default().fg(Color::White)),
+            Span::raw("    "),
+            Span::styled("Role: ", Style::default().fg(Color::Gray)),
+            Span::styled("worker (runtime default)", Style::default().fg(Color::White)),
+        ]),
+        Line::from(Span::styled(
+            "Topology-specific zone and role selectors land when the TUI exposes them from the control plane.",
+            muted,
+        )),
+    ]);
+    frame.render_widget(identity_summary, chunks[4]);
+
+    // Field 2: Parent/Owner Agent
     let parent_hint = if !state.parent_id.is_empty() {
         let parent_exists = agents.iter().any(|a| a.id == state.parent_id);
         if parent_exists {
-            "(valid parent)"
+            "valid owner/parent"
         } else {
-            "(parent not found!)"
+            "agent not found"
         }
     } else {
-        "empty = top-level agent"
+        "leave empty for top-level owner"
     };
-    let parent_label = format!("Parent Agent {parent_hint}");
+    let owner_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(chunks[5]);
+    let owner_label = format!("Owner Agent ({parent_hint})");
     render_input_field(
         frame,
-        chunks[2],
-        &parent_label,
+        owner_chunks[0],
+        &owner_label,
         &state.parent_id,
-        "leave empty for top-level",
+        "hex / leave empty",
         state.field_index == 2,
         false,
         false,
+    );
+    let creator_block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title("Creator Agent");
+    let creator_value = if state.is_edit {
+        "auto: existing creator preserved"
+    } else {
+        "auto: current operator"
+    };
+    frame.render_widget(
+        Paragraph::new(creator_value)
+            .style(Style::default().fg(Color::Gray))
+            .block(creator_block),
+        owner_chunks[1],
     );
 
     // Field 3: Workspace
     render_input_field(
         frame,
-        chunks[3],
+        chunks[6],
         "Workspace",
         &state.workspace,
-        "uses default if empty",
+        "uses default agent vdisk workspace if empty",
         state.field_index == 3,
         false,
         false,
     );
 
-    // Field 4: Max Tool Calls
+    frame.render_widget(
+        Paragraph::new("Parent / Topology").style(section_style),
+        chunks[7],
+    );
+    let topology_lines = vec![
+        Line::from(vec![
+            Span::styled("[x] ", Style::default().fg(Color::Green)),
+            Span::raw("Add spawn edge from owner"),
+        ]),
+        Line::from(vec![
+            Span::styled("[x] ", Style::default().fg(Color::Green)),
+            Span::raw("Allow delegation from owner"),
+        ]),
+        Line::from(vec![
+            Span::styled("[ ] ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Expose as callable tool immediately (runtime field pending)"),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(topology_lines)
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .style(Style::default().fg(Color::White)),
+        chunks[8],
+    );
+
+    frame.render_widget(
+        Paragraph::new("Document Seeds").style(section_style),
+        chunks[9],
+    );
+    let doc_seed_lines = vec![
+        Line::from(vec![
+            Span::styled("SOUL.md", Style::default().fg(Color::Yellow)),
+            Span::raw("            default template"),
+        ]),
+        Line::from(vec![
+            Span::styled("SYSTEM-PROMPT.md", Style::default().fg(Color::Yellow)),
+            Span::raw("   custom from field below"),
+        ]),
+        Line::from(vec![
+            Span::styled("MEMORY.md", Style::default().fg(Color::Yellow)),
+            Span::raw("          default template"),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(doc_seed_lines)
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .style(Style::default().fg(Color::White)),
+        chunks[10],
+    );
+
+    frame.render_widget(
+        Paragraph::new("Policy").style(section_style),
+        chunks[11],
+    );
+    let policy_top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
+        .split(chunks[12]);
     render_input_field(
         frame,
-        chunks[4],
+        policy_top[0],
         "Max Tool Calls",
         &state.max_tool_calls,
         "dynamic (32-160)",
@@ -874,11 +996,9 @@ pub fn render_edit_agent_modal(
         false,
         false,
     );
-
-    // Field 5: Temperature
     render_input_field(
         frame,
-        chunks[5],
+        policy_top[1],
         "Temperature",
         &state.temperature,
         "0.3",
@@ -886,17 +1006,32 @@ pub fn render_edit_agent_modal(
         false,
         false,
     );
-
-    // Field 6: Max Tokens
     render_input_field(
         frame,
-        chunks[6],
+        policy_top[2],
         "Max Tokens",
         &state.max_tokens,
         "16000",
         state.field_index == 6,
         false,
         false,
+    );
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Max child agents: ", Style::default().fg(Color::Gray)),
+                Span::styled("runtime policy default", Style::default().fg(Color::White)),
+                Span::raw("    "),
+                Span::styled("Replication profile: ", Style::default().fg(Color::Gray)),
+                Span::styled("Std", Style::default().fg(Color::White)),
+            ]),
+            Line::from(Span::styled(
+                "Zone-specific child limits and replication profiles are surfaced once topology policy editing is exposed.",
+                muted,
+            )),
+        ]),
+        chunks[13],
     );
 
     // Field 7: System Prompt (multi-line textarea)
@@ -940,10 +1075,10 @@ pub fn render_edit_agent_modal(
             .block(prompt_block)
             .style(text_style)
             .wrap(ratatui::widgets::Wrap { trim: false });
-        frame.render_widget(paragraph, chunks[7]);
+        frame.render_widget(paragraph, chunks[14]);
     }
 
-    // Subagent info / help line
+    // Footer help / action affordance
     let subagents: Vec<&str> = agents
         .iter()
         .filter(|a| a.parent_id.as_deref() == Some(&state.id))
@@ -952,15 +1087,29 @@ pub fn render_edit_agent_modal(
 
     let help_text = if !subagents.is_empty() {
         format!(
-            "Subagents: {} | Type to search model | Tab:Nav | Ctrl+S:Save | Esc:Cancel",
+            "Subagents: {} | Tab/Shift+Tab navigate | Up/Down move | Ctrl+S create/save | Esc cancel",
             subagents.join(", ")
         )
     } else {
-        "Type to search model | Tab/Shift+Tab:Navigate | Ctrl+S:Save | Esc:Cancel".to_string()
+        "Type to search model | Tab/Shift+Tab navigate | Up/Down move | Ctrl+S create/save | Esc cancel".to_string()
     };
 
-    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(help, chunks[8]);
+    let footer = Paragraph::new(vec![
+        Line::from(Span::styled(help_text, muted)),
+        Line::from(vec![
+            Span::styled("[Cancel]", Style::default().fg(Color::DarkGray)),
+            Span::raw("   "),
+            Span::styled(
+                if state.is_edit {
+                    "[Save Agent]"
+                } else {
+                    "[Create Agent]"
+                },
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ]);
+    frame.render_widget(footer, chunks[15]);
 }
 
 /// Render the create session modal

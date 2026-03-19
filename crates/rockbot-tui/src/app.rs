@@ -5149,33 +5149,35 @@ impl App {
         // Messages area — dispatch per target
         match &self.state.chat_target {
             ChatTarget::Butler => {
-                render_butler_main(frame, chunks[0], &self.state, &self.effect_state);
+                render_butler_main(
+                    frame,
+                    chunks[0],
+                    &self.state,
+                    &self.effect_state,
+                    &self.keybindings,
+                );
             }
             ChatTarget::Session(key) => {
                 if let Some(chat) = self.state.session_chats.get(key) {
                     self.render_session_messages(frame, chunks[0], chat);
                 } else {
-                    render_butler_main(frame, chunks[0], &self.state, &self.effect_state);
+                    render_butler_main(
+                        frame,
+                        chunks[0],
+                        &self.state,
+                        &self.effect_state,
+                        &self.keybindings,
+                    );
                 }
             }
             ChatTarget::Agent(id) => {
-                let lines = vec![
-                    Line::from(""),
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        format!("@{id}"),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        "Press 'c' to start a fresh chat session.",
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                ];
-                let welcome = Paragraph::new(lines).alignment(Alignment::Center);
-                frame.render_widget(welcome, chunks[0]);
+                render_pre_chat_welcome(
+                    frame,
+                    chunks[0],
+                    &self.keybindings,
+                    &format!("@{id}"),
+                    Some("Start a fresh session with this agent when you're ready."),
+                );
             }
         }
 
@@ -7735,33 +7737,18 @@ fn render_butler_main(
     area: Rect,
     state: &AppState,
     _effect_state: &EffectState,
+    keybindings: &super::keybindings::KeybindingConfig,
 ) {
     let chat = &state.butler_chat;
 
     if chat.messages.is_empty() && !chat.loading {
-        // Welcome screen
-        let lines = vec![
-            Line::from(""),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Butler",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Your RockBot companion. Sassy. Helpful. Queer.",
-                Style::default().fg(Color::Gray),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Navigate with the card strip above, or type a message below.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
-        let welcome = Paragraph::new(lines).alignment(Alignment::Center);
-        frame.render_widget(welcome, area);
+        render_pre_chat_welcome(
+            frame,
+            area,
+            keybindings,
+            "Butler",
+            Some("Your RockBot companion. Sassy. Helpful. Queer."),
+        );
         return;
     }
 
@@ -7775,4 +7762,82 @@ fn render_butler_main(
         chat.scroll,
         chat.auto_scroll,
     );
+}
+
+fn render_pre_chat_welcome(
+    frame: &mut Frame,
+    area: Rect,
+    keybindings: &super::keybindings::KeybindingConfig,
+    title: &str,
+    subtitle: Option<&str>,
+) {
+    use crate::keybindings::TuiAction;
+
+    let chat_key = keybindings
+        .display_for_action("normal", TuiAction::Chat)
+        .unwrap_or_else(|| "c".to_string());
+    let prev_tab_key = keybindings
+        .display_for_action("normal", TuiAction::PrevTab)
+        .unwrap_or_else(|| "BackTab".to_string());
+    let next_tab_key = keybindings
+        .display_for_action("normal", TuiAction::NextTab)
+        .unwrap_or_else(|| "shift+]".to_string());
+    let models_key = keybindings
+        .display_for_action("normal", TuiAction::OpenModels)
+        .unwrap_or_else(|| "alt+m".to_string());
+    let settings_key = keybindings
+        .display_for_action("normal", TuiAction::OpenSettings)
+        .unwrap_or_else(|| "alt+s".to_string());
+    let archive_key = keybindings
+        .display_for_action("normal", TuiAction::Delete)
+        .unwrap_or_else(|| "d".to_string());
+    let menu_key = keybindings
+        .display_for_action("normal", TuiAction::OpenContextMenu)
+        .unwrap_or_else(|| "?".to_string());
+    let escape_key = keybindings
+        .display_for_action("normal", TuiAction::Escape)
+        .unwrap_or_else(|| "Esc".to_string());
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            subtitle.unwrap_or(""),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Basic Keys",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "{} create chat  |  {} / {} switch tabs  |  {} models  |  {} settings",
+                chat_key, prev_tab_key, next_tab_key, models_key, settings_key
+            ),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "{} command palette  |  {} archive selected session  |  {} close modal / cancel",
+                menu_key, archive_key, escape_key
+            ),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Navigate with the card strip above, or type a message below.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let welcome = Paragraph::new(lines).alignment(Alignment::Center);
+    frame.render_widget(welcome, area);
 }

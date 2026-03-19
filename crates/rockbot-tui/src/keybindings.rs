@@ -266,6 +266,18 @@ impl KeybindingConfig {
             .find(|b| b.key.matches(event))
             .map(|b| b.action)
     }
+
+    pub fn display_for_action(&self, mode: &str, action: TuiAction) -> Option<String> {
+        let bindings = match mode {
+            "normal" => &self.normal,
+            "chat" => &self.chat,
+            _ => return None,
+        };
+        bindings
+            .iter()
+            .find(|binding| binding.action == action)
+            .map(|binding| binding.key.to_string())
+    }
 }
 
 impl Default for KeybindingConfig {
@@ -509,6 +521,19 @@ mod tests {
         let config = KeybindingConfig::default();
         let event = key_event(KeyCode::Char('q'), KeyModifiers::NONE);
         assert!(config.lookup("unknown_mode", &event).is_none());
+    }
+
+    #[test]
+    fn test_display_for_action_uses_defined_binding() {
+        let config = KeybindingConfig::default();
+        assert_eq!(
+            config.display_for_action("normal", TuiAction::Chat),
+            Some("c".to_string())
+        );
+        assert_eq!(
+            config.display_for_action("normal", TuiAction::OpenModels),
+            Some("alt+m".to_string())
+        );
     }
 
     #[test]

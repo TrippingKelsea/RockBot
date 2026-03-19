@@ -208,7 +208,7 @@ impl AnthropicProvider {
             .to_string();
 
             let mut blocks = Vec::new();
-            if !msg.content.is_empty() {
+            if !msg.content.is_empty() && !matches!(msg.role, MessageRole::Tool) {
                 blocks.push(AnthropicContentBlock::Text {
                     text: msg.content.clone(),
                 });
@@ -666,5 +666,40 @@ impl LlmProvider for AnthropicProvider {
 
     async fn is_configured(&self) -> bool {
         !self.api_key.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn build_request_emits_only_tool_result_block_for_tool_messages() {
+        let provider = AnthropicProvider::with_api_key("test-key".to_string());
+        let request = ChatCompletionRequest {
+            model: "anthropic/test".to_string(),
+            messages: vec![Message {
+                role: MessageRole::Tool,
+                content: "{\"ok\":true}".to_string(),
+                images: vec![],
+                tool_calls: None,
+                tool_call_id: Some("toolu_123".to_string()),
+            }],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            response_format: None,
+        };
+
+        let built = provider.build_request(request, false).unwrap();
+        assert_eq!(built.messages.len(), 1);
+        assert_eq!(built.messages[0].content.len(), 1);
+        assert!(matches!(
+            &built.messages[0].content[0],
+            AnthropicContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "toolu_123"
+        ));
     }
 }

@@ -5339,6 +5339,7 @@ impl Gateway {
                     remote_executor_strict: strict_executor_target,
                     remote_workspace_override,
                     delegation_depth: 0,
+                    approval_callback: None,
                 },
                 progress_tx,
             )
@@ -5398,6 +5399,7 @@ impl Gateway {
                                 remote_executor_strict: strict_executor_target,
                                 remote_workspace_override: workspace.clone(),
                                 delegation_depth: handoff_depth,
+                                approval_callback: None,
                             },
                         )
                         .await;
@@ -6735,6 +6737,7 @@ impl Gateway {
                     remote_executor_strict: strict_executor_target,
                     remote_workspace_override,
                     delegation_depth: 0,
+                    approval_callback: None,
                 },
             )
             .await?)

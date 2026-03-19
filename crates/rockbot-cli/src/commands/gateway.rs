@@ -57,7 +57,10 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let mut config = Config::from_file(config_path).await?;
 
     // Initialize core components
-    info!("Initializing RockBot gateway v{}...", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Initializing RockBot gateway v{}...",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Determine vault path from config
     let vault_path = config.credentials.vault_path.clone();
@@ -105,9 +108,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         for store in &plan.stores {
             info!(
                 "Storage plan: {} -> {:?} ({})",
-                store.label,
-                store.resolution,
-                store.descriptor
+                store.label, store.resolution, store.descriptor
             );
         }
     }
@@ -122,12 +123,8 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         storage_runtime.open_sessions_recovery_store().await?
     };
     let session_manager = Arc::new(
-        SessionManager::new_with_store(
-            opened_sessions.store,
-            1000,
-            &opened_sessions.descriptor,
-        )
-        .await?,
+        SessionManager::new_with_store(opened_sessions.store, 1000, &opened_sessions.descriptor)
+            .await?,
     );
 
     let mut vault_store: Option<Arc<rockbot_storage::Store>> = None;
@@ -143,7 +140,10 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                 let store = opened_agents.store;
                 #[cfg(feature = "overseer")]
                 ensure_default_overseer_config(&mut config, store.as_ref())?;
-                info!("Vault store opened for agent persistence via {}", opened_agents.descriptor);
+                info!(
+                    "Vault store opened for agent persistence via {}",
+                    opened_agents.descriptor
+                );
                 vault_store = Some(store);
             }
             Err(e) => {
@@ -177,9 +177,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let mut llm_registry = LlmProviderRegistry::new().await?;
     register_compiled_llm_providers(
         &mut llm_registry,
-        vault_result
-            .as_ref()
-            .map(|result| &result.llm_credentials),
+        vault_result.as_ref().map(|result| &result.llm_credentials),
     )
     .await?;
     let llm_registry = Arc::new(llm_registry);
@@ -228,6 +226,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                     sm,
                     sess,
                     cred_accessor,
+                    None,
                     None,
                     None,
                 )
@@ -296,23 +295,27 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
         info!("Creating agent: {}", agent_id);
 
         // Create memory manager for this agent
-        let memory_root = storage_runtime.storage_root().join("runtime").join("memory");
+        let memory_root = storage_runtime
+            .storage_root()
+            .join("runtime")
+            .join("memory");
         let memory_manager = Arc::new(MemoryManager::new(memory_root).await?);
 
         // Create agent
         let invoker = gateway.agent_invoker();
         let mut agent = Agent::new(
-                agent_config.clone(),
-                llm_provider,
-                tool_registry.clone(),
-                memory_manager,
-                security_manager.clone(),
-                session_manager.clone(),
-                credential_accessor.clone(),
-                None,
-                Some(invoker),
-            )
-            .await?;
+            agent_config.clone(),
+            llm_provider,
+            tool_registry.clone(),
+            memory_manager,
+            security_manager.clone(),
+            session_manager.clone(),
+            credential_accessor.clone(),
+            None,
+            Some(invoker),
+            None,
+        )
+        .await?;
         agent.set_storage_root(storage_runtime.storage_root().to_path_buf());
         let agent = Arc::new(agent);
 
@@ -455,8 +458,7 @@ fn local_node_roles(config: &Config) -> Vec<ClusterNodeRole> {
 
 async fn register_compiled_llm_providers(
     registry: &mut LlmProviderRegistry,
-    #[allow(unused_variables)]
-    llm_credentials: Option<&std::collections::HashMap<String, String>>,
+    #[allow(unused_variables)] llm_credentials: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<()> {
     #[cfg(feature = "bedrock")]
     {

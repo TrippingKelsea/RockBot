@@ -19,7 +19,10 @@ use rockbot_memory::MemoryManager;
 use rockbot_security::SecurityManager;
 use rockbot_session::{Session, SessionManager};
 use rockbot_tools::message::ToolResult;
-use rockbot_tools::{AgentInvoker, ToolExecutionContext, ToolExecutionResult, ToolRegistry};
+use rockbot_tools::{
+    AgentInvoker, ApprovalCallback, ApprovalResult, ToolExecutionContext, ToolExecutionResult,
+    ToolRegistry,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -239,6 +242,8 @@ pub struct Agent {
     hook_registry: Arc<HookRegistry>,
     /// Agent invoker for subagent delegation
     agent_invoker: Option<Arc<dyn AgentInvoker>>,
+    /// Optional callback for human approval of breakpointed or gated tools.
+    approval_callback: Option<ApprovalCallback>,
     /// Guardrail pipeline for input/output safety checks
     guardrail_pipeline: Arc<GuardrailPipeline>,
     /// Episodic memory store for cross-session recall
@@ -447,13 +452,27 @@ pub enum AgentProgressEvent {
 /// Convenience type for a progress sender
 pub type ProgressSender = tokio::sync::mpsc::UnboundedSender<AgentProgressEvent>;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ProcessMessageOptions {
     pub workspace_override: Option<std::path::PathBuf>,
     pub remote_executor_target: Option<String>,
     pub remote_executor_strict: bool,
     pub remote_workspace_override: Option<String>,
     pub delegation_depth: u32,
+    pub approval_callback: Option<ApprovalCallback>,
+}
+
+impl std::fmt::Debug for ProcessMessageOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessMessageOptions")
+            .field("workspace_override", &self.workspace_override)
+            .field("remote_executor_target", &self.remote_executor_target)
+            .field("remote_executor_strict", &self.remote_executor_strict)
+            .field("remote_workspace_override", &self.remote_workspace_override)
+            .field("delegation_depth", &self.delegation_depth)
+            .field("has_approval_callback", &self.approval_callback.is_some())
+            .finish()
+    }
 }
 
 /// Where a tool actually executed.
@@ -478,6 +497,7 @@ impl Agent {
         credential_accessor: Option<Arc<dyn rockbot_tools::CredentialAccessor>>,
         hook_registry: Option<Arc<HookRegistry>>,
         agent_invoker: Option<Arc<dyn AgentInvoker>>,
+        approval_callback: Option<ApprovalCallback>,
     ) -> Result<Self> {
         info!("Initializing agent '{}'", config.id);
 
@@ -568,6 +588,7 @@ impl Agent {
             credential_accessor,
             hook_registry: hook_registry.unwrap_or_else(|| Arc::new(HookRegistry::new())),
             agent_invoker,
+            approval_callback,
             guardrail_pipeline: Arc::new(guardrail_pipeline),
             episodic_store,
             blackboard: None,
@@ -657,6 +678,7 @@ impl Agent {
             remote_executor_strict,
             remote_workspace_override,
             delegation_depth,
+            approval_callback,
         } = options;
         let start_time = std::time::Instant::now();
         let mut trajectory = Trajectory::new(&session_id, &self.config.id);
@@ -841,7 +863,13 @@ impl Agent {
 
             // Process LLM response and handle tool calls
             let (mut response_message, tool_results, mut token_usage) = self
-                .process_llm_response(&db_session_id, &mut context, llm_response, &progress_tx)
+                .process_llm_response(
+                    &db_session_id,
+                    &mut context,
+                    llm_response,
+                    approval_callback.clone(),
+                    &progress_tx,
+                )
                 .await?;
 
             // --- Output guardrail check ---
@@ -885,6 +913,7 @@ impl Agent {
                         &db_session_id,
                         &mut context,
                         &response_message,
+                        approval_callback,
                         &progress_tx,
                     )
                     .await;
@@ -1137,6 +1166,7 @@ impl Agent {
                 &db_session_id,
                 &mut context,
                 initial_response,
+                self.approval_callback.clone(),
                 &stream_tx,
             )
             .await?;
@@ -1458,6 +1488,7 @@ impl Agent {
         session_id: &str,
         context: &mut ProcessingContext,
         initial_llm_response: ChatCompletionResponse,
+        approval_callback: Option<ApprovalCallback>,
         stream_tx: &tokio::sync::mpsc::Sender<StreamingChunk>,
     ) -> Result<(Message, Vec<ToolExecutionResult>, TokenUsage)> {
         let mut all_tool_results = Vec::new();
@@ -1531,6 +1562,7 @@ impl Agent {
                     &current_response,
                     &effective_workspace,
                     context,
+                    approval_callback.clone(),
                     &None,
                 )
                 .await?;
@@ -2791,6 +2823,7 @@ The user wants me to explore the codebase. I should start by listing the directo
         session_id: &str,
         context: &mut ProcessingContext,
         initial_llm_response: ChatCompletionResponse,
+        approval_callback: Option<ApprovalCallback>,
         progress_tx: &Option<ProgressSender>,
     ) -> Result<(Message, Vec<ToolExecutionResult>, TokenUsage)> {
         let mut all_tool_results = Vec::new();
@@ -3064,6 +3097,7 @@ The user wants me to explore the codebase. I should start by listing the directo
                     &current_response,
                     &effective_workspace,
                     context,
+                    approval_callback.clone(),
                     progress_tx,
                 )
                 .await?;
@@ -3444,6 +3478,7 @@ The user wants me to explore the codebase. I should start by listing the directo
         session_id: &str,
         context: &mut ProcessingContext,
         response: &Message,
+        approval_callback: Option<ApprovalCallback>,
         progress_tx: &Option<ProgressSender>,
     ) -> Result<Option<(Message, Vec<ToolExecutionResult>, TokenUsage)>> {
         let response_text = response.extract_text().unwrap_or_default();
@@ -3508,7 +3543,13 @@ The user wants me to explore the codebase. I should start by listing the directo
                 session_id
             );
             let (corrected_msg, extra_results, extra_tokens) = self
-                .process_llm_response(session_id, context, llm_response, progress_tx)
+                .process_llm_response(
+                    session_id,
+                    context,
+                    llm_response,
+                    approval_callback,
+                    progress_tx,
+                )
                 .await?;
             return Ok(Some((corrected_msg, extra_results, extra_tokens)));
         }
@@ -3676,6 +3717,7 @@ The user wants me to explore the codebase. I should start by listing the directo
         llm_response: &ChatCompletionResponse,
         workspace: &std::path::Path,
         _context: &ProcessingContext,
+        approval_callback: Option<ApprovalCallback>,
         progress_tx: &Option<ProgressSender>,
     ) -> Result<(
         Vec<ToolExecutionResult>,
@@ -3742,32 +3784,75 @@ The user wants me to explore the codebase. I should start by listing the directo
                             "Breakpoint hit: tool '{}' requires approval",
                             tool_call.function.name
                         );
-                        // If no approval callback is configured, skip with an explanation
-                        // (The TUI/API layer should set up the callback for interactive sessions)
-                        let error_message = Message::tool_result(
-                            tool_call.id.clone(),
-                            tool_call.function.name.clone(),
-                            format!(
-                                "Tool '{}' is a breakpoint tool and requires human approval. \
-                                 The user has not yet approved this call. Try an alternative approach \
-                                 or ask the user for permission.",
-                                tool_call.function.name
-                            ),
-                        ).with_session_id(session_id);
-                        if let Some(progress) = progress_tx {
-                            let _ = progress.send(AgentProgressEvent::ToolDone {
-                                tool_name: tool_call.function.name.clone(),
-                                result_preview: Some(format!(
-                                    "Tool '{}' requires approval before execution",
+                        let breakpoint_params = serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        let approval_result = match approval_callback
+                            .clone()
+                            .or_else(|| self.approval_callback.clone())
+                        {
+                            Some(callback) => {
+                                callback(
+                                    tool_call.function.name.clone(),
+                                    self.config.id.clone(),
+                                    breakpoint_params,
+                                )
+                                .await
+                            }
+                            None => ApprovalResult::Denied {
+                                reason: format!(
+                                    "Tool '{}' requires human approval, but no approval callback is configured",
                                     tool_call.function.name
-                                )),
-                                success: false,
-                                duration_ms: tool_start.elapsed().as_millis() as u64,
-                                locality: Self::tool_locality_for_context(_context),
-                            });
+                                ),
+                            },
+                        };
+
+                        match approval_result {
+                            ApprovalResult::Approved => {}
+                            ApprovalResult::Denied { reason } => {
+                                let error_message = Message::tool_result(
+                                    tool_call.id.clone(),
+                                    tool_call.function.name.clone(),
+                                    format!("Tool execution denied: {reason}"),
+                                )
+                                .with_session_id(session_id);
+                                if let Some(progress) = progress_tx {
+                                    let _ = progress.send(AgentProgressEvent::ToolDone {
+                                        tool_name: tool_call.function.name.clone(),
+                                        result_preview: Some(format!(
+                                            "Tool '{}' denied: {reason}",
+                                            tool_call.function.name
+                                        )),
+                                        success: false,
+                                        duration_ms: tool_start.elapsed().as_millis() as u64,
+                                        locality: Self::tool_locality_for_context(_context),
+                                    });
+                                }
+                                tool_messages.push(error_message);
+                                continue;
+                            }
+                            ApprovalResult::Pending { request_id } => {
+                                let error_message = Message::tool_result(
+                                    tool_call.id.clone(),
+                                    tool_call.function.name.clone(),
+                                    format!("Approval pending: {request_id}"),
+                                )
+                                .with_session_id(session_id);
+                                if let Some(progress) = progress_tx {
+                                    let _ = progress.send(AgentProgressEvent::ToolDone {
+                                        tool_name: tool_call.function.name.clone(),
+                                        result_preview: Some(format!(
+                                            "Tool '{}' awaiting approval ({request_id})",
+                                            tool_call.function.name
+                                        )),
+                                        success: false,
+                                        duration_ms: tool_start.elapsed().as_millis() as u64,
+                                        locality: Self::tool_locality_for_context(_context),
+                                    });
+                                }
+                                tool_messages.push(error_message);
+                                continue;
+                            }
                         }
-                        tool_messages.push(error_message);
-                        continue;
                     }
 
                     let execution_context = ToolExecutionContext {
@@ -3780,7 +3865,9 @@ The user wants me to explore the codebase. I should start by listing the directo
                             .await?,
                         credential_accessor: self.credential_accessor.clone(),
                         command_allowlist: vec![],
-                        approval_callback: None,
+                        approval_callback: approval_callback
+                            .clone()
+                            .or_else(|| self.approval_callback.clone()),
                         agent_invoker: self.agent_invoker.clone(),
                         delegation_depth: _context.delegation_depth,
                         blackboard: self.blackboard.clone(),
@@ -4524,6 +4611,135 @@ pub struct AgentHealthStatus {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use rockbot_llm::{Choice, Message as LlmMessage, MockLlmProvider, Usage};
+    use rockbot_security::{SandboxConfig, SecurityConfig};
+    use rockbot_tools::ToolConfig;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_agent_config(workspace: &std::path::Path) -> AgentInstance {
+        AgentInstance {
+            id: "test-agent".to_string(),
+            primary: true,
+            workspace: Some(workspace.to_path_buf()),
+            model: Some("mock".to_string()),
+            max_tool_calls: Some(4),
+            temperature: Some(0.0),
+            max_tokens: Some(256),
+            parent_id: None,
+            creator_agent_id: None,
+            owner_agent_id: None,
+            zone_id: None,
+            system_prompt: None,
+            enabled: true,
+            mcp_servers: HashMap::new(),
+            config: HashMap::new(),
+            max_context_tokens: 4096,
+            guardrails: Vec::new(),
+            reflection_enabled: false,
+            breakpoint_tools: vec!["read".to_string()],
+            planning_mode: "never".to_string(),
+            expose_as_tool: None,
+            episodic_memory: false,
+            workflow: None,
+            llm_timeout_secs: 5,
+            tool_timeout_secs: 5,
+        }
+    }
+
+    async fn build_test_agent(
+        workspace: &std::path::Path,
+        approval_callback: Option<ApprovalCallback>,
+    ) -> Agent {
+        let tool_registry = Arc::new(
+            ToolRegistry::new(ToolConfig {
+                profile: "standard".to_string(),
+                deny: vec![],
+                configs: HashMap::new(),
+            })
+            .await
+            .unwrap(),
+        );
+        let memory_manager = Arc::new(MemoryManager::new(workspace.join("memory")).await.unwrap());
+        let security_manager = Arc::new(
+            SecurityManager::new(SecurityConfig {
+                sandbox: SandboxConfig {
+                    mode: "disabled".to_string(),
+                    scope: "session".to_string(),
+                    image: None,
+                },
+                capabilities: Default::default(),
+            })
+            .await
+            .unwrap(),
+        );
+        let session_manager = Arc::new(
+            SessionManager::new(workspace.join("sessions.redb"), 8)
+                .await
+                .unwrap(),
+        );
+
+        Agent::new(
+            test_agent_config(workspace),
+            Arc::new(MockLlmProvider::new()),
+            tool_registry,
+            memory_manager,
+            security_manager,
+            session_manager,
+            None,
+            None,
+            None,
+            approval_callback,
+        )
+        .await
+        .unwrap()
+    }
+
+    fn single_tool_response(name: &str, arguments: &str) -> ChatCompletionResponse {
+        ChatCompletionResponse {
+            id: "resp-1".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: LlmMessage {
+                    role: rockbot_llm::MessageRole::Assistant,
+                    content: String::new(),
+                    images: vec![],
+                    tool_calls: Some(vec![rockbot_llm::ToolCall {
+                        id: "call-1".to_string(),
+                        r#type: "function".to_string(),
+                        function: rockbot_llm::FunctionCall {
+                            name: name.to_string(),
+                            arguments: arguments.to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+                finish_reason: "tool_calls".to_string(),
+            }],
+            usage: Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+        }
+    }
+
+    fn test_processing_context(session_id: &str) -> ProcessingContext {
+        ProcessingContext {
+            session_id: session_id.to_string(),
+            messages: vec![],
+            available_tools: vec!["read".to_string()],
+            token_count: 0,
+            workspace_override: None,
+            remote_executor_target: None,
+            remote_executor_strict: false,
+            remote_workspace_override: None,
+            delegation_depth: 0,
+        }
+    }
 
     #[test]
     fn test_agent_stats_default() {
@@ -4547,6 +4763,86 @@ mod tests {
         // Should be serializable
         let json = serde_json::to_string(&response);
         assert!(json.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_breakpoint_tool_executes_after_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("note.txt");
+        std::fs::write(&file_path, "approved").unwrap();
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let callback_counter = Arc::clone(&callback_calls);
+        let approval_callback: ApprovalCallback = Arc::new(move |tool_name, agent_id, params| {
+            let callback_counter = Arc::clone(&callback_counter);
+            Box::pin(async move {
+                callback_counter.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(tool_name, "read");
+                assert_eq!(agent_id, "test-agent");
+                assert_eq!(params["path"], "note.txt");
+                ApprovalResult::Approved
+            })
+        });
+        let agent = build_test_agent(temp.path(), Some(approval_callback)).await;
+        let response = single_tool_response("read", r#"{"path":"note.txt"}"#);
+        let context = test_processing_context("test-agent:session");
+
+        let (results, messages, handoff) = agent
+            .execute_tool_calls(
+                "test-agent:session",
+                &response,
+                temp.path(),
+                &context,
+                None,
+                &None,
+            )
+            .await
+            .unwrap();
+
+        assert!(handoff.is_none());
+        assert_eq!(results.len(), 1);
+        assert_eq!(messages.len(), 1);
+        assert!(results[0].success);
+        assert!(messages[0]
+            .extract_text()
+            .unwrap_or_default()
+            .contains("approved"));
+        assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_breakpoint_tool_denial_stops_execution() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("note.txt"), "denied").unwrap();
+        let approval_callback: ApprovalCallback = Arc::new(|_, _, _| {
+            Box::pin(async move {
+                ApprovalResult::Denied {
+                    reason: "operator denied tool call".to_string(),
+                }
+            })
+        });
+        let agent = build_test_agent(temp.path(), Some(approval_callback)).await;
+        let response = single_tool_response("read", r#"{"path":"note.txt"}"#);
+        let context = test_processing_context("test-agent:session");
+
+        let (results, messages, handoff) = agent
+            .execute_tool_calls(
+                "test-agent:session",
+                &response,
+                temp.path(),
+                &context,
+                None,
+                &None,
+            )
+            .await
+            .unwrap();
+
+        assert!(handoff.is_none());
+        assert!(results.is_empty());
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0]
+            .extract_text()
+            .unwrap_or_default()
+            .contains("operator denied tool call"));
     }
 
     // Integration tests with real components require full infrastructure setup

@@ -361,10 +361,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn put_many(
-        &self,
-        ops: &[(BytesTableDefinition, String, Vec<u8>)],
-    ) -> anyhow::Result<()> {
+    pub fn put_many(&self, ops: &[(BytesTableDefinition, String, Vec<u8>)]) -> anyhow::Result<()> {
         let write_txn = self.db.begin_write()?;
         for (table, key, value) in ops {
             let mut t = write_txn.open_table(*table)?;
@@ -505,5 +502,23 @@ mod tests {
         let store2 = Store::open_encrypted(&path, key).unwrap();
         let v = store2.get(tables::CREDENTIALS, "secret").unwrap();
         assert_eq!(v.as_deref(), Some(b"password".as_ref()));
+    }
+
+    #[test]
+    fn encrypted_backend_handles_partial_updates() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("enc.redb");
+        let key = [0xCDu8; 32];
+
+        let store = Store::open_encrypted(&path, key).unwrap();
+        store
+            .put(tables::CREDENTIALS, "secret", b"password")
+            .unwrap();
+        store
+            .put(tables::CREDENTIALS, "secret", b"passphrase")
+            .unwrap();
+
+        let value = store.get(tables::CREDENTIALS, "secret").unwrap();
+        assert_eq!(value.as_deref(), Some(b"passphrase".as_ref()));
     }
 }

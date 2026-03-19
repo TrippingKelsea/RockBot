@@ -1,7 +1,8 @@
+use aes::cipher::KeyInit;
+use aes::Aes256;
 use anyhow::{bail, Context, Result};
-use chacha20::cipher::{KeyIvInit, StreamCipher};
-use chacha20::ChaCha20;
 use redb::StorageBackend;
+use ring::hkdf;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -12,10 +13,12 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Mutex,
 };
+use xts_mode::{get_tweak_default, Xts128};
 
 const MAGIC: &[u8; 8] = b"RBVDISK1";
 const HEADER_BYTES: u64 = 1024 * 1024;
 const ALIGNMENT: u64 = 4096;
+const XTS_KEY_INFO_PREFIX: &[u8] = b"rockbot-vdisk/aes-256-xts/v1:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DiskManifest {
@@ -55,7 +58,7 @@ struct VolumeState {
 /// A named virtual volume inside `rockbot.data`.
 pub struct VolumeBackend {
     inner: Mutex<VolumeState>,
-    key: Option<[u8; 32]>,
+    key: Option<[u8; 64]>,
     volume_name: String,
     base_offset: u64,
     capacity: u64,
@@ -140,7 +143,9 @@ impl VolumeBackend {
 
         Ok(Self {
             inner: Mutex::new(VolumeState { file, manifest }),
-            key,
+            key: key
+                .map(|root_key| Self::derive_xts_key(&root_key, volume_name.as_bytes()))
+                .transpose()?,
             volume_name: volume_name.to_string(),
             base_offset: volume.offset,
             capacity: volume.capacity,
@@ -214,21 +219,49 @@ impl VolumeBackend {
         Ok(())
     }
 
-    fn apply_keystream(&self, offset: u64, data: &mut [u8]) {
-        let Some(key) = self.key else {
+    fn derive_xts_key(root_key: &[u8; 32], volume_name: &[u8]) -> io::Result<[u8; 64]> {
+        struct XtsKeyLen;
+        impl hkdf::KeyType for XtsKeyLen {
+            fn len(&self) -> usize {
+                64
+            }
+        }
+
+        let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, b"rockbot-vdisk-root-key");
+        let prk = salt.extract(root_key);
+        let mut info = Vec::with_capacity(XTS_KEY_INFO_PREFIX.len() + volume_name.len());
+        info.extend_from_slice(XTS_KEY_INFO_PREFIX);
+        info.extend_from_slice(volume_name);
+        let info_refs = [info.as_slice()];
+        let okm = prk
+            .expand(&info_refs, XtsKeyLen)
+            .map_err(|_| io::Error::other("invalid AES-XTS key derivation context"))?;
+        let mut derived = [0u8; 64];
+        okm.fill(&mut derived)
+            .map_err(|_| io::Error::other("failed to derive AES-XTS key"))?;
+        Ok(derived)
+    }
+
+    fn xts_cipher(&self) -> Option<Xts128<Aes256>> {
+        let key = self.key.as_ref()?;
+        let cipher_1 = Aes256::new_from_slice(&key[..32]).expect("valid AES-256 key");
+        let cipher_2 = Aes256::new_from_slice(&key[32..]).expect("valid AES-256 key");
+        Some(Xts128::new(cipher_1, cipher_2))
+    }
+
+    fn apply_xts(&self, absolute_offset: u64, data: &mut [u8], encrypt: bool) {
+        let Some(xts) = self.xts_cipher() else {
             return;
         };
         if data.is_empty() {
             return;
         }
-
-        let mut nonce = [0u8; 12];
-        nonce[..8].copy_from_slice(&offset.to_le_bytes());
-        let mut cipher = ChaCha20::new(
-            chacha20::Key::from_slice(&key),
-            chacha20::Nonce::from_slice(&nonce),
-        );
-        cipher.apply_keystream(data);
+        let first_sector = u128::from(absolute_offset / ALIGNMENT);
+        if encrypt {
+            xts.encrypt_area(data, ALIGNMENT as usize, first_sector, get_tweak_default);
+        } else {
+            xts.decrypt_area(data, ALIGNMENT as usize, first_sector, get_tweak_default);
+        }
     }
 
     fn checked_end_offset(&self, offset: u64, len: usize) -> io::Result<u64> {
@@ -285,16 +318,20 @@ impl StorageBackend for VolumeBackend {
         }
 
         let absolute = self.absolute_offset(offset)?;
+        let sector_start = align_down(absolute, ALIGNMENT);
+        let sector_end =
+            align_up(absolute + len as u64, ALIGNMENT).min(self.base_offset + logical_len);
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| io::Error::other("virtual disk mutex poisoned"))?;
-        guard.file.seek(SeekFrom::Start(absolute))?;
-        let mut buf = vec![0u8; len];
+        guard.file.seek(SeekFrom::Start(sector_start))?;
+        let mut buf = vec![0u8; (sector_end - sector_start) as usize];
         guard.file.read_exact(&mut buf)?;
         drop(guard);
-        self.apply_keystream(offset, &mut buf);
-        Ok(buf)
+        self.apply_xts(sector_start, &mut buf, false);
+        let relative = (absolute - sector_start) as usize;
+        Ok(buf[relative..relative + len].to_vec())
     }
 
     fn set_len(&self, len: u64) -> Result<(), io::Error> {
@@ -323,13 +360,29 @@ impl StorageBackend for VolumeBackend {
     fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
         let end = self.checked_end_offset(offset, data.len())?;
         let absolute = self.absolute_offset(offset)?;
-        let mut encrypted = data.to_vec();
-        self.apply_keystream(offset, &mut encrypted);
+        let sector_start = align_down(absolute, ALIGNMENT);
+        let preserve_end = align_up(absolute + data.len() as u64, ALIGNMENT)
+            .min(self.base_offset + self.logical_len());
+        let buffer_end = absolute + data.len() as u64;
+        let write_end = buffer_end.max(preserve_end);
+        let mut encrypted = vec![0u8; (write_end - sector_start) as usize];
+        let existing_len = ((self.base_offset + self.logical_len()).saturating_sub(sector_start))
+            .min(write_end - sector_start);
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| io::Error::other("virtual disk mutex poisoned"))?;
-        guard.file.seek(SeekFrom::Start(absolute))?;
+        if existing_len > 0 {
+            guard.file.seek(SeekFrom::Start(sector_start))?;
+            guard
+                .file
+                .read_exact(&mut encrypted[..existing_len as usize])?;
+            self.apply_xts(sector_start, &mut encrypted[..existing_len as usize], false);
+        }
+        let relative = (absolute - sector_start) as usize;
+        encrypted[relative..relative + data.len()].copy_from_slice(data);
+        self.apply_xts(sector_start, &mut encrypted, true);
+        guard.file.seek(SeekFrom::Start(sector_start))?;
         guard.file.write_all(&encrypted)?;
         if end > self.logical_len() {
             self.set_len_locked(&mut guard, end)?;
@@ -345,6 +398,10 @@ fn align_up(value: u64, alignment: u64) -> u64 {
     } else {
         value + (alignment - remainder)
     }
+}
+
+fn align_down(value: u64, alignment: u64) -> u64 {
+    value / alignment * alignment
 }
 
 fn file_descriptor(file: &File) -> String {
@@ -389,7 +446,11 @@ pub fn volume_info(disk_path: &Path, volume_name: &str) -> Result<Option<VolumeI
     }))
 }
 
-pub fn read_volume_prefix(disk_path: &Path, volume_name: &str, len: usize) -> Result<Option<Vec<u8>>> {
+pub fn read_volume_prefix(
+    disk_path: &Path,
+    volume_name: &str,
+    len: usize,
+) -> Result<Option<Vec<u8>>> {
     if len == 0 {
         return Ok(Some(Vec::new()));
     }
@@ -400,7 +461,8 @@ pub fn read_volume_prefix(disk_path: &Path, volume_name: &str, len: usize) -> Re
         return Ok(Some(Vec::new()));
     }
 
-    let to_read = usize::try_from(info.len.min(len as u64)).context("volume prefix length overflow")?;
+    let to_read =
+        usize::try_from(info.len.min(len as u64)).context("volume prefix length overflow")?;
     let mut file = OpenOptions::new()
         .read(true)
         .open(disk_path)
@@ -561,8 +623,9 @@ fn sanitize_volume_component(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_volume, import_bytes, VolumeBackend};
+    use super::{has_volume, import_bytes, VolumeBackend, ALIGNMENT};
     use redb::Database;
+    use std::io::{Read, Seek, SeekFrom};
     use tempfile::tempdir;
 
     #[test]
@@ -601,6 +664,29 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_volumes_do_not_share_ciphertext() {
+        let dir = tempdir().unwrap();
+        let disk = dir.path().join("rockbot.data");
+        let key = [9u8; 32];
+
+        let agents = VolumeBackend::open(&disk, "agents", 64 * 1024, Some(key)).unwrap();
+        let sessions = VolumeBackend::open(&disk, "sessions", 64 * 1024, Some(key)).unwrap();
+
+        agents.write_all(&vec![b'A'; ALIGNMENT as usize]).unwrap();
+        sessions.write_all(&vec![b'A'; ALIGNMENT as usize]).unwrap();
+
+        let mut file = std::fs::File::open(&disk).unwrap();
+        let mut agents_bytes = vec![0u8; ALIGNMENT as usize];
+        let mut sessions_bytes = vec![0u8; ALIGNMENT as usize];
+        file.seek(SeekFrom::Start(agents.base_offset)).unwrap();
+        file.read_exact(&mut agents_bytes).unwrap();
+        file.seek(SeekFrom::Start(sessions.base_offset)).unwrap();
+        file.read_exact(&mut sessions_bytes).unwrap();
+
+        assert_ne!(agents_bytes, sessions_bytes);
+    }
+
+    #[test]
     fn imported_legacy_redb_file_opens_as_volume() {
         let dir = tempdir().unwrap();
         let source_disk = dir.path().join("source.data");
@@ -628,8 +714,7 @@ mod tests {
         import_bytes(&target_disk, "vault", &bytes, None).unwrap();
         assert!(has_volume(&target_disk, "vault").unwrap());
 
-        let backend =
-            VolumeBackend::open(&target_disk, "vault", 2 * 1024 * 1024, None).unwrap();
+        let backend = VolumeBackend::open(&target_disk, "vault", 2 * 1024 * 1024, None).unwrap();
         let db = Database::builder().create_with_backend(backend).unwrap();
         let tx = db.begin_read().unwrap();
         let table = tx

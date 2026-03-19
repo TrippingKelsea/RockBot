@@ -18,7 +18,9 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
-chacha20 = "0.9"
+aes = "0.8.4"
+ring = { workspace = true }
+xts-mode = "0.5.1"
 openraft = { version = "0.10.0-alpha.17", features = ["type-alias", "serde"], optional = true }
 futures-util = { workspace = true, optional = true }
 

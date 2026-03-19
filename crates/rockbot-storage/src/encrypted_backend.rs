@@ -1,21 +1,21 @@
-use chacha20::cipher::{KeyIvInit, StreamCipher};
-use chacha20::ChaCha20;
+use aes::cipher::KeyInit;
+use aes::Aes256;
 use redb::StorageBackend;
+use ring::hkdf;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Mutex;
+use xts_mode::{get_tweak_default, Xts128};
 
-/// A redb `StorageBackend` that transparently encrypts data using
-/// ChaCha20 (stream cipher, no length expansion).
-///
-/// Each file offset maps 1:1 to the same offset in the ciphertext,
-/// making random-access reads and writes consistent: the same (key,
-/// offset) pair always produces the same keystream bytes.
+const XTS_SECTOR_SIZE: usize = 4096;
+const XTS_KEY_INFO: &[u8] = b"rockbot-storage/aes-256-xts/v1";
+
+/// A redb `StorageBackend` that transparently encrypts data using AES-256-XTS.
 pub struct EncryptedBackend {
     inner: Mutex<File>,
-    key: [u8; 32],
+    key: [u8; 64],
 }
 
 impl fmt::Debug for EncryptedBackend {
@@ -26,8 +26,16 @@ impl fmt::Debug for EncryptedBackend {
     }
 }
 
+struct XtsKeyLen;
+
+impl hkdf::KeyType for XtsKeyLen {
+    fn len(&self) -> usize {
+        64
+    }
+}
+
 impl EncryptedBackend {
-    /// Open (or create) an encrypted file at `path` with the given 32-byte key.
+    /// Open (or create) an encrypted file at `path` with the given 32-byte root key.
     pub fn open(path: &Path, key: [u8; 32]) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -37,33 +45,63 @@ impl EncryptedBackend {
             .open(path)?;
         Ok(Self {
             inner: Mutex::new(file),
-            key,
+            key: Self::derive_xts_key(&key, XTS_KEY_INFO)?,
         })
     }
 
-    /// Derive a deterministic 96-bit nonce from a byte offset.
-    ///
-    /// ChaCha20 has a 64-bit block counter, so different offsets within
-    /// the same "nonce block" produce different keystream segments.
-    /// We encode the 64-bit offset in the first 8 bytes and leave the
-    /// remaining 4 bytes zero.
-    fn nonce_for_offset(offset: u64) -> [u8; 12] {
-        let mut nonce = [0u8; 12];
-        nonce[..8].copy_from_slice(&offset.to_le_bytes());
-        nonce
+    fn derive_xts_key(root_key: &[u8; 32], info: &[u8]) -> io::Result<[u8; 64]> {
+        let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, b"rockbot-storage-root-key");
+        let prk = salt.extract(root_key);
+        let info_refs = [info];
+        let okm = prk
+            .expand(&info_refs, XtsKeyLen)
+            .map_err(|_| io::Error::other("invalid AES-XTS key derivation context"))?;
+        let mut derived = [0u8; 64];
+        okm.fill(&mut derived)
+            .map_err(|_| io::Error::other("failed to derive AES-XTS key"))?;
+        Ok(derived)
     }
 
-    /// XOR `data` in place with the keystream for `offset`.
-    fn apply_keystream(&self, offset: u64, data: &mut [u8]) {
+    fn xts_cipher(&self) -> Xts128<Aes256> {
+        let cipher_1 = Aes256::new_from_slice(&self.key[..32]).expect("valid AES-256 key");
+        let cipher_2 = Aes256::new_from_slice(&self.key[32..]).expect("valid AES-256 key");
+        Xts128::new(cipher_1, cipher_2)
+    }
+
+    fn align_down(offset: u64) -> u64 {
+        offset / XTS_SECTOR_SIZE as u64 * XTS_SECTOR_SIZE as u64
+    }
+
+    fn align_up(offset: u64) -> u64 {
+        if offset == 0 {
+            return 0;
+        }
+        let sector = XTS_SECTOR_SIZE as u64;
+        offset.div_ceil(sector) * sector
+    }
+
+    fn decrypt_region(&self, start: u64, data: &mut [u8]) {
         if data.is_empty() {
             return;
         }
-        let nonce = Self::nonce_for_offset(offset);
-        let mut cipher = ChaCha20::new(
-            chacha20::Key::from_slice(&self.key),
-            chacha20::Nonce::from_slice(&nonce),
+        self.xts_cipher().decrypt_area(
+            data,
+            XTS_SECTOR_SIZE,
+            u128::from(start / XTS_SECTOR_SIZE as u64),
+            get_tweak_default,
         );
-        cipher.apply_keystream(data);
+    }
+
+    fn encrypt_region(&self, start: u64, data: &mut [u8]) {
+        if data.is_empty() {
+            return;
+        }
+        self.xts_cipher().encrypt_area(
+            data,
+            XTS_SECTOR_SIZE,
+            u128::from(start / XTS_SECTOR_SIZE as u64),
+            get_tweak_default,
+        );
     }
 }
 
@@ -77,16 +115,31 @@ impl StorageBackend for EncryptedBackend {
     }
 
     fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
+        let len_u64 = u64::try_from(len).map_err(|_| io::Error::other("length overflow"))?;
+        let start = Self::align_down(offset);
+        let end = Self::align_up(
+            offset
+                .checked_add(len_u64)
+                .ok_or_else(|| io::Error::other("offset overflow"))?,
+        );
+        let file_len = self.len()?;
+        let read_end = end.min(file_len);
+        let read_len = usize::try_from(read_end.saturating_sub(start))
+            .map_err(|_| io::Error::other("length overflow"))?;
+        let mut buf = vec![0u8; read_len];
+
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| io::Error::other("mutex poisoned"))?;
-        guard.seek(SeekFrom::Start(offset))?;
-        let mut buf = vec![0u8; len];
+        guard.seek(SeekFrom::Start(start))?;
         guard.read_exact(&mut buf)?;
         drop(guard);
-        self.apply_keystream(offset, &mut buf);
-        Ok(buf)
+
+        self.decrypt_region(start, &mut buf);
+        let relative = usize::try_from(offset.saturating_sub(start))
+            .map_err(|_| io::Error::other("offset overflow"))?;
+        Ok(buf[relative..relative + len].to_vec())
     }
 
     fn set_len(&self, len: u64) -> Result<(), io::Error> {
@@ -106,13 +159,50 @@ impl StorageBackend for EncryptedBackend {
     }
 
     fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
-        let mut encrypted = data.to_vec();
-        self.apply_keystream(offset, &mut encrypted);
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let write_end = offset
+            .checked_add(
+                u64::try_from(data.len()).map_err(|_| io::Error::other("length overflow"))?,
+            )
+            .ok_or_else(|| io::Error::other("offset overflow"))?;
+        let sector_start = Self::align_down(offset);
+        let current_len = self.len()?;
+        let preserve_end = Self::align_up(write_end).min(current_len);
+        let buffer_end = write_end.max(preserve_end);
+        let buffer_len = usize::try_from(buffer_end.saturating_sub(sector_start))
+            .map_err(|_| io::Error::other("length overflow"))?;
+        let existing_len = usize::try_from(
+            current_len
+                .saturating_sub(sector_start)
+                .min(u64::try_from(buffer_len).map_err(|_| io::Error::other("length overflow"))?),
+        )
+        .map_err(|_| io::Error::other("length overflow"))?;
+
+        let mut buffer = vec![0u8; buffer_len];
+        if existing_len > 0 {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::other("mutex poisoned"))?;
+            guard.seek(SeekFrom::Start(sector_start))?;
+            guard.read_exact(&mut buffer[..existing_len])?;
+            drop(guard);
+            self.decrypt_region(sector_start, &mut buffer[..existing_len]);
+        }
+
+        let relative = usize::try_from(offset.saturating_sub(sector_start))
+            .map_err(|_| io::Error::other("offset overflow"))?;
+        buffer[relative..relative + data.len()].copy_from_slice(data);
+        self.encrypt_region(sector_start, &mut buffer);
+
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| io::Error::other("mutex poisoned"))?;
-        guard.seek(SeekFrom::Start(offset))?;
-        guard.write_all(&encrypted)
+        guard.seek(SeekFrom::Start(sector_start))?;
+        guard.write_all(&buffer)
     }
 }

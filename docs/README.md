@@ -4,6 +4,7 @@
 
 - [Getting Started](user-guide/getting-started.md) — Installation, first run, adding credentials
 - [Configuration Reference](user-guide/configuration.md) — All config options and feature flags
+- [Sandboxing Tools](user-guide/sandboxing.md) — Firecracker and Wasmtime host prerequisites for hardened code execution
 - [TUI Guide](user-guide/tui-guide.md) — Terminal user interface
 
 ## Architecture

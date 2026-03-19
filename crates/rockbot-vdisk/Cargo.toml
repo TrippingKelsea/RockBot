@@ -11,10 +11,12 @@ categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-chacha20 = "0.9"
+aes = "0.8.4"
 redb = "2"
+ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+xts-mode = "0.5.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

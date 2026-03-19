@@ -207,6 +207,9 @@ websocket_mode = "disabled"   # "disabled", "preferred", "required"
 stream_mode = "disabled"      # "disabled", "preferred", "required"
 ```
 
+See [Sandboxing Tools](sandboxing.md) for the host-side Firecracker and
+Wasmtime prerequisites used by the hardened code-execution path.
+
 [security.storage]` controls the local redb at-rest encryption policy. The
 first implementation uses PKI-managed node-local storage keys when
 `key_source = "pki_local"`.

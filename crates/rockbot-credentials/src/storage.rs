@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::crypto::{
     decrypt, encrypt, generate_nonce, generate_salt, MasterKey, KEY_SIZE, NONCE_SIZE,
@@ -70,15 +71,17 @@ fn wrap_key_with_age(key_bytes: &[u8], public_key: &str) -> Result<String> {
 
 /// Unwraps a master key with an Age identity (private key).
 /// Takes base64-encoded ciphertext, returns raw key bytes.
-fn unwrap_key_with_age(wrapped_key: &str, identity_str: &str) -> Result<Vec<u8>> {
+fn unwrap_key_with_age(wrapped_key: &str, identity_str: &str) -> Result<Zeroizing<Vec<u8>>> {
     use age::Decryptor;
     use std::io::Read;
 
     // Decode base64
     use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let encrypted = STANDARD
-        .decode(wrapped_key)
-        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?;
+    let encrypted = Zeroizing::new(
+        STANDARD
+            .decode(wrapped_key)
+            .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?,
+    );
 
     // Parse the identity (private key)
     let identity: Box<dyn age::Identity> = identity_str
@@ -90,7 +93,7 @@ fn unwrap_key_with_age(wrapped_key: &str, identity_str: &str) -> Result<Vec<u8>>
     let decryptor = Decryptor::new(&encrypted[..])
         .map_err(|e| CredentialError::Internal(format!("Age decryptor error: {e}")))?;
 
-    let mut decrypted = vec![];
+    let mut decrypted = Zeroizing::new(vec![]);
     match decryptor {
         Decryptor::Recipients(d) => {
             let mut reader = d
@@ -149,14 +152,16 @@ fn encrypt_for_age_recipient(data: &[u8], public_key: &str) -> Result<String> {
 }
 
 /// Decrypt a base64-encoded Age ciphertext with a node identity.
-fn decrypt_with_age_identity(ciphertext: &str, identity_str: &str) -> Result<Vec<u8>> {
+fn decrypt_with_age_identity(ciphertext: &str, identity_str: &str) -> Result<Zeroizing<Vec<u8>>> {
     use age::Decryptor;
     use std::io::Read;
 
     use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let encrypted = STANDARD
-        .decode(ciphertext)
-        .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?;
+    let encrypted = Zeroizing::new(
+        STANDARD
+            .decode(ciphertext)
+            .map_err(|e| CredentialError::DeserializationError(format!("Invalid base64: {e}")))?,
+    );
 
     let identity: Box<dyn age::Identity> = identity_str
         .parse::<age::x25519::Identity>()
@@ -166,7 +171,7 @@ fn decrypt_with_age_identity(ciphertext: &str, identity_str: &str) -> Result<Vec
     let decryptor = Decryptor::new(&encrypted[..])
         .map_err(|e| CredentialError::Internal(format!("Age decryptor error: {e}")))?;
 
-    let mut decrypted = vec![];
+    let mut decrypted = Zeroizing::new(vec![]);
     match decryptor {
         Decryptor::Recipients(d) => {
             let mut reader = d
@@ -197,7 +202,7 @@ fn unwrap_key_with_ssh(
     wrapped_key: &str,
     private_key_path: &Path,
     passphrase: Option<&str>,
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     let _ = (wrapped_key, private_key_path, passphrase);
     Err(CredentialError::ValidationFailed(
         "SSH-key vault wrapping is disabled because the current design derives wrapping material from public key data and is not secure. Reinitialize the vault with age, password, or keyfile unlock.".to_string(),
@@ -421,7 +426,7 @@ impl CredentialVault {
         }
 
         // Read key file
-        let key_bytes = fs::read(keyfile_path)?;
+        let key_bytes = Zeroizing::new(fs::read(keyfile_path)?);
         if key_bytes.len() != 32 {
             return Err(CredentialError::ValidationFailed(format!(
                 "keyfile must be exactly 32 bytes, got {}",
@@ -432,7 +437,7 @@ impl CredentialVault {
         // Ensure directory exists
         fs::create_dir_all(&data_dir)?;
 
-        let master_key = MasterKey::from_bytes(&key_bytes)?;
+        let master_key = MasterKey::from_bytes(key_bytes.as_slice())?;
 
         let unlock = UnlockMethod::Keyfile {
             path_hint: keyfile_path.to_str().map(std::string::ToString::to_string),
@@ -598,7 +603,7 @@ impl CredentialVault {
         };
 
         // Read key file
-        let key_bytes = fs::read(keyfile_path)?;
+        let key_bytes = Zeroizing::new(fs::read(keyfile_path)?);
         if key_bytes.len() != 32 {
             return Err(CredentialError::ValidationFailed(format!(
                 "keyfile must be exactly 32 bytes, got {}",
@@ -606,7 +611,7 @@ impl CredentialVault {
             )));
         }
 
-        let master_key = MasterKey::from_bytes(&key_bytes)?;
+        let master_key = MasterKey::from_bytes(key_bytes.as_slice())?;
         self.verify_and_set_master_key(master_key)
     }
 
@@ -630,7 +635,7 @@ impl CredentialVault {
 
         // Unwrap master key with Age identity
         let key_bytes = unwrap_key_with_age(&wrapped_key, age_identity)?;
-        let master_key = MasterKey::from_bytes(&key_bytes)?;
+        let master_key = MasterKey::from_bytes(key_bytes.as_slice())?;
 
         self.verify_and_set_master_key(master_key)
     }
@@ -659,7 +664,7 @@ impl CredentialVault {
 
         // Unwrap master key with SSH private key
         let key_bytes = unwrap_key_with_ssh(&wrapped_key, private_key_path, passphrase)?;
-        let master_key = MasterKey::from_bytes(&key_bytes)?;
+        let master_key = MasterKey::from_bytes(key_bytes.as_slice())?;
 
         self.verify_and_set_master_key(master_key)
     }
@@ -1333,7 +1338,7 @@ impl CredentialVault {
         age_identity: &str,
     ) -> Result<Vec<u8>> {
         let grant = self.get_vault_grant(object_id, recipient_node_id, kind)?;
-        decrypt_with_age_identity(&grant.ciphertext, age_identity)
+        decrypt_with_age_identity(&grant.ciphertext, age_identity).map(|bytes| bytes.to_vec())
     }
 
     // === KV Store Operations ===

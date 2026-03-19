@@ -7,6 +7,7 @@ use crate::error::ConfigError;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::sync::watch;
@@ -64,6 +65,21 @@ pub struct Config {
     /// Client bootstrap settings used by TUI and other non-gateway nodes.
     #[serde(default)]
     pub client: ClientBootstrapConfig,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SensitiveString(String);
+
+impl SensitiveString {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Debug for SensitiveString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("\"[REDACTED]\"")
+    }
 }
 
 impl Default for Config {
@@ -463,7 +479,7 @@ pub struct PkiConfig {
     /// Pre-shared key for CSR enrollment endpoint.
     /// If set, enables POST /api/cert/sign with PSK auth.
     #[serde(default)]
-    pub enrollment_psk: Option<String>,
+    pub enrollment_psk: Option<SensitiveString>,
 }
 
 impl PkiConfig {
@@ -1318,6 +1334,14 @@ impl Config {
             }
         }
 
+        if self.gateway.bind_host != "localhost"
+            && self.gateway.bind_host.parse::<std::net::IpAddr>().is_err()
+        {
+            return Err(ConfigError::Invalid {
+                message: format!("Invalid gateway bind host: {}", self.gateway.bind_host),
+            });
+        }
+
         let mut agent_ids = std::collections::HashSet::new();
         for agent in &self.agents.list {
             if !agent_ids.insert(&agent.id) {
@@ -1341,6 +1365,15 @@ impl Config {
             _ => {
                 return Err(ConfigError::Invalid {
                     message: format!("Invalid sandbox mode: {}", self.security.sandbox.mode),
+                });
+            }
+        }
+
+        match self.security.sandbox.scope.as_str() {
+            "session" | "tool" | "none" => {}
+            _ => {
+                return Err(ConfigError::Invalid {
+                    message: format!("Invalid sandbox scope: {}", self.security.sandbox.scope),
                 });
             }
         }
@@ -1675,6 +1708,42 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn test_gateway_bind_host_must_be_valid() {
+        let mut config = Config::default();
+        config.gateway.bind_host = "not a host".to_string();
+        let err = config.validate().unwrap_err();
+        match err {
+            ConfigError::Invalid { message } => {
+                assert!(message.contains("Invalid gateway bind host"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_sandbox_scope_must_be_valid() {
+        let mut config = Config::default();
+        config.security.sandbox.scope = "global".to_string();
+        let err = config.validate().unwrap_err();
+        match err {
+            ConfigError::Invalid { message } => {
+                assert!(message.contains("Invalid sandbox scope"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_enrollment_psk_debug_is_redacted() {
+        let config = PkiConfig {
+            enrollment_psk: Some(SensitiveString::new("super-secret".to_string())),
+            ..PkiConfig::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("super-secret"));
     }
 
     #[test]

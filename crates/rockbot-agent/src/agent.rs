@@ -3686,6 +3686,10 @@ The user wants me to explore the codebase. I should start by listing the directo
                     debug!("Executing tool: {}", tool_call.function.name);
                     let tool_start = std::time::Instant::now();
                     let tool_timeout = Duration::from_secs(self.config.tool_timeout_secs);
+                    {
+                        let mut state = self.state.write().await;
+                        state.stats.tool_executions += 1;
+                    }
 
                     // Fire PreToolCall hook
                     let pre_tool_event = HookEvent::PreToolCall {
@@ -4056,12 +4060,6 @@ The user wants me to explore the codebase. I should start by listing the directo
                                 tool_messages.push(handoff_msg);
                                 tool_results.push(result.clone());
 
-                                // Update stats before returning
-                                {
-                                    let mut state = self.state.write().await;
-                                    state.stats.tool_executions += 1;
-                                }
-
                                 return Ok((
                                     tool_results,
                                     tool_messages,
@@ -4149,12 +4147,6 @@ The user wants me to explore the codebase. I should start by listing the directo
                             tool_messages.push(error_message);
                         }
                     }
-                }
-
-                // Update stats
-                {
-                    let mut state = self.state.write().await;
-                    state.stats.tool_executions += tool_calls.len() as u64;
                 }
             }
         }

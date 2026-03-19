@@ -1207,13 +1207,30 @@ impl Agent {
             state.active_contexts.remove(&db_session_id);
         }
 
+        let handoff = tool_results.iter().find_map(|tr| {
+            if let ToolResult::Handoff {
+                ref target_agent_id,
+                ref context,
+                ref message_override,
+            } = tr.result
+            {
+                Some(HandoffSignal {
+                    target_agent_id: target_agent_id.clone(),
+                    context: context.clone(),
+                    message_override: message_override.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
         Ok(AgentResponse {
             message: response_message,
             tool_results,
             tokens_used: token_usage,
             processing_time_ms,
             trajectory: Some(trajectory),
-            handoff: None,
+            handoff,
         })
     }
 

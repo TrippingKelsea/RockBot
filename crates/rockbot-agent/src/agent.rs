@@ -716,131 +716,132 @@ impl Agent {
         let session = self.get_or_create_session(&session_id, &message).await?;
         let db_session_id = session.id.clone();
 
-        // Store incoming message
-        self.session_manager
-            .add_message(&db_session_id, message.clone())
-            .await?;
+        let result = async {
+            // Store incoming message
+            self.session_manager
+                .add_message(&db_session_id, message.clone())
+                .await?;
 
-        // Update processing context
-        let available_tools = self.get_available_tools(&session).await?;
-        let mut context = self
-            .update_processing_context(
-                db_session_id.clone(),
-                message,
-                available_tools,
-                workspace_override,
-                remote_executor_target,
-                remote_executor_strict,
-                remote_workspace_override,
-                delegation_depth,
-            )
-            .await?;
+            // Update processing context
+            let available_tools = self.get_available_tools(&session).await?;
+            let mut context = self
+                .update_processing_context(
+                    db_session_id.clone(),
+                    message,
+                    available_tools,
+                    workspace_override,
+                    remote_executor_target,
+                    remote_executor_strict,
+                    remote_workspace_override,
+                    delegation_depth,
+                )
+                .await?;
 
-        // --- Planning phase ---
-        // If planning_mode is "always" or "auto", ask the model to produce a plan first.
-        // "approval_required" generates the plan but returns it to the user for approval
-        // instead of executing it immediately.
-        let planning_mode = self.config.planning_mode.as_str();
-        if planning_mode == "always"
-            || planning_mode == "auto"
-            || planning_mode == "approval_required"
-        {
-            let plan_result = self
-                .run_planning_phase(&db_session_id, &mut context, &trajectory)
-                .await;
-            match plan_result {
-                Ok(Some(plan_text)) => {
-                    trajectory.record(
-                        TrajectoryEvent::Reflection {
-                            action: format!("plan: {}", preview(&plan_text, 200)),
-                        },
-                        0,
-                        0,
-                    );
-
-                    if planning_mode == "approval_required" {
-                        // Return the plan to the user for approval instead of executing
-                        info!("Plan requires approval, returning plan to user");
-                        let plan_response = Message::text(format!(
-                            "I've created a plan for this task. Please review and approve it \
-                             by replying with \"approved\" or provide feedback:\n\n{plan_text}"
-                        ))
-                        .with_session_id(&db_session_id)
-                        .with_agent_id(&self.config.id)
-                        .with_role(MessageRole::Assistant);
-
+            // --- Planning phase ---
+            // If planning_mode is "always" or "auto", ask the model to produce a plan first.
+            // "approval_required" generates the plan but returns it to the user for approval
+            // instead of executing it immediately.
+            let planning_mode = self.config.planning_mode.as_str();
+            if planning_mode == "always"
+                || planning_mode == "auto"
+                || planning_mode == "approval_required"
+            {
+                let plan_result = self
+                    .run_planning_phase(&db_session_id, &mut context, &trajectory)
+                    .await;
+                match plan_result {
+                    Ok(Some(plan_text)) => {
                         trajectory.record(
-                            TrajectoryEvent::Complete {
-                                total_iterations: 0,
-                                total_tool_calls: 0,
-                                final_tokens: TokenUsage::default(),
-                                duration_ms: start_time.elapsed().as_millis() as u64,
+                            TrajectoryEvent::Reflection {
+                                action: format!("plan: {}", preview(&plan_text, 200)),
                             },
                             0,
                             0,
                         );
 
-                        return Ok(AgentResponse {
-                            message: plan_response,
-                            tool_results: vec![],
-                            tokens_used: TokenUsage::default(),
-                            processing_time_ms: start_time.elapsed().as_millis() as u64,
-                            trajectory: Some(trajectory),
-                            handoff: None,
-                        });
-                    }
+                        if planning_mode == "approval_required" {
+                            // Return the plan to the user for approval instead of executing
+                            info!("Plan requires approval, returning plan to user");
+                            let plan_response = Message::text(format!(
+                                "I've created a plan for this task. Please review and approve it \
+                                 by replying with \"approved\" or provide feedback:\n\n{plan_text}"
+                            ))
+                            .with_session_id(&db_session_id)
+                            .with_agent_id(&self.config.id)
+                            .with_role(MessageRole::Assistant);
 
-                    // Inject the plan into context so the model follows it
-                    let plan_msg = Message::text(format!(
-                        "Here is your plan. Follow it step by step:\n\n{plan_text}\n\n\
-                         Now execute the plan. Start with step 1."
-                    ))
-                    .with_session_id(&db_session_id)
-                    .with_agent_id(&self.config.id)
-                    .with_role(MessageRole::User);
-                    context.messages.push(plan_msg);
-                }
-                Ok(None) => {
-                    // Auto mode decided no plan was needed, or plan was empty
-                }
-                Err(e) => {
-                    warn!("Planning phase failed, proceeding without plan: {e}");
+                            trajectory.record(
+                                TrajectoryEvent::Complete {
+                                    total_iterations: 0,
+                                    total_tool_calls: 0,
+                                    final_tokens: TokenUsage::default(),
+                                    duration_ms: start_time.elapsed().as_millis() as u64,
+                                },
+                                0,
+                                0,
+                            );
+
+                            return Ok(AgentResponse {
+                                message: plan_response,
+                                tool_results: vec![],
+                                tokens_used: TokenUsage::default(),
+                                processing_time_ms: start_time.elapsed().as_millis() as u64,
+                                trajectory: Some(trajectory),
+                                handoff: None,
+                            });
+                        }
+
+                        // Inject the plan into context so the model follows it
+                        let plan_msg = Message::text(format!(
+                            "Here is your plan. Follow it step by step:\n\n{plan_text}\n\n\
+                             Now execute the plan. Start with step 1."
+                        ))
+                        .with_session_id(&db_session_id)
+                        .with_agent_id(&self.config.id)
+                        .with_role(MessageRole::User);
+                        context.messages.push(plan_msg);
+                    }
+                    Ok(None) => {
+                        // Auto mode decided no plan was needed, or plan was empty
+                    }
+                    Err(e) => {
+                        warn!("Planning phase failed, proceeding without plan: {e}");
+                    }
                 }
             }
-        }
 
-        // --- Workflow dispatch ---
-        // If this agent has a workflow definition, execute the DAG instead of LLM.
-        if let Some(ref workflow) = self.config.workflow {
-            let user_msg = context
-                .messages
-                .last()
-                .cloned()
-                .unwrap_or_else(|| Message::text("").with_session_id(&db_session_id));
-            return self
-                .execute_workflow(
-                    &db_session_id,
-                    &user_msg,
-                    workflow,
-                    &progress_tx,
-                    start_time,
-                    trajectory,
-                )
-                .await;
-        }
+            // --- Workflow dispatch ---
+            // If this agent has a workflow definition, execute the DAG instead of LLM.
+            if let Some(ref workflow) = self.config.workflow {
+                let user_msg = context
+                    .messages
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| Message::text("").with_session_id(&db_session_id));
+                return self
+                    .execute_workflow(
+                        &db_session_id,
+                        &user_msg,
+                        workflow,
+                        &progress_tx,
+                        start_time,
+                        trajectory,
+                    )
+                    .await;
+            }
 
-        // Generate LLM request
-        let llm_request = self.build_llm_request(&mut context).await?;
+            // Generate LLM request
+            let llm_request = self.build_llm_request(&mut context).await?;
 
-        // Call LLM with streaming (for real-time text deltas) + retry logic
-        let llm_response = self
-            .call_llm_streaming_with_retry(llm_request, &progress_tx)
-            .await?;
+            // Call LLM with streaming (for real-time text deltas) + retry logic
+            let llm_response = self
+                .call_llm_streaming_with_retry(llm_request, &progress_tx)
+                .await?;
 
-        // Process LLM response and handle tool calls
-        let (mut response_message, tool_results, mut token_usage) = self
-            .process_llm_response(&db_session_id, &mut context, llm_response, &progress_tx)
-            .await?;
+            // Process LLM response and handle tool calls
+            let (mut response_message, tool_results, mut token_usage) = self
+                .process_llm_response(&db_session_id, &mut context, llm_response, &progress_tx)
+                .await?;
 
         // --- Output guardrail check ---
         if !self.guardrail_pipeline.is_empty() {
@@ -999,38 +1000,40 @@ impl Agent {
         };
         self.hook_registry.fire(&post_event).await;
 
-        // Clean up processing context
+            let handoff = tool_results.iter().find_map(|tr| {
+                if let ToolResult::Handoff {
+                    ref target_agent_id,
+                    ref context,
+                    ref message_override,
+                } = tr.result
+                {
+                    Some(HandoffSignal {
+                        target_agent_id: target_agent_id.clone(),
+                        context: context.clone(),
+                        message_override: message_override.clone(),
+                    })
+                } else {
+                    None
+                }
+            });
+
+            Ok(AgentResponse {
+                message: response_message,
+                tool_results,
+                tokens_used: token_usage,
+                processing_time_ms,
+                trajectory: Some(trajectory),
+                handoff,
+            })
+        }
+        .await;
+
         {
             let mut state = self.state.write().await;
             state.active_contexts.remove(&db_session_id);
         }
 
-        // Check if any tool result was a handoff signal
-        let handoff = tool_results.iter().find_map(|tr| {
-            if let ToolResult::Handoff {
-                ref target_agent_id,
-                ref context,
-                ref message_override,
-            } = tr.result
-            {
-                Some(HandoffSignal {
-                    target_agent_id: target_agent_id.clone(),
-                    context: context.clone(),
-                    message_override: message_override.clone(),
-                })
-            } else {
-                None
-            }
-        });
-
-        Ok(AgentResponse {
-            message: response_message,
-            tool_results,
-            tokens_used: token_usage,
-            processing_time_ms,
-            trajectory: Some(trajectory),
-            handoff,
-        })
+        result
     }
 
     /// Process an incoming message with SSE streaming support.

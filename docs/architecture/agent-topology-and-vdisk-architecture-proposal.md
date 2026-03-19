@@ -418,7 +418,6 @@ Key implementation requirement:
 - resolving or creating per-agent vdisks
 - opening canonical document tables
 - applying replication policy defaults
-- exporting/importing projected flat files
 - maintaining vdisk registry state in the global store
 
 New runtime responsibilities:
@@ -429,7 +428,40 @@ New runtime responsibilities:
 - `write_agent_document(agent_id, name, markdown)`
 - `list_agent_objects(agent_id)`
 - `set_object_replication_policy(agent_id, object_id, policy)`
-- `extract_agent_vdisk(agent_id, out_dir)`
+
+## Storage Utility Layer
+
+Export, import, inspection, and projection logic should not live in
+`rockbot-storage-runtime`.
+
+Instead, RockBot should introduce a dedicated utility layer, likely as:
+
+- `crates/rockbot-storage-utility`
+
+This crate should sit above the runtime and provide operator-facing storage
+tools and transformation workflows.
+
+Suggested responsibilities:
+
+- export an agent vdisk into flat files
+- import flat files into canonical storage records
+- produce manifests and integrity summaries
+- inspect replicated vs local-only objects
+- run operator-friendly reporting and conversion tasks
+
+The storage runtime remains authoritative for:
+
+- opening stores
+- resolving store policy
+- reading and writing canonical records
+
+The storage utility layer becomes responsible for:
+
+- projection to files
+- import from files
+- packaging/unpackaging
+- inspection manifests
+- administrative export/import tooling
 
 ## Extraction Tooling
 
@@ -458,6 +490,9 @@ Recommended commands:
 The extraction output is a projection of canonical records, not the source of
 truth.
 
+The extraction path should be implemented through `rockbot-storage-utility`,
+using `rockbot-storage-runtime` only for canonical reads.
+
 ## UI Requirements
 
 The WebUI and TUI should edit canonical markdown records stored in the agent
@@ -481,14 +516,14 @@ The UI should support:
 | Create Agent                                                                     |
 +----------------------------------------------------------------------------------+
 | Name                [ research-worker-1                                  ]       |
-| Model               [ bedrock/us.anthropic.claude-opus-4-6-v1           ]       |
-| Zone                [ product-research-zone                             v]       |
-| Role                [ worker                                            v]       |
-| Owner Agent         [ hex                                               v]       |
-| Creator Agent       [ auto: current agent/user                                  ]|
+| Model               [ <fuzzy search field>                               ]       |
+| Zone                [ <fuzzy search field>                              v]       |
+| Role                [ <select field>                                    v]       |
+| Owner Agent         [ <fuzzy search field>                              v]       |
+| Creator Agent       [ auto: current agent/user                           ]       |
 |                                                                                  |
-| Parent/Topology                                                                |
-| [x] Add spawn edge from owner                                                   |
+| Parent/Topology                                                                  |
+| [x] Add spawn edge from owner                                                    |
 | [x] Allow delegation from owner                                                  |
 | [ ] Expose as callable tool immediately                                          |
 |                                                                                  |
@@ -497,8 +532,8 @@ The UI should support:
 | SYSTEM-PROMPT.md   [ default template / custom ]                                 |
 | MEMORY.md          [ default template / custom ]                                 |
 |                                                                                  |
-| Policy                                                                         |
-| Max child agents     [ 3 ]   Max tool calls [ 16 ]  Replication profile [Std]   |
+| Policy                                                                           |
+| Max child agents     [ 3 ]   Max tool calls [ 99 ]  Replication profile [Std]    |
 |                                                                                  |
 |                                             [Cancel] [Create Agent]              |
 +----------------------------------------------------------------------------------+
@@ -695,6 +730,7 @@ This avoids a filesystem-first editing model.
 
 1. Add a topology architecture plan derived from this proposal.
 2. Extend `rockbot-storage-runtime` with per-agent vdisk APIs.
-3. Define `agent_documents` and object replication schemas.
-4. Add `rockbot agent extract`.
-5. Prototype the document editor and replication browser in the WebUI.
+3. Add `rockbot-storage-utility` for export/import/projection workflows.
+4. Define `agent_documents` and object replication schemas.
+5. Add `rockbot agent extract`.
+6. Prototype the document editor and replication browser in the WebUI.

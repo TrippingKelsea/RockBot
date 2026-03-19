@@ -193,6 +193,8 @@ pub struct Gateway {
     ws_connections: Arc<RwLock<HashMap<String, WsConnection>>>,
     /// A2A task store for agent-to-agent protocol
     a2a_task_store: Arc<crate::a2a::TaskStore>,
+    /// Recent certificate signing attempts keyed by source IP for rate limiting.
+    cert_sign_attempts: Arc<tokio::sync::Mutex<HashMap<std::net::IpAddr, Vec<std::time::Instant>>>>,
     /// Shared blackboard for swarm coordination
     blackboard: Arc<rockbot_agent::orchestration::SwarmBlackboard>,
     /// Cron scheduler for timed job execution
@@ -801,6 +803,7 @@ impl Gateway {
             tool_provider_registry: Arc::new(tool_provider_registry),
             ws_connections: Arc::new(RwLock::new(HashMap::new())),
             a2a_task_store: Arc::new(crate::a2a::TaskStore::new()),
+            cert_sign_attempts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             blackboard: Arc::new(rockbot_agent::orchestration::SwarmBlackboard::new()),
             cron_scheduler: {
                 let _ = std::fs::create_dir_all(&storage_root);
@@ -1616,6 +1619,8 @@ impl Gateway {
         let gateway = self.clone();
         let service = service_fn(move |req| {
             let gateway = gateway.clone();
+            let mut req = req;
+            req.extensions_mut().insert(addr);
             async move { gateway.handle_request(req, listener_kind).await }
         });
 
@@ -1649,6 +1654,8 @@ impl Gateway {
         let gateway = self.clone();
         let service = service_fn(move |req| {
             let gateway = gateway.clone();
+            let mut req = req;
+            req.extensions_mut().insert(addr);
             async move { gateway.handle_request(req, listener_kind).await }
         });
 
@@ -3573,6 +3580,29 @@ impl Gateway {
 
     fn is_valid_cert_name(name: &str) -> bool {
         Self::is_valid_agent_id(name)
+    }
+
+    async fn allow_cert_sign_attempt(&self, ip: std::net::IpAddr) -> bool {
+        let now = std::time::Instant::now();
+        let mut attempts = self.cert_sign_attempts.lock().await;
+        Self::record_cert_sign_attempt(&mut attempts, ip, now)
+    }
+
+    fn record_cert_sign_attempt(
+        attempts: &mut HashMap<std::net::IpAddr, Vec<std::time::Instant>>,
+        ip: std::net::IpAddr,
+        now: std::time::Instant,
+    ) -> bool {
+        const CERT_SIGN_MAX_ATTEMPTS: usize = 3;
+        const CERT_SIGN_WINDOW_SECS: u64 = 60;
+
+        let entry = attempts.entry(ip).or_default();
+        entry.retain(|attempt| now.duration_since(*attempt).as_secs() < CERT_SIGN_WINDOW_SECS);
+        if entry.len() >= CERT_SIGN_MAX_ATTEMPTS {
+            return false;
+        }
+        entry.push(now);
+        true
     }
 
     fn resolve_keyfile_path(&self, keyfile_hint: Option<&str>) -> Result<std::path::PathBuf> {
@@ -6892,6 +6922,23 @@ impl Gateway {
         &self,
         req: Request<IncomingBody>,
     ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let source_ip = req.extensions().get::<SocketAddr>().map(|addr| addr.ip());
+        match source_ip {
+            Some(ip) if self.allow_cert_sign_attempt(ip).await => {}
+            Some(_) => {
+                return Ok(Self::json_error(
+                    "Too many certificate signing attempts from this IP",
+                    StatusCode::TOO_MANY_REQUESTS,
+                ));
+            }
+            None => {
+                return Ok(Self::json_error(
+                    "Missing client address for rate limiting",
+                    StatusCode::BAD_REQUEST,
+                ));
+            }
+        }
+
         // Check that PKI is configured
         let pki_dir = match &self.pki.pki_dir {
             Some(d) => Self::expand_tilde(d),
@@ -7162,6 +7209,7 @@ impl Clone for Gateway {
             tool_provider_registry: Arc::clone(&self.tool_provider_registry),
             ws_connections: Arc::clone(&self.ws_connections),
             a2a_task_store: Arc::clone(&self.a2a_task_store),
+            cert_sign_attempts: Arc::clone(&self.cert_sign_attempts),
             blackboard: Arc::clone(&self.blackboard),
             cron_scheduler: Arc::clone(&self.cron_scheduler),
             #[cfg(feature = "overseer")]
@@ -7559,6 +7607,17 @@ mod tests {
         let _guard = EnvGuard::set("ROCKBOT_A2A_TOKEN", Some("secret-token"));
         let headers = hyper::HeaderMap::new();
         assert!(!Gateway::is_a2a_authorized(&headers));
+    }
+
+    #[tokio::test]
+    async fn test_cert_sign_rate_limit_allows_three_attempts_per_minute() {
+        let mut attempts = HashMap::new();
+        let ip = std::net::IpAddr::from([127, 0, 0, 1]);
+        let now = std::time::Instant::now();
+        assert!(Gateway::record_cert_sign_attempt(&mut attempts, ip, now));
+        assert!(Gateway::record_cert_sign_attempt(&mut attempts, ip, now));
+        assert!(Gateway::record_cert_sign_attempt(&mut attempts, ip, now));
+        assert!(!Gateway::record_cert_sign_attempt(&mut attempts, ip, now));
     }
 
     struct EnvGuard {

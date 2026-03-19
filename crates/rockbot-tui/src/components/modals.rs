@@ -75,7 +75,7 @@ pub fn render_password_modal(
     frame.render_widget(prompt_para, chunks[0]);
 
     let display_value = if masked {
-        "*".repeat(input.len())
+        "*".repeat(input.chars().count())
     } else {
         input.to_string()
     };

@@ -10,6 +10,7 @@ use rockbot_llm::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tracing::warn;
 use zeroize::Zeroizing;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -136,6 +137,16 @@ struct PartialToolUse {
     id: String,
     name: String,
     input_json: String,
+}
+
+fn parse_stream_event(data: &str) -> Option<StreamEvent> {
+    match serde_json::from_str(data) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            warn!("Skipping unparseable Anthropic streaming event: {error}");
+            None
+        }
+    }
 }
 
 impl AnthropicProvider {
@@ -487,14 +498,8 @@ impl LlmProvider for AnthropicProvider {
                     if data == "[DONE]" {
                         return;
                     }
-                    let parsed: StreamEvent = match serde_json::from_str(&data) {
-                        Ok(value) => value,
-                        Err(e) => {
-                            yield Err(LlmError::ApiError {
-                                message: format!("Failed to parse Anthropic streaming event: {e}"),
-                            });
-                            return;
-                        }
+                    let Some(parsed) = parse_stream_event(&data) else {
+                        continue;
                     };
 
                     match parsed.event_type.as_str() {
@@ -701,5 +706,10 @@ mod tests {
             &built.messages[0].content[0],
             AnthropicContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "toolu_123"
         ));
+    }
+
+    #[test]
+    fn parse_stream_event_returns_none_for_unparseable_payloads() {
+        assert!(parse_stream_event("not-json").is_none());
     }
 }

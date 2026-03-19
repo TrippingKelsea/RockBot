@@ -18,6 +18,7 @@ futures-util = { workspace = true }
 reqwest = { workspace = true }
 dirs = "5"
 tokio = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }
 zeroize = "1.7"
 

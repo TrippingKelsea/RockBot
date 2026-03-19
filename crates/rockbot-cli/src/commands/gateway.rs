@@ -190,6 +190,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
     let llm = llm_registry.clone();
     let cred_accessor = credential_accessor.clone();
     let agent_storage_root = storage_runtime.storage_root().to_path_buf();
+    let approval_callback = gateway.tool_approval_callback();
 
     let agent_factory: rockbot_gateway::gateway::AgentFactory =
         Arc::new(move |agent_config: AgentInstance| {
@@ -200,6 +201,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
             let llm = llm.clone();
             let cred_accessor = cred_accessor.clone();
             let agent_storage_root = agent_storage_root.clone();
+            let approval_callback = approval_callback.clone();
 
             Box::pin(async move {
                 let model = agent_config.model.as_ref().unwrap_or(&defaults.model);
@@ -228,7 +230,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
                     cred_accessor,
                     None,
                     None,
-                    None,
+                    Some(approval_callback),
                 )
                 .await
                 .map_err(|e| {
@@ -303,6 +305,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
 
         // Create agent
         let invoker = gateway.agent_invoker();
+        let approval_callback = gateway.tool_approval_callback();
         let mut agent = Agent::new(
             agent_config.clone(),
             llm_provider,
@@ -313,7 +316,7 @@ async fn run_server(config_path: &PathBuf) -> Result<()> {
             credential_accessor.clone(),
             None,
             Some(invoker),
-            None,
+            Some(approval_callback),
         )
         .await?;
         agent.set_storage_root(storage_runtime.storage_root().to_path_buf());

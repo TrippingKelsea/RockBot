@@ -45,7 +45,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, oneshot, RwLock};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, info, warn};
 
@@ -195,6 +195,8 @@ pub struct Gateway {
     tool_provider_registry: Arc<rockbot_tools::ToolProviderRegistry>,
     /// Active WebSocket connections
     ws_connections: Arc<RwLock<HashMap<String, WsConnection>>>,
+    /// Pending human approvals for in-flight tool executions.
+    pending_tool_approvals: Arc<RwLock<HashMap<String, PendingToolApproval>>>,
     /// A2A task store for agent-to-agent protocol
     a2a_task_store: Arc<crate::a2a::TaskStore>,
     /// Recent certificate signing attempts keyed by source IP for rate limiting.
@@ -285,10 +287,29 @@ struct BrowserAuthState {
     cert_role: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ToolApprovalStatus {
+    request_id: String,
+    agent_id: String,
+    tool_name: String,
+    params: serde_json::Value,
+}
+
+struct PendingToolApproval {
+    request: ToolApprovalStatus,
+    response_tx: oneshot::Sender<ToolApprovalDecision>,
+}
+
+enum ToolApprovalDecision {
+    Approved,
+    Denied { reason: String },
+}
+
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_WS_API_BODY_BYTES: usize = 256 * 1024;
 const MAX_TOOL_OUTPUT_CHARS: usize = 2000;
 const MAX_WS_INFLIGHT_MESSAGES_PER_CONNECTION: usize = 32;
+const TOOL_APPROVAL_TIMEOUT_SECS: u64 = 300;
 
 /// WebSocket message types (client -> server)
 #[allow(clippy::large_enum_variant)]
@@ -846,6 +867,7 @@ impl Gateway {
             channel_registry: Arc::new(channel_registry),
             tool_provider_registry: Arc::new(tool_provider_registry),
             ws_connections: Arc::new(RwLock::new(HashMap::new())),
+            pending_tool_approvals: Arc::new(RwLock::new(HashMap::new())),
             a2a_task_store: Arc::new(crate::a2a::TaskStore::new()),
             cert_sign_attempts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             blackboard: Arc::new(rockbot_agent::orchestration::SwarmBlackboard::new()),
@@ -1106,6 +1128,7 @@ impl Gateway {
             Arc::clone(&self.agents),
             Arc::clone(&self.agent_mutation_lock),
             self.agent_inflight.clone(),
+            self.tool_approval_callback(),
         ))
     }
 
@@ -1182,6 +1205,59 @@ impl Gateway {
     /// Set the agent factory for creating new agents
     pub fn set_agent_factory(&mut self, factory: AgentFactory) {
         self.agent_factory = Some(factory);
+    }
+
+    pub fn tool_approval_callback(&self) -> rockbot_tools::ApprovalCallback {
+        let pending_tool_approvals = Arc::clone(&self.pending_tool_approvals);
+        Arc::new(move |tool_name, agent_id, params| {
+            let pending_tool_approvals = Arc::clone(&pending_tool_approvals);
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let request = ToolApprovalStatus {
+                    request_id: request_id.clone(),
+                    agent_id,
+                    tool_name,
+                    params,
+                };
+                let (response_tx, response_rx) = oneshot::channel();
+
+                pending_tool_approvals.write().await.insert(
+                    request_id.clone(),
+                    PendingToolApproval {
+                        request,
+                        response_tx,
+                    },
+                );
+
+                info!("Queued tool approval request {request_id}");
+
+                let decision = tokio::time::timeout(
+                    std::time::Duration::from_secs(TOOL_APPROVAL_TIMEOUT_SECS),
+                    response_rx,
+                )
+                .await;
+
+                let _ = pending_tool_approvals.write().await.remove(&request_id);
+
+                match decision {
+                    Ok(Ok(ToolApprovalDecision::Approved)) => {
+                        rockbot_tools::ApprovalResult::Approved
+                    }
+                    Ok(Ok(ToolApprovalDecision::Denied { reason })) => {
+                        rockbot_tools::ApprovalResult::Denied { reason }
+                    }
+                    Ok(Err(_)) => rockbot_tools::ApprovalResult::Denied {
+                        reason: "Approval request receiver was dropped".to_string(),
+                    },
+                    Err(_) => rockbot_tools::ApprovalResult::Denied {
+                        reason: format!(
+                            "Approval timed out after {} seconds",
+                            TOOL_APPROVAL_TIMEOUT_SECS
+                        ),
+                    },
+                }
+            })
+        })
     }
 
     /// Set the config file path used for bootstrap loading and diagnostics.
@@ -1897,6 +1973,9 @@ impl Gateway {
             }
             (&Method::POST, p) if p.starts_with("/api/agents/") && p.ends_with("/stream") => {
                 self.handle_agent_message_stream(req).await
+            }
+            (&Method::GET, p) if p.starts_with("/api/agents/") && p.ends_with("/approvals") => {
+                self.handle_list_tool_approvals(&path).await
             }
             (&Method::POST, p) if p.starts_with("/api/agents/") && p.ends_with("/approve") => {
                 self.handle_tool_approval(req).await
@@ -5339,7 +5418,7 @@ impl Gateway {
                     remote_executor_strict: strict_executor_target,
                     remote_workspace_override,
                     delegation_depth: 0,
-                    approval_callback: None,
+                    approval_callback: Some(self.tool_approval_callback()),
                 },
                 progress_tx,
             )
@@ -5399,7 +5478,7 @@ impl Gateway {
                                 remote_executor_strict: strict_executor_target,
                                 remote_workspace_override: workspace.clone(),
                                 delegation_depth: handoff_depth,
-                                approval_callback: None,
+                                approval_callback: Some(self.tool_approval_callback()),
                             },
                         )
                         .await;
@@ -6737,10 +6816,79 @@ impl Gateway {
                     remote_executor_strict: strict_executor_target,
                     remote_workspace_override,
                     delegation_depth: 0,
-                    approval_callback: None,
+                    approval_callback: Some(self.tool_approval_callback()),
                 },
             )
             .await?)
+    }
+
+    async fn list_tool_approvals_for_agent(&self, agent_id: &str) -> Vec<ToolApprovalStatus> {
+        self.pending_tool_approvals
+            .read()
+            .await
+            .values()
+            .filter(|pending| pending.request.agent_id == agent_id)
+            .map(|pending| pending.request.clone())
+            .collect()
+    }
+
+    async fn resolve_tool_approval(
+        &self,
+        agent_id: &str,
+        approval: ToolApprovalRequest,
+    ) -> std::result::Result<serde_json::Value, StatusCode> {
+        let mut pending = self.pending_tool_approvals.write().await;
+        let Some(entry) = pending.remove(&approval.request_id) else {
+            return Err(StatusCode::NOT_FOUND);
+        };
+
+        if entry.request.agent_id != agent_id {
+            pending.insert(approval.request_id.clone(), entry);
+            return Err(StatusCode::NOT_FOUND);
+        }
+
+        let status = if approval.approved {
+            let _ = entry.response_tx.send(ToolApprovalDecision::Approved);
+            "approved"
+        } else {
+            let reason = approval
+                .reason
+                .clone()
+                .unwrap_or_else(|| "Denied by operator".to_string());
+            let _ = entry
+                .response_tx
+                .send(ToolApprovalDecision::Denied { reason });
+            "denied"
+        };
+
+        Ok(serde_json::json!({
+            "status": status,
+            "request_id": approval.request_id,
+            "agent_id": agent_id,
+        }))
+    }
+
+    async fn handle_list_tool_approvals(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Response<GatewayBody>, hyper::Error> {
+        let agent_id = path
+            .strip_prefix("/api/agents/")
+            .and_then(|s| s.strip_suffix("/approvals"))
+            .unwrap_or("");
+
+        if !Self::is_valid_agent_id(agent_id) {
+            return Ok(Self::json_error(
+                "Invalid agent ID",
+                StatusCode::BAD_REQUEST,
+            ));
+        }
+
+        let approvals = self.list_tool_approvals_for_agent(agent_id).await;
+        Ok(Self::json_response(
+            &serde_json::to_string(&approvals).unwrap_or_default(),
+            StatusCode::OK,
+        ))
     }
 
     /// Get gateway health status
@@ -6861,23 +7009,14 @@ impl Gateway {
             }
         }
 
-        let status = if approval.approved {
-            "approved"
-        } else {
-            "denied"
-        };
-        let response_json = serde_json::to_string(&serde_json::json!({
-            "status": status,
-            "request_id": approval.request_id,
-            "agent_id": agent_id,
-        }))
-        .unwrap_or_default();
-
-        Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "application/json")
-            .body(GatewayBody::Left(Full::new(response_json.into())))
-            .unwrap())
+        match self.resolve_tool_approval(agent_id, approval).await {
+            Ok(body) => Ok(Self::json_response(&body.to_string(), StatusCode::OK)),
+            Err(StatusCode::NOT_FOUND) => Ok(Self::json_error(
+                "Pending tool approval not found",
+                StatusCode::NOT_FOUND,
+            )),
+            Err(code) => Ok(Self::json_error("Failed to resolve tool approval", code)),
+        }
     }
 
     /// `GET /.well-known/agent.json` — serve the A2A agent card for discovery.
@@ -7463,6 +7602,7 @@ impl Clone for Gateway {
             channel_registry: Arc::clone(&self.channel_registry),
             tool_provider_registry: Arc::clone(&self.tool_provider_registry),
             ws_connections: Arc::clone(&self.ws_connections),
+            pending_tool_approvals: Arc::clone(&self.pending_tool_approvals),
             a2a_task_store: Arc::clone(&self.a2a_task_store),
             cert_sign_attempts: Arc::clone(&self.cert_sign_attempts),
             blackboard: Arc::clone(&self.blackboard),
@@ -7500,6 +7640,7 @@ pub struct GatewayInvoker {
     agents: Arc<tokio::sync::RwLock<HashMap<String, Arc<Agent>>>>,
     agent_mutation_lock: Arc<tokio::sync::Mutex<()>>,
     agent_inflight: AgentRequestTracker,
+    approval_callback: rockbot_tools::ApprovalCallback,
 }
 
 impl GatewayInvoker {
@@ -7508,11 +7649,13 @@ impl GatewayInvoker {
         agents: Arc<tokio::sync::RwLock<HashMap<String, Arc<Agent>>>>,
         agent_mutation_lock: Arc<tokio::sync::Mutex<()>>,
         agent_inflight: AgentRequestTracker,
+        approval_callback: rockbot_tools::ApprovalCallback,
     ) -> Self {
         Self {
             agents,
             agent_mutation_lock,
             agent_inflight,
+            approval_callback,
         }
     }
 }
@@ -7560,6 +7703,7 @@ impl rockbot_tools::AgentInvoker for GatewayInvoker {
                 msg,
                 ProcessMessageOptions {
                     delegation_depth: depth,
+                    approval_callback: Some(self.approval_callback.clone()),
                     ..ProcessMessageOptions::default()
                 },
             )
@@ -7610,6 +7754,8 @@ impl rockbot_tools::AgentInvoker for GatewayInvoker {
 struct ToolApprovalRequest {
     request_id: String,
     approved: bool,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// HTTP API message request
@@ -7940,5 +8086,49 @@ mod tests {
         let response = gateway.handle_health_check().await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_tool_approval_callback_waits_for_gateway_resolution() {
+        let gateway = create_test_gateway().await;
+        let callback = gateway.tool_approval_callback();
+        let pending_result = tokio::spawn(async move {
+            callback(
+                "exec".to_string(),
+                "agent-1".to_string(),
+                serde_json::json!({ "command": "echo hi" }),
+            )
+            .await
+        });
+
+        let request = loop {
+            let pending = gateway.list_tool_approvals_for_agent("agent-1").await;
+            if let Some(request) = pending.into_iter().next() {
+                break request;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        assert_eq!(request.tool_name, "exec");
+        assert_eq!(request.params["command"], "echo hi");
+
+        let response = gateway
+            .resolve_tool_approval(
+                "agent-1",
+                ToolApprovalRequest {
+                    request_id: request.request_id.clone(),
+                    approved: true,
+                    reason: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response["status"], "approved");
+        assert_eq!(response["request_id"], request.request_id);
+        assert!(matches!(
+            pending_result.await.unwrap(),
+            rockbot_tools::ApprovalResult::Approved
+        ));
     }
 }

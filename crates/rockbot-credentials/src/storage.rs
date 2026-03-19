@@ -693,11 +693,10 @@ impl CredentialVault {
         Ok(())
     }
 
-    /// Unlocks the vault with a pre-derived master key (no verification).
+    /// Unlocks the vault with a pre-derived master key after verification.
     /// This is for advanced use cases (e.g., YubiKey-derived keys).
-    /// Warning: Does not verify the key is correct.
-    pub fn unlock(&mut self, key: MasterKey) {
-        self.master_key = Some(key);
+    pub fn unlock(&mut self, key: MasterKey) -> Result<()> {
+        self.verify_and_set_master_key(key)
     }
 
     /// Locks the vault, clearing the master key from memory.
@@ -1426,10 +1425,6 @@ mod tests {
     use crate::crypto::MasterKey;
     use tempfile::tempdir;
 
-    fn test_key() -> MasterKey {
-        MasterKey::from_bytes(&[0u8; 32]).unwrap()
-    }
-
     #[test]
     fn test_vault_create_and_open() {
         let dir = tempdir().unwrap();
@@ -1446,9 +1441,21 @@ mod tests {
         let mut vault = CredentialVault::open(dir.path()).unwrap();
 
         assert!(!vault.is_unlocked());
-        vault.unlock(test_key());
+        vault.unlock_with_password("test").unwrap();
         assert!(vault.is_unlocked());
         vault.lock();
+        assert!(!vault.is_unlocked());
+    }
+
+    #[test]
+    fn test_vault_unlock_rejects_invalid_master_key() {
+        let dir = tempdir().unwrap();
+        CredentialVault::init_with_password(dir.path(), "test").unwrap();
+        let mut vault = CredentialVault::open(dir.path()).unwrap();
+
+        let wrong_key = MasterKey::from_bytes(&[0u8; 32]).unwrap();
+        let err = vault.unlock(wrong_key).unwrap_err();
+        assert!(matches!(err, CredentialError::InvalidPassword));
         assert!(!vault.is_unlocked());
     }
 
@@ -1498,7 +1505,7 @@ mod tests {
         let dir = tempdir().unwrap();
         CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
-        vault.unlock(test_key());
+        vault.unlock_with_password("test").unwrap();
 
         // Create endpoint first
         let endpoint = vault
@@ -1544,7 +1551,7 @@ mod tests {
         let dir = tempdir().unwrap();
         CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
-        vault.unlock(test_key());
+        vault.unlock_with_password("test").unwrap();
 
         let endpoint = vault
             .create_endpoint(
@@ -1578,7 +1585,7 @@ mod tests {
         {
             CredentialVault::init_with_password(dir.path(), "test").unwrap();
             let mut vault = CredentialVault::open(dir.path()).unwrap();
-            vault.unlock(test_key());
+            vault.unlock_with_password("test").unwrap();
 
             let endpoint = vault
                 .create_endpoint(
@@ -1598,7 +1605,7 @@ mod tests {
         // Reopen and verify
         {
             let mut vault = CredentialVault::open(dir.path()).unwrap();
-            vault.unlock(test_key());
+            vault.unlock_with_password("test").unwrap();
 
             let endpoint = vault.get_endpoint(endpoint_id).unwrap();
             assert_eq!(endpoint.name, "Persistent");
@@ -1613,7 +1620,7 @@ mod tests {
         let dir = tempdir().unwrap();
         CredentialVault::init_with_password(dir.path(), "test").unwrap();
         let mut vault = CredentialVault::open(dir.path()).unwrap();
-        vault.unlock(test_key());
+        vault.unlock_with_password("test").unwrap();
 
         let endpoint = vault
             .create_endpoint(

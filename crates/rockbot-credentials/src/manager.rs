@@ -484,7 +484,7 @@ impl CredentialManager {
     /// Use `unlock_with_password` for normal password-based unlocking.
     pub async fn unlock(&self, master_key: MasterKey) -> Result<()> {
         let mut vault = self.vault.write().await;
-        vault.unlock(master_key);
+        vault.unlock(master_key)?;
 
         let mut locked = self.locked.write().await;
         *locked = false;
@@ -866,7 +866,6 @@ impl Clone for CredentialManager {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::crypto::generate_salt;
     use tempfile::TempDir;
 
     fn create_test_manager() -> (CredentialManager, TempDir) {
@@ -886,10 +885,7 @@ mod tests {
     async fn test_manager_unlock_lock() {
         let (manager, _temp) = create_test_manager();
 
-        let salt = generate_salt();
-        let master_key = MasterKey::derive_from_password("test-password", &salt).unwrap();
-
-        manager.unlock(master_key).await.unwrap();
+        manager.unlock_with_password("test").await.unwrap();
         assert!(!manager.is_locked().await);
 
         manager.lock().await.unwrap();
@@ -961,9 +957,7 @@ mod tests {
         CredentialVault::init_with_password(temp_dir.path(), "test").unwrap();
         let manager = CredentialManager::with_hil_timeout(temp_dir.path(), 2).unwrap();
 
-        let salt = generate_salt();
-        let master_key = MasterKey::derive_from_password("test-password", &salt).unwrap();
-        manager.unlock(master_key).await.unwrap();
+        manager.unlock_with_password("test").await.unwrap();
 
         // Add HIL permission for saggyclaw:// URIs
         manager
@@ -1050,9 +1044,7 @@ mod tests {
         let (manager, _temp) = create_test_manager();
 
         // Unlock vault
-        let salt = generate_salt();
-        let master_key = MasterKey::derive_from_password("test-password", &salt).unwrap();
-        manager.unlock(master_key).await.unwrap();
+        manager.unlock_with_password("test").await.unwrap();
 
         // Add allow permission
         manager
@@ -1096,9 +1088,7 @@ mod tests {
     async fn test_manager_clone() {
         let (manager, _temp) = create_test_manager();
 
-        let salt = generate_salt();
-        let master_key = MasterKey::derive_from_password("test-password", &salt).unwrap();
-        manager.unlock(master_key).await.unwrap();
+        manager.unlock_with_password("test").await.unwrap();
 
         // Clone should share state
         let manager2 = manager.clone();

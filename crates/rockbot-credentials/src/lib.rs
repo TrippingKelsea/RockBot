@@ -35,7 +35,7 @@
 //! // Unlock with a master key derived from password
 //! let salt = generate_salt();
 //! let master_key = MasterKey::derive_from_password("my-password", &salt).unwrap();
-//! vault.unlock(master_key);
+//! vault.unlock(master_key)?;
 //!
 //! // Create an endpoint
 //! let endpoint = vault.create_endpoint(

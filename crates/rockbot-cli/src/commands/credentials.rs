@@ -73,7 +73,6 @@ pub async fn run(command: &CredentialsCommands, config_path: &PathBuf) -> Result
         CredentialsCommands::Audit { verify, limit } => view_audit(&config, *verify, *limit).await,
         CredentialsCommands::Status => show_status(&config).await,
         CredentialsCommands::Unlock {
-            password,
             keyfile,
             age,
             ssh_key,
@@ -81,7 +80,6 @@ pub async fn run(command: &CredentialsCommands, config_path: &PathBuf) -> Result
         } => {
             unlock_vault(
                 &config,
-                password.as_deref(),
                 keyfile.as_ref(),
                 age.as_deref(),
                 ssh_key.as_ref(),
@@ -464,7 +462,6 @@ async fn show_status(config: &Config) -> Result<()> {
 /// Unlock the vault
 async fn unlock_vault(
     config: &Config,
-    password: Option<&str>,
     keyfile: Option<&PathBuf>,
     age_identity: Option<&str>,
     ssh_privkey: Option<&PathBuf>,
@@ -491,10 +488,7 @@ async fn unlock_vault(
 
     match unlock_method {
         UnlockMethod::Password { .. } => {
-            let password = match password {
-                Some(p) => p.to_string(),
-                None => prompt_password_hidden("Enter vault password: ")?,
-            };
+            let password = prompt_password_hidden("Enter vault password: ")?;
             manager.unlock_with_password(&password).await?;
         }
         UnlockMethod::Keyfile { path_hint } => {

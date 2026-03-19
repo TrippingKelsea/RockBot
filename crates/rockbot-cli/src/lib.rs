@@ -577,9 +577,6 @@ pub enum CredentialsCommands {
     Status,
     /// Unlock the vault
     Unlock {
-        /// Password (if not provided, will prompt for password-based vaults)
-        #[arg(short, long)]
-        password: Option<String>,
         /// Key file path (for keyfile-based vaults)
         #[arg(short, long, value_name = "PATH")]
         keyfile: Option<PathBuf>,

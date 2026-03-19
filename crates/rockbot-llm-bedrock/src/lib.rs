@@ -782,6 +782,34 @@ impl BedrockProvider {
         }
     }
 
+    fn append_json_mode_hint(
+        system: &mut Option<Vec<SystemContentBlock>>,
+        response_format: Option<&ResponseFormat>,
+    ) {
+        let Some(response_format) = response_format else {
+            return;
+        };
+
+        let json_hint = match response_format {
+            ResponseFormat::Text => None,
+            ResponseFormat::JsonObject => Some(
+                "IMPORTANT: You MUST respond with valid JSON only. No markdown, no explanation, no text outside the JSON object.".to_string(),
+            ),
+            ResponseFormat::JsonSchema { schema } => Some(format!(
+                "IMPORTANT: You MUST respond with valid JSON conforming to this schema:\n{}\nNo markdown, no explanation, no text outside the JSON object.",
+                serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string())
+            )),
+        };
+
+        if let Some(hint) = json_hint {
+            let hint_block = SystemContentBlock::Text(hint);
+            match system {
+                Some(blocks) => blocks.push(hint_block),
+                None => *system = Some(vec![hint_block]),
+            }
+        }
+    }
+
     /// Convert tool definitions to Bedrock format
     #[allow(clippy::unused_self)]
     fn convert_tools(&self, tools: &[ToolDefinition]) -> ToolConfiguration {
@@ -1062,29 +1090,7 @@ impl LlmProvider for BedrockProvider {
     ) -> Result<ChatCompletionResponse> {
         let model = self.normalize_model(&request.model);
         let (mut system, messages) = self.convert_messages(&request.messages);
-
-        // Inject JSON mode hint into system blocks (Bedrock Converse has no native json_mode)
-        if let Some(ref response_format) = request.response_format {
-            let json_hint = match response_format {
-                ResponseFormat::Text => None,
-                ResponseFormat::JsonObject => Some(
-                    "IMPORTANT: You MUST respond with valid JSON only. No markdown, no explanation, no text outside the JSON object.".to_string()
-                ),
-                ResponseFormat::JsonSchema { schema } => Some(
-                    format!(
-                        "IMPORTANT: You MUST respond with valid JSON conforming to this schema:\n{}\nNo markdown, no explanation, no text outside the JSON object.",
-                        serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string())
-                    )
-                ),
-            };
-            if let Some(hint) = json_hint {
-                let hint_block = SystemContentBlock::Text(hint);
-                match &mut system {
-                    Some(blocks) => blocks.push(hint_block),
-                    None => system = Some(vec![hint_block]),
-                }
-            }
-        }
+        Self::append_json_mode_hint(&mut system, request.response_format.as_ref());
 
         let mut req = self.client.converse().model_id(&model);
 
@@ -1205,7 +1211,8 @@ impl LlmProvider for BedrockProvider {
 
     async fn stream_completion(&self, request: ChatCompletionRequest) -> Result<CompletionStream> {
         let model = self.normalize_model(&request.model);
-        let (system, messages) = self.convert_messages(&request.messages);
+        let (mut system, messages) = self.convert_messages(&request.messages);
+        Self::append_json_mode_hint(&mut system, request.response_format.as_ref());
 
         let mut req = self.client.converse_stream().model_id(&model);
 
@@ -1617,5 +1624,19 @@ mod tests {
         assert!(config.scopes.is_empty());
         assert!(config.credentials_secret_arn.is_none());
         assert!(config.vendor.is_none());
+    }
+
+    #[test]
+    fn test_append_json_mode_hint_adds_hint_for_streaming_parity() {
+        let mut system = None;
+        BedrockProvider::append_json_mode_hint(&mut system, Some(&ResponseFormat::JsonObject));
+        let blocks = system.expect("json hint should be added");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            SystemContentBlock::Text(text) => {
+                assert!(text.contains("valid JSON only"));
+            }
+            other => panic!("expected text system block, got {other:?}"),
+        }
     }
 }

@@ -77,6 +77,25 @@ fn parse_command_line(command: &str) -> Result<DetectedCommand> {
     })
 }
 
+fn sanitize_shell_command(command: &str) -> Result<DetectedCommand> {
+    if command.trim().is_empty() {
+        return Err(crate::ToolError::InvalidParameters {
+            message: "command cannot be empty".to_string(),
+        });
+    }
+
+    if command
+        .chars()
+        .any(|c| c == '\0' || c == '\n' || c == '\r' || (c.is_control() && c != '\t'))
+    {
+        return Err(crate::ToolError::InvalidParameters {
+            message: "command contains unsupported control characters".to_string(),
+        });
+    }
+
+    parse_command_line(command)
+}
+
 fn normalize_path(path: &std::path::Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -534,10 +553,10 @@ impl Tool for ExecTool {
                 .unwrap_or(30)
                 .min(MAX_EXEC_TIMEOUT_SECS); // Default 30 second timeout
 
-            let parsed = parse_command_line(&command)?;
+            sanitize_shell_command(&command)?;
 
-            let mut cmd = Command::new(&parsed.program);
-            cmd.args(&parsed.args).current_dir(&workdir);
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(&command).current_dir(&workdir);
 
             let output = tokio::time::timeout(std::time::Duration::from_secs(timeout), cmd.output())
                     .await
@@ -2989,7 +3008,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_exec_tool_does_not_invoke_shell_features() {
+    async fn test_exec_tool_preserves_shell_features() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("marker.txt");
         let tool = ExecTool::new();
@@ -2998,7 +3017,7 @@ mod tests {
         let result = tool
             .execute(
                 serde_json::json!({
-                    "command": format!("printf '%s\\n' safe '>' '{}'", marker.display()),
+                    "command": format!("printf safe > {}", marker.display()),
                     "workdir": "."
                 }),
                 context,
@@ -3006,17 +3025,20 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!marker.exists(), "shell redirection should not be interpreted");
+        assert!(marker.exists(), "shell redirection should be interpreted");
+        let content = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(content, "safe");
         if let ToolResult::Json { data } = result {
             assert_eq!(data.get("success").and_then(|v| v.as_bool()), Some(true));
-            let stdout = data.get("stdout").and_then(|v| v.as_str()).unwrap_or_default();
-            assert!(
-                stdout.contains(">\n"),
-                "expected shell metacharacters to remain literal: {stdout}"
-            );
         } else {
             panic!("expected JSON result");
         }
+    }
+
+    #[test]
+    fn test_sanitize_shell_command_rejects_newlines() {
+        let err = sanitize_shell_command("echo hello\nrm -rf /").unwrap_err();
+        assert!(matches!(err, crate::ToolError::InvalidParameters { .. }));
     }
 
     #[tokio::test]

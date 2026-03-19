@@ -639,8 +639,17 @@ impl ToolRegistry {
             let is_allowlisted = params
                 .get("command")
                 .and_then(|v| v.as_str())
-                .and_then(|cmd| cmd.split_whitespace().next())
-                .is_some_and(|exe| context.command_allowlist.iter().any(|a| a == exe));
+                .is_some_and(|cmd| {
+                    let executable = shell_words::split(cmd)
+                        .ok()
+                        .and_then(|parts| parts.into_iter().next())
+                        .unwrap_or_default();
+                    rockbot_security::command_matches_any_pattern(
+                        cmd,
+                        &executable,
+                        &context.command_allowlist,
+                    )
+                });
 
             if !is_allowlisted {
                 if let Some(ref callback) = context.approval_callback {
@@ -695,10 +704,12 @@ impl ToolRegistry {
 
         // Check executable restrictions for exec-like tools
         if let Some(cmd_val) = params.get("command").and_then(|v| v.as_str()) {
-            // Extract the executable name (first word of the command)
-            let executable = cmd_val.split_whitespace().next().unwrap_or(cmd_val);
+            let executable = shell_words::split(cmd_val)
+                .ok()
+                .and_then(|parts| parts.into_iter().next())
+                .unwrap_or_default();
             if let rockbot_security::EnforcementResult::Denied { reason } =
-                rockbot_security::enforce_executable(executable, restrictions)
+                rockbot_security::enforce_command(cmd_val, &executable, restrictions)
             {
                 return Err(ToolError::SecurityError { message: reason });
             }
@@ -929,6 +940,52 @@ mod tests {
             .unwrap();
 
         // echo should succeed since it's allowlisted, skipping the deny callback
+        assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn test_allowlisted_command_pattern_skips_approval() {
+        let config = ToolConfig {
+            profile: "standard".to_string(),
+            deny: vec![],
+            configs: HashMap::new(),
+        };
+        let registry = ToolRegistry::new(config).await.unwrap();
+
+        let context = ToolExecutionContext {
+            session_id: "test".to_string(),
+            agent_id: "agent1".to_string(),
+            workspace_path: std::path::PathBuf::from("/tmp"),
+            security_context: rockbot_security::SecurityContext {
+                session_id: "test".to_string(),
+                capabilities: {
+                    let mut caps = rockbot_security::Capabilities::new();
+                    caps.add(rockbot_security::Capability::ProcessExecute);
+                    caps
+                },
+                sandbox_enabled: false,
+                restrictions: rockbot_security::SecurityRestrictions::default(),
+            },
+            credential_accessor: None,
+            command_allowlist: vec!["printf *".to_string()],
+            approval_callback: Some(Arc::new(|_tool, _agent, _params| {
+                Box::pin(async {
+                    ApprovalResult::Denied {
+                        reason: "should not reach".to_string(),
+                    }
+                })
+            })),
+            agent_invoker: None,
+            delegation_depth: 0,
+            blackboard: None,
+            swarm_id: None,
+        };
+
+        let result = registry
+            .execute_tool("exec", r#"{"command": "printf '%s' hello"}"#, context)
+            .await
+            .unwrap();
+
         assert!(result.success);
     }
 

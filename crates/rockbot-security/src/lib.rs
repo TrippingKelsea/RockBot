@@ -63,6 +63,8 @@ pub struct SecurityRestrictions {
     pub max_execution_time: Option<std::time::Duration>,
     pub allowed_executables: Option<HashSet<String>>,
     pub blocked_executables: HashSet<String>,
+    pub allowed_command_patterns: Vec<String>,
+    pub blocked_command_patterns: Vec<String>,
     pub forbidden_paths: HashSet<PathBuf>,
 }
 
@@ -343,6 +345,44 @@ pub fn enforce_executable(cmd: &str, restrictions: &SecurityRestrictions) -> Enf
     EnforcementResult::Allowed
 }
 
+fn matches_command_pattern(pattern: &str, command: &str, executable: &str) -> bool {
+    glob::Pattern::new(pattern)
+        .map(|compiled| compiled.matches(command) || compiled.matches(executable))
+        .unwrap_or_else(|_| pattern == command || pattern == executable)
+}
+
+pub fn command_matches_any_pattern(command: &str, executable: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| matches_command_pattern(pattern, command, executable))
+}
+
+pub fn enforce_command(
+    command: &str,
+    executable: &str,
+    restrictions: &SecurityRestrictions,
+) -> EnforcementResult {
+    if command_matches_any_pattern(command, executable, &restrictions.blocked_command_patterns) {
+        return EnforcementResult::Denied {
+            reason: format!("Command '{command}' is blocked by security restrictions"),
+        };
+    }
+
+    if let result @ EnforcementResult::Denied { .. } = enforce_executable(executable, restrictions) {
+        return result;
+    }
+
+    if !restrictions.allowed_command_patterns.is_empty()
+        && !command_matches_any_pattern(command, executable, &restrictions.allowed_command_patterns)
+    {
+        return EnforcementResult::Denied {
+            reason: format!("Command '{command}' is not in the allowed list"),
+        };
+    }
+
+    EnforcementResult::Allowed
+}
+
 /// Get the configured execution timeout from security restrictions.
 pub fn enforce_timeout(restrictions: &SecurityRestrictions) -> Option<std::time::Duration> {
     restrictions.max_execution_time
@@ -405,12 +445,26 @@ fn build_restrictions(config: &SecurityConfig) -> SecurityRestrictions {
 
     if let Some(process) = &config.capabilities.process {
         if !process.allowed_commands.is_empty() {
-            restrictions.allowed_executables =
-                Some(process.allowed_commands.iter().cloned().collect());
+            restrictions.allowed_command_patterns = process.allowed_commands.clone();
+            restrictions.allowed_executables = Some(
+                process
+                    .allowed_commands
+                    .iter()
+                    .filter(|command| !command.contains(['*', '?', '[', ']', ' ']))
+                    .cloned()
+                    .collect(),
+            );
         }
         restrictions
             .blocked_executables
-            .extend(process.blocked_commands.iter().cloned());
+            .extend(
+                process
+                    .blocked_commands
+                    .iter()
+                    .filter(|command| !command.contains(['*', '?', '[', ']', ' ']))
+                    .cloned(),
+            );
+        restrictions.blocked_command_patterns = process.blocked_commands.clone();
         restrictions.max_execution_time =
             process.max_execution_time.map(std::time::Duration::from_secs);
     }
@@ -531,6 +585,34 @@ mod tests {
         restrictions.blocked_executables.insert("rm".to_string());
         assert!(matches!(
             enforce_executable("rm", &restrictions),
+            EnforcementResult::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn test_enforce_command_matches_allowed_pattern() {
+        let restrictions = SecurityRestrictions {
+            allowed_command_patterns: vec!["git *".to_string()],
+            ..Default::default()
+        };
+        assert!(matches!(
+            enforce_command("git status --short", "git", &restrictions),
+            EnforcementResult::Allowed
+        ));
+        assert!(matches!(
+            enforce_command("rm -rf /tmp/demo", "rm", &restrictions),
+            EnforcementResult::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn test_enforce_command_blocks_deny_pattern() {
+        let restrictions = SecurityRestrictions {
+            blocked_command_patterns: vec!["*curl*".to_string()],
+            ..Default::default()
+        };
+        assert!(matches!(
+            enforce_command("curl https://example.com", "curl", &restrictions),
             EnforcementResult::Denied { .. }
         ));
     }

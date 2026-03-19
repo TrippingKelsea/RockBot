@@ -1399,7 +1399,7 @@ fn expand_env_vars(content: &str) -> Result<String> {
     let re = ENV_VAR_RE
         .get_or_init(|| regex::Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").expect("valid regex"));
 
-    let mut missing_var: Option<String> = None;
+    let mut missing_vars = Vec::new();
     let expanded = re.replace_all(content, |caps: &regex::Captures<'_>| {
         let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
         let default_value = caps.get(2).map(|m| m.as_str());
@@ -1410,7 +1410,9 @@ fn expand_env_vars(content: &str) -> Result<String> {
                 if let Some(default) = default_value {
                     default.to_string()
                 } else {
-                    missing_var = Some(var_name.to_string());
+                    if !missing_vars.iter().any(|missing| missing == var_name) {
+                        missing_vars.push(var_name.to_string());
+                    }
                     caps.get(0)
                         .map(|m| m.as_str().to_string())
                         .unwrap_or_default()
@@ -1419,8 +1421,8 @@ fn expand_env_vars(content: &str) -> Result<String> {
         }
     });
 
-    if let Some(var) = missing_var {
-        return Err(ConfigError::EnvVarNotFound { var });
+    if !missing_vars.is_empty() {
+        return Err(ConfigError::EnvVarNotFound { vars: missing_vars });
     }
 
     Ok(expanded.into_owned())
@@ -1626,6 +1628,19 @@ mod tests {
         let content_with_default = "value = \"${NONEXISTENT:default_val}\"";
         let expanded = expand_env_vars(content_with_default).unwrap();
         assert_eq!(expanded, "value = \"default_val\"");
+    }
+
+    #[test]
+    fn test_env_var_expansion_reports_all_missing_vars() {
+        let content = "a = \"${MISSING_A}\"\nb = \"${MISSING_B}\"\nc = \"${MISSING_A}\"";
+        let err = expand_env_vars(content).unwrap_err();
+
+        match err {
+            ConfigError::EnvVarNotFound { vars } => {
+                assert_eq!(vars, vec!["MISSING_A".to_string(), "MISSING_B".to_string()]);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

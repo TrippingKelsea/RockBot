@@ -17,8 +17,8 @@ pub enum ConfigError {
     #[error("Missing required field: {field}")]
     MissingField { field: String },
 
-    #[error("Environment variable not found: {var}")]
-    EnvVarNotFound { var: String },
+    #[error("Environment variables not found: {vars:?}")]
+    EnvVarNotFound { vars: Vec<String> },
 }
 
 #[derive(Debug, Error)]

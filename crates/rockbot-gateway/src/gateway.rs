@@ -175,6 +175,8 @@ pub struct Gateway {
     pub(crate) agents: Arc<RwLock<HashMap<String, Arc<Agent>>>>,
     /// Pending agents (couldn't be created, e.g., missing API keys)
     pending_agents: Arc<RwLock<Vec<PendingAgent>>>,
+    /// Serializes create/update/delete flows so config, store, and runtime stay in sync.
+    agent_mutation_lock: Arc<tokio::sync::Mutex<()>>,
     /// Agent factory for creating new agents
     agent_factory: Option<AgentFactory>,
     /// Session manager
@@ -772,18 +774,14 @@ impl Gateway {
 
         let gateway_config = config.gateway.clone();
         let credentials_config = config.credentials.clone();
-        let storage_root = config
-            .credentials
-            .vault_path
-            .parent()
-            .map_or_else(
-                || {
+        let storage_root = config.credentials.vault_path.parent().map_or_else(
+            || {
                 dirs::config_dir()
                     .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
                     .join("rockbot")
-                },
-                std::path::Path::to_path_buf,
-            );
+            },
+            std::path::Path::to_path_buf,
+        );
 
         Ok(Self {
             config: gateway_config,
@@ -794,6 +792,7 @@ impl Gateway {
             agents_config: Arc::new(RwLock::new(config.agents.list.clone())),
             agents: Arc::new(RwLock::new(HashMap::new())),
             pending_agents: Arc::new(RwLock::new(Vec::new())),
+            agent_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
             agent_factory: None,
             session_manager,
             credential_manager,
@@ -825,25 +824,22 @@ impl Gateway {
                     }),
                 };
                 match cron_store {
-                    Ok((store, descriptor)) => match crate::cron::CronScheduler::new_with_store(
-                        store,
-                        &descriptor,
-                    )
-                    .await
-                    {
-                        Ok(scheduler) => {
-                            info!("Cron scheduler initialized");
-                            Arc::new(scheduler)
+                    Ok((store, descriptor)) => {
+                        match crate::cron::CronScheduler::new_with_store(store, &descriptor).await {
+                            Ok(scheduler) => {
+                                info!("Cron scheduler initialized");
+                                Arc::new(scheduler)
+                            }
+                            Err(e) => {
+                                error!("Failed to initialize cron scheduler: {}", e);
+                                Arc::new(
+                                    crate::cron::CronScheduler::new(":memory:")
+                                        .await
+                                        .expect("in-memory cron scheduler should never fail"),
+                                )
+                            }
                         }
-                        Err(e) => {
-                            error!("Failed to initialize cron scheduler: {}", e);
-                            Arc::new(
-                                crate::cron::CronScheduler::new(":memory:")
-                                    .await
-                                    .expect("in-memory cron scheduler should never fail"),
-                            )
-                        }
-                    },
+                    }
                     Err(e) => {
                         error!("Failed to initialize cron store: {}", e);
                         // Create an in-memory fallback so the gateway can still start
@@ -1167,26 +1163,24 @@ impl Gateway {
     }
 
     /// Persist a single agent to the authoritative store if available.
-    fn persist_agent_to_store(&self, agent: &rockbot_config::AgentInstance) {
+    fn persist_agent_to_store(&self, agent: &rockbot_config::AgentInstance) -> anyhow::Result<()> {
         if let Some(ref store) = self.store {
-            if let Err(e) = store.store_agent(&agent.id, agent) {
-                warn!("Failed to persist agent '{}' to vault: {e}", agent.id);
-            }
+            store.store_agent(&agent.id, agent)?;
         } else {
             warn!(
                 "No authoritative agent store is available; agent '{}' change is runtime-only",
                 agent.id
             );
         }
+        Ok(())
     }
 
     /// Delete an agent from the vault store.
-    fn delete_agent_from_store(&self, agent_id: &str) {
+    fn delete_agent_from_store(&self, agent_id: &str) -> anyhow::Result<()> {
         if let Some(ref store) = self.store {
-            if let Err(e) = store.delete_agent(agent_id) {
-                warn!("Failed to delete agent '{agent_id}' from vault: {e}");
-            }
+            store.delete_agent(agent_id)?;
         }
+        Ok(())
     }
 
     /// Auto-migrate agents from TOML config to vault store.
@@ -1409,7 +1403,8 @@ impl Gateway {
                     .map_err(|e| tls_config_err(format!("Invalid CA certificate: {e}")))?;
             }
 
-            let crls = if self.pki.require_client_cert || matches!(listener_kind, ListenerKind::Client)
+            let crls = if self.pki.require_client_cert
+                || matches!(listener_kind, ListenerKind::Client)
             {
                 let crl_path = ca_path.with_file_name("crl.pem");
                 if crl_path.exists() {
@@ -1428,9 +1423,8 @@ impl Gateway {
                 None
             };
 
-            let verifier_builder = rustls::server::WebPkiClientVerifier::builder(Arc::new(
-                root_store,
-            ));
+            let verifier_builder =
+                rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store));
             let verifier_builder = if let Some(crls) = crls {
                 verifier_builder.with_crls(crls)
             } else {
@@ -2975,14 +2969,10 @@ impl Gateway {
                     }
                 } else {
                     // Try loading from the agent's SYSTEM-PROMPT.md file
-                    let storage_root = self
-                        .credentials_config
-                        .vault_path
-                        .parent()
-                        .map_or_else(
-                            rockbot_storage_runtime::default_storage_root,
-                            std::path::PathBuf::from,
-                        );
+                    let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+                        rockbot_storage_runtime::default_storage_root,
+                        std::path::PathBuf::from,
+                    );
                     if let Ok(content) = rockbot_storage_runtime::read_agent_context_file(
                         &storage_root,
                         agent_id,
@@ -3663,11 +3653,10 @@ impl Gateway {
         agent_id: &str,
         system_prompt: Option<&str>,
     ) -> std::result::Result<(), std::io::Error> {
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
         rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
             &Config::default(),
             storage_root,
@@ -3723,11 +3712,10 @@ impl Gateway {
     }
 
     async fn handle_get_topology(&self) -> Response<GatewayBody> {
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
         let runtime = match rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
             &Config::default(),
             storage_root,
@@ -3781,11 +3769,10 @@ impl Gateway {
         let Some(agent_id) = Self::parse_agent_objects_list_path(path) else {
             return Self::json_error("Invalid path", StatusCode::BAD_REQUEST);
         };
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
         let runtime = match rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
             &Config::default(),
             storage_root,
@@ -3836,18 +3823,14 @@ impl Gateway {
         let payload: UpdateObjectRequest = match serde_json::from_slice(&body) {
             Ok(payload) => payload,
             Err(err) => {
-                return Self::json_error(
-                    &format!("Invalid JSON: {err}"),
-                    StatusCode::BAD_REQUEST,
-                )
+                return Self::json_error(&format!("Invalid JSON: {err}"), StatusCode::BAD_REQUEST)
             }
         };
 
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
         let runtime = match rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
             &Config::default(),
             storage_root,
@@ -3882,11 +3865,19 @@ impl Gateway {
                 .unwrap_or_default(),
             replication_class: payload
                 .replication_class
-                .or_else(|| existing.as_ref().map(|record| record.replication_class.clone()))
+                .or_else(|| {
+                    existing
+                        .as_ref()
+                        .map(|record| record.replication_class.clone())
+                })
                 .unwrap_or(rockbot_storage_runtime::ReplicationClass::ManualPromote),
             promoted_for_replication: payload
                 .promoted_for_replication
-                .or_else(|| existing.as_ref().map(|record| record.promoted_for_replication))
+                .or_else(|| {
+                    existing
+                        .as_ref()
+                        .map(|record| record.promoted_for_replication)
+                })
                 .unwrap_or(false),
             last_replicated_at: payload
                 .last_replicated_at
@@ -3910,12 +3901,13 @@ impl Gateway {
             return Self::json_error("Invalid path", StatusCode::BAD_REQUEST);
         };
 
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
-        let files = match rockbot_storage_runtime::list_agent_context_files(&storage_root, agent_id).await {
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
+        let files = match rockbot_storage_runtime::list_agent_context_files(&storage_root, agent_id)
+            .await
+        {
             Ok(files) => files,
             Err(_) => return Self::json_error("Invalid agent id", StatusCode::BAD_REQUEST),
         };
@@ -3944,24 +3936,26 @@ impl Gateway {
             return Self::json_error("Invalid filename", StatusCode::BAD_REQUEST);
         }
 
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
-        match rockbot_storage_runtime::read_agent_context_file(&storage_root, agent_id, filename).await {
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
+        match rockbot_storage_runtime::read_agent_context_file(&storage_root, agent_id, filename)
+            .await
+        {
             Ok(content) => {
                 let body = serde_json::json!({ "name": filename, "content": content }).to_string();
                 Self::json_response(&body, StatusCode::OK)
             }
-            Err(e) if e
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
             {
                 Self::json_error(
-                &format!("File '{filename}' not found"),
-                StatusCode::NOT_FOUND,
-            )}
+                    &format!("File '{filename}' not found"),
+                    StatusCode::NOT_FOUND,
+                )
+            }
             Err(e) => Self::json_error(
                 &format!("Failed to read file: {e}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3997,12 +3991,18 @@ impl Gateway {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
-        match rockbot_storage_runtime::write_agent_context_file(&storage_root, agent_id, filename, content).await {
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
+        match rockbot_storage_runtime::write_agent_context_file(
+            &storage_root,
+            agent_id,
+            filename,
+            content,
+        )
+        .await
+        {
             Ok(()) => {
                 let resp = serde_json::json!({ "written": true, "name": filename, "size_bytes": content.len() }).to_string();
                 Self::json_response(&resp, StatusCode::OK)
@@ -4022,24 +4022,26 @@ impl Gateway {
         if !Self::is_valid_context_filename(filename) {
             return Self::json_error("Invalid filename", StatusCode::BAD_REQUEST);
         }
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
-        match rockbot_storage_runtime::delete_agent_context_file(&storage_root, agent_id, filename).await {
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
+        match rockbot_storage_runtime::delete_agent_context_file(&storage_root, agent_id, filename)
+            .await
+        {
             Ok(()) => {
                 let resp = serde_json::json!({ "deleted": true, "name": filename }).to_string();
                 Self::json_response(&resp, StatusCode::OK)
             }
-            Err(e) if e
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
             {
                 Self::json_error(
-                &format!("File '{filename}' not found"),
-                StatusCode::NOT_FOUND,
-            )}
+                    &format!("File '{filename}' not found"),
+                    StatusCode::NOT_FOUND,
+                )
+            }
             Err(e) => Self::json_error(
                 &format!("Failed to delete file: {e}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -4432,7 +4434,12 @@ impl Gateway {
             .ok_or_else(|| anyhow::anyhow!("No PEM certificate found"))?;
         let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref())
             .map_err(|_| anyhow::anyhow!("Failed to parse certificate"))?;
-        let public_key = cert.tbs_certificate.subject_pki.subject_public_key.data.to_vec();
+        let public_key = cert
+            .tbs_certificate
+            .subject_pki
+            .subject_public_key
+            .data
+            .to_vec();
         let spki = cert.tbs_certificate.subject_pki.raw.to_owned();
         let signature = BASE64_STANDARD
             .decode(signature_b64)
@@ -4456,7 +4463,9 @@ impl Gateway {
                 .is_ok()
         });
         if !verified {
-            return Err(anyhow::anyhow!("Browser auth signature verification failed"));
+            return Err(anyhow::anyhow!(
+                "Browser auth signature verification failed"
+            ));
         }
 
         {
@@ -4472,21 +4481,17 @@ impl Gateway {
     }
 
     /// Process a single incoming WebSocket message
-    async fn handle_ws_message(
-        &self,
-        conn_id: &str,
-        outbound_tx: &WsOutboundSender,
-        text: &str,
-    ) {
+    async fn handle_ws_message(&self, conn_id: &str, outbound_tx: &WsOutboundSender, text: &str) {
         let msg: WsMessageType = match serde_json::from_str(text) {
             Ok(m) => m,
             Err(e) => {
                 let resp = WsResponseType::Error {
                     message: format!("Invalid message: {e}"),
                 };
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
                 return;
             }
         };
@@ -4502,25 +4507,28 @@ impl Gateway {
             let resp = WsResponseType::Error {
                 message: "This WebSocket connection is not authenticated yet".to_string(),
             };
-            let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                serde_json::to_string(&resp).unwrap_or_default(),
-            ));
+            let _ = enqueue_ws_message(
+                outbound_tx,
+                WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+            );
             return;
         }
 
         match msg {
             WsMessageType::Ping => {
                 let resp = WsResponseType::Pong;
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
             }
             WsMessageType::HealthCheck => {
                 let health = self.get_health_status().await;
                 let resp = WsResponseType::HealthStatus { status: health };
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
             }
             WsMessageType::AgentMessage {
                 agent_id,
@@ -4629,9 +4637,10 @@ impl Gateway {
                 let resp = WsResponseType::Error {
                     message: "Remote execution not enabled on this gateway".to_string(),
                 };
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
             }
             WsMessageType::RemoteCapabilities {
                 capabilities,
@@ -4655,9 +4664,10 @@ impl Gateway {
                     let resp = WsResponseType::Error {
                         message: "Remote execution not enabled on this gateway".to_string(),
                     };
-                    let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                        serde_json::to_string(&resp).unwrap_or_default(),
-                    ));
+                    let _ = enqueue_ws_message(
+                        outbound_tx,
+                        WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                    );
                 }
             }
             WsMessageType::RemoteToolResponse {
@@ -4726,9 +4736,10 @@ impl Gateway {
                 match self.begin_browser_web_auth(conn_id).await {
                     Ok((challenge, _, _)) => {
                         let resp = WsResponseType::WebAuthChallenge { challenge };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                     }
                     Err(err) => {
                         let resp = WsResponseType::WebAuthResult {
@@ -4737,9 +4748,10 @@ impl Gateway {
                             cert_name: None,
                             cert_role: None,
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                     }
                 }
             }
@@ -4752,9 +4764,10 @@ impl Gateway {
                             cert_name: Some(cert_name),
                             cert_role: Some(cert_role),
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                     }
                     Err(err) => {
                         if let Some(conn) = self.ws_connections.write().await.get_mut(conn_id) {
@@ -4769,9 +4782,10 @@ impl Gateway {
                             cert_name: None,
                             cert_role: None,
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                     }
                 }
             }
@@ -4867,10 +4881,9 @@ impl Gateway {
                     && !p.contains("/files/")
                     && !p.contains("/objects/") =>
             {
-                self
-                .handle_update_agent(req)
-                .await
-                .map_err(|e| e.to_string())
+                self.handle_update_agent(req)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             (Method::GET, p) if p.starts_with("/api/agents/") && p.ends_with("/files") => {
                 Ok(self.handle_list_agent_files(path).await)
@@ -5005,9 +5018,10 @@ impl Gateway {
                     tokens_used: None,
                     processing_time_ms: None,
                 };
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
                 return;
             }
         }
@@ -5025,9 +5039,10 @@ impl Gateway {
                             tokens_used: None,
                             processing_time_ms: None,
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                         return;
                     }
                     rockbot_butler::CommandResult::NotHandled => {}
@@ -5044,9 +5059,10 @@ impl Gateway {
                 tokens_used: None,
                 processing_time_ms: None,
             };
-            let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                serde_json::to_string(&resp).unwrap_or_default(),
-            ));
+            let _ = enqueue_ws_message(
+                outbound_tx,
+                WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+            );
             return;
         }
 
@@ -5059,9 +5075,10 @@ impl Gateway {
                     session_key,
                     error: format!("Agent '{agent_id}' not found"),
                 };
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
                 return;
             }
         };
@@ -5269,9 +5286,10 @@ impl Gateway {
                         handoff.target_agent_id
                     ),
                 };
-                let _ = enqueue_ws_message(&tx, WsMessage::Text(
-                    serde_json::to_string(&chunk).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    &tx,
+                    WsMessage::Text(serde_json::to_string(&chunk).unwrap_or_default()),
+                );
 
                 // Look up target agent and invoke it
                 let agents = self.agents.read().await;
@@ -5366,18 +5384,20 @@ impl Gateway {
                     tokens_used: tokens,
                     processing_time_ms: Some(response.processing_time_ms),
                 };
-                let _ = enqueue_ws_message(&tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    &tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
             }
             Err(e) => {
                 let resp = WsResponseType::AgentError {
                     session_key: sk,
                     error: e.to_string(),
                 };
-                let _ = enqueue_ws_message(&tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    &tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
             }
         }
     }
@@ -5403,9 +5423,10 @@ impl Gateway {
                 let resp = WsResponseType::Error {
                     message: format!("Invalid base64 in Noise handshake: {e}"),
                 };
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
                 return;
             }
         };
@@ -5427,9 +5448,10 @@ impl Gateway {
                         let resp = WsResponseType::Error {
                             message: format!("Failed to create Noise responder: {e}"),
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                         return;
                     }
                 };
@@ -5439,9 +5461,10 @@ impl Gateway {
                     let resp = WsResponseType::Error {
                         message: format!("Noise handshake step 1 failed: {e}"),
                     };
-                    let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                        serde_json::to_string(&resp).unwrap_or_default(),
-                    ));
+                    let _ = enqueue_ws_message(
+                        outbound_tx,
+                        WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                    );
                     return;
                 }
 
@@ -5453,9 +5476,10 @@ impl Gateway {
                             payload: response_b64,
                             step: 2,
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                         // Store the in-progress handshake
                         states_lock.insert(conn_id.to_string(), responder);
                         info!("Noise handshake step 1+2 complete for {conn_id}");
@@ -5464,9 +5488,10 @@ impl Gateway {
                         let resp = WsResponseType::Error {
                             message: format!("Noise handshake step 2 write failed: {e}"),
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                     }
                 }
             }
@@ -5478,9 +5503,10 @@ impl Gateway {
                         let resp = WsResponseType::Error {
                             message: format!("Noise handshake step 3 failed: {e}"),
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                         return;
                     }
 
@@ -5495,9 +5521,12 @@ impl Gateway {
                                 let resp = WsResponseType::Error {
                                     message: format!("Noise transport init failed: {e}"),
                                 };
-                                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                                    serde_json::to_string(&resp).unwrap_or_default(),
-                                ));
+                                let _ = enqueue_ws_message(
+                                    outbound_tx,
+                                    WsMessage::Text(
+                                        serde_json::to_string(&resp).unwrap_or_default(),
+                                    ),
+                                );
                                 return;
                             }
                         };
@@ -5517,9 +5546,10 @@ impl Gateway {
                                 "Noise handshake complete. Send remote_capabilities to register."
                                     .to_string(),
                         };
-                        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                            serde_json::to_string(&resp).unwrap_or_default(),
-                        ));
+                        let _ = enqueue_ws_message(
+                            outbound_tx,
+                            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                        );
                     } else {
                         warn!("Noise handshake not finished after step 3 for {conn_id}");
                     }
@@ -5527,18 +5557,20 @@ impl Gateway {
                     let resp = WsResponseType::Error {
                         message: "No pending Noise handshake for this connection".to_string(),
                     };
-                    let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                        serde_json::to_string(&resp).unwrap_or_default(),
-                    ));
+                    let _ = enqueue_ws_message(
+                        outbound_tx,
+                        WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                    );
                 }
             }
             _ => {
                 let resp = WsResponseType::Error {
                     message: format!("Invalid Noise handshake step: {step} (expected 1 or 3)"),
                 };
-                let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ));
+                let _ = enqueue_ws_message(
+                    outbound_tx,
+                    WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+                );
             }
         }
     }
@@ -5599,9 +5631,10 @@ impl Gateway {
                 message: "No completed Noise handshake found. Complete handshake first."
                     .to_string(),
             };
-            let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-                serde_json::to_string(&resp).unwrap_or_default(),
-            ));
+            let _ = enqueue_ws_message(
+                outbound_tx,
+                WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+            );
             return;
         };
 
@@ -5674,9 +5707,10 @@ impl Gateway {
                 "Registered as remote executor ({client_type}). Total executors: {count}"
             ),
         };
-        let _ = enqueue_ws_message(outbound_tx, WsMessage::Text(
-            serde_json::to_string(&resp).unwrap_or_default(),
-        ));
+        let _ = enqueue_ws_message(
+            outbound_tx,
+            WsMessage::Text(serde_json::to_string(&resp).unwrap_or_default()),
+        );
 
         info!(
             "Remote executor registered: conn={}, type={}, capabilities={:?}",
@@ -5912,24 +5946,39 @@ impl Gateway {
             tool_timeout_secs: 120,
         };
 
+        let _mutation_guard = self.agent_mutation_lock.lock().await;
         {
-            let mut configs = self.agents_config.write().await;
-            if self.agents.read().await.contains_key(&req.id) {
-                return Ok(Self::json_error(
-                    &format!("Agent '{}' already exists", req.id),
-                    StatusCode::CONFLICT,
-                ));
-            }
+            let configs = self.agents_config.write().await;
             if configs.iter().any(|c| c.id == req.id) {
                 return Ok(Self::json_error(
                     &format!("Agent '{}' already exists in config", req.id),
                     StatusCode::CONFLICT,
                 ));
             }
+            drop(configs);
 
+            if self.agents.read().await.contains_key(&req.id) {
+                return Ok(Self::json_error(
+                    &format!("Agent '{}' already exists", req.id),
+                    StatusCode::CONFLICT,
+                ));
+            }
+            if self
+                .pending_agents
+                .read()
+                .await
+                .iter()
+                .any(|p| p.config.id == req.id)
+            {
+                return Ok(Self::json_error(
+                    &format!("Agent '{}' is already pending creation", req.id),
+                    StatusCode::CONFLICT,
+                ));
+            }
+
+            let configs = self.agents_config.write().await;
             let has_primary = configs.iter().any(|cfg| cfg.primary);
             config.primary = req.primary.unwrap_or(!has_primary);
-            configs.push(config.clone());
         }
 
         if let Err(e) = self
@@ -5938,19 +5987,32 @@ impl Gateway {
         {
             error!("Failed to initialize canonical agent state: {}", e);
         }
-        let storage_root = self
-            .credentials_config
-            .vault_path
-            .parent()
-            .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
-        if let Ok(runtime) =
-            rockbot_storage_runtime::StorageRuntime::new_with_root_sync(&Config::default(), storage_root)
-        {
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
+        if let Ok(runtime) = rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
+            &Config::default(),
+            storage_root,
+        ) {
             let _ = runtime.ensure_agent_topology(&config, "gateway_api");
         }
 
-        // Persist to authoritative store when available; otherwise keep runtime-only.
-        self.persist_agent_to_store(&config);
+        if let Err(e) = self.persist_agent_to_store(&config) {
+            error!(
+                "Failed to persist agent '{}' to authoritative store: {e}",
+                req.id
+            );
+            return Ok(Self::json_error(
+                "Failed to persist agent configuration",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+
+        {
+            let mut configs = self.agents_config.write().await;
+            configs.push(config.clone());
+        }
 
         // Try to create the agent via factory
         let status = if let Some(ref factory) = self.agent_factory {
@@ -6045,114 +6107,150 @@ impl Gateway {
         };
 
         // Check if agent exists in config or runtime
-        let mut configs = self.agents_config.write().await;
-        let config_entry = configs.iter_mut().find(|c| c.id == agent_id);
+        let _mutation_guard = self.agent_mutation_lock.lock().await;
 
-        let agents = self.agents.read().await;
-        let exists_active = agents.contains_key(&agent_id);
-        drop(agents);
+        let exists_active = self.agents.read().await.contains_key(&agent_id);
+        let existing_config = {
+            let configs = self.agents_config.read().await;
+            configs.iter().find(|c| c.id == agent_id).cloned()
+        };
+        let Some(mut next_config) = existing_config else {
+            if !exists_active {
+                return Ok(Self::json_error(
+                    &format!("Agent '{agent_id}' not found"),
+                    StatusCode::NOT_FOUND,
+                ));
+            }
+            return Ok(Self::json_error(
+                &format!("Agent '{agent_id}' cannot be updated without stored config"),
+                StatusCode::CONFLICT,
+            ));
+        };
 
-        if config_entry.is_none() && !exists_active {
+        if !exists_active
+            && !self
+                .pending_agents
+                .read()
+                .await
+                .iter()
+                .any(|p| p.config.id == agent_id)
+        {
             return Ok(Self::json_error(
                 &format!("Agent '{agent_id}' not found"),
                 StatusCode::NOT_FOUND,
             ));
         }
 
-        // Update in-memory config
-        if let Some(cfg) = config_entry {
-            if let Some(model) = &update.model {
-                cfg.model = if model.is_empty() {
-                    None
-                } else {
-                    Some(model.clone())
-                };
+        if let Some(model) = &update.model {
+            next_config.model = if model.is_empty() {
+                None
+            } else {
+                Some(model.clone())
+            };
+        }
+        if let Some(parent_id) = &update.parent_id {
+            next_config.parent_id = if parent_id.is_empty() {
+                None
+            } else {
+                Some(parent_id.clone())
+            };
+        }
+        if let Some(owner_agent_id) = &update.owner_agent_id {
+            next_config.owner_agent_id = if owner_agent_id.is_empty() {
+                None
+            } else {
+                Some(owner_agent_id.clone())
+            };
+        }
+        if let Some(zone_id) = &update.zone_id {
+            next_config.zone_id = if zone_id.is_empty() {
+                None
+            } else {
+                Some(zone_id.clone())
+            };
+        }
+        if let Some(workspace) = &update.workspace {
+            next_config.workspace = if workspace.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(workspace))
+            };
+        }
+        if let Some(primary) = update.primary {
+            next_config.primary = primary;
+        }
+        if let Some(max_tool_calls) = update.max_tool_calls {
+            next_config.max_tool_calls = Some(max_tool_calls);
+        }
+        if let Some(temperature) = update.temperature {
+            next_config.temperature = Some(temperature);
+        }
+        if let Some(max_tokens) = update.max_tokens {
+            next_config.max_tokens = Some(max_tokens);
+        }
+        if let Some(system_prompt) = &update.system_prompt {
+            next_config.system_prompt = if system_prompt.is_empty() {
+                None
+            } else {
+                Some(system_prompt.clone())
+            };
+        }
+        if let Some(enabled) = update.enabled {
+            next_config.enabled = enabled;
+        }
+
+        if let Err(e) = self.persist_agent_to_store(&next_config) {
+            error!(
+                "Failed to persist updated agent '{}' to authoritative store: {e}",
+                agent_id
+            );
+            return Ok(Self::json_error(
+                "Failed to persist agent configuration",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+
+        {
+            let mut configs = self.agents_config.write().await;
+            if let Some(cfg) = configs.iter_mut().find(|c| c.id == agent_id) {
+                *cfg = next_config.clone();
             }
-            if let Some(parent_id) = &update.parent_id {
-                cfg.parent_id = if parent_id.is_empty() {
-                    None
-                } else {
-                    Some(parent_id.clone())
-                };
-            }
-            if let Some(owner_agent_id) = &update.owner_agent_id {
-                cfg.owner_agent_id = if owner_agent_id.is_empty() {
-                    None
-                } else {
-                    Some(owner_agent_id.clone())
-                };
-            }
-            if let Some(zone_id) = &update.zone_id {
-                cfg.zone_id = if zone_id.is_empty() {
-                    None
-                } else {
-                    Some(zone_id.clone())
-                };
-            }
-            if let Some(workspace) = &update.workspace {
-                cfg.workspace = if workspace.is_empty() {
-                    None
-                } else {
-                    Some(std::path::PathBuf::from(workspace))
-                };
-            }
-            if let Some(primary) = update.primary {
-                cfg.primary = primary;
-            }
-            if let Some(max_tool_calls) = update.max_tool_calls {
-                cfg.max_tool_calls = Some(max_tool_calls);
-            }
-            if let Some(temperature) = update.temperature {
-                cfg.temperature = Some(temperature);
-            }
-            if let Some(max_tokens) = update.max_tokens {
-                cfg.max_tokens = Some(max_tokens);
-            }
-            if let Some(system_prompt) = &update.system_prompt {
-                cfg.system_prompt = if system_prompt.is_empty() {
-                    None
-                } else {
-                    Some(system_prompt.clone())
-                };
-                let storage_root = self
-                    .credentials_config
-                    .vault_path
-                    .parent()
-                    .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
-                let _ = rockbot_storage_runtime::write_agent_context_file(
-                    &storage_root,
-                    &agent_id,
-                    "SYSTEM-PROMPT.md",
-                    system_prompt,
-                )
-                .await;
-            }
-            if let Some(enabled) = update.enabled {
-                cfg.enabled = enabled;
+        }
+        {
+            let mut pending = self.pending_agents.write().await;
+            if let Some(entry) = pending.iter_mut().find(|p| p.config.id == agent_id) {
+                entry.config = next_config.clone();
             }
         }
 
-        // Persist to authoritative store when available; otherwise keep runtime-only.
-        // Grab the updated config for potential agent recreation
-        let updated_config = configs.iter().find(|c| c.id == agent_id).cloned();
-        if let Some(ref cfg) = updated_config {
-            self.persist_agent_to_store(cfg);
-            let storage_root = self
-                .credentials_config
-                .vault_path
-                .parent()
-                .map_or_else(rockbot_storage_runtime::default_storage_root, std::path::PathBuf::from);
-            if let Ok(runtime) =
-                rockbot_storage_runtime::StorageRuntime::new_with_root_sync(&Config::default(), storage_root)
-            {
-                let _ = runtime.ensure_agent_topology(cfg, "gateway_update");
-            }
+        if let Some(system_prompt) = &update.system_prompt {
+            let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+                rockbot_storage_runtime::default_storage_root,
+                std::path::PathBuf::from,
+            );
+            let _ = rockbot_storage_runtime::write_agent_context_file(
+                &storage_root,
+                &agent_id,
+                "SYSTEM-PROMPT.md",
+                system_prompt,
+            )
+            .await;
         }
-        drop(configs);
+
+        let storage_root = self.credentials_config.vault_path.parent().map_or_else(
+            rockbot_storage_runtime::default_storage_root,
+            std::path::PathBuf::from,
+        );
+        if let Ok(runtime) = rockbot_storage_runtime::StorageRuntime::new_with_root_sync(
+            &Config::default(),
+            storage_root,
+        ) {
+            let _ = runtime.ensure_agent_topology(&next_config, "gateway_update");
+        }
 
         // Recreate the running agent instance so it picks up config changes (e.g. model)
-        if let (Some(ref factory), Some(cfg)) = (&self.agent_factory, updated_config) {
-            match factory(cfg).await {
+        if let Some(ref factory) = self.agent_factory {
+            match factory(next_config.clone()).await {
                 Ok(mut new_agent) => {
                     if let Some(a) = Arc::get_mut(&mut new_agent) {
                         a.set_agent_invoker(self.agent_invoker());
@@ -6162,6 +6260,11 @@ impl Gateway {
                     }
                     let mut agents = self.agents.write().await;
                     agents.insert(agent_id.clone(), new_agent);
+                    drop(agents);
+                    self.pending_agents
+                        .write()
+                        .await
+                        .retain(|p| p.config.id != agent_id);
                     info!("Recreated agent '{}' with updated config", agent_id);
                 }
                 Err(e) => {
@@ -6192,27 +6295,43 @@ impl Gateway {
             ));
         }
 
+        let _mutation_guard = self.agent_mutation_lock.lock().await;
+
+        let had_active = self.agents.read().await.contains_key(&agent_id);
+        let had_pending = self
+            .pending_agents
+            .read()
+            .await
+            .iter()
+            .any(|p| p.config.id == agent_id);
+        let removed_config = self
+            .agents_config
+            .read()
+            .await
+            .iter()
+            .any(|c| c.id == agent_id);
+
+        if removed_config {
+            if let Err(e) = self.delete_agent_from_store(&agent_id) {
+                error!("Failed to delete agent '{agent_id}' from authoritative store: {e}");
+                return Ok(Self::json_error(
+                    "Failed to delete agent configuration",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ));
+            }
+        }
+
         let removed_active = self.agents.write().await.remove(&agent_id);
         self.pending_agents
             .write()
             .await
             .retain(|p| p.config.id != agent_id);
 
-        // Remove from config
         let mut configs = self.agents_config.write().await;
-        let had_config = configs.len();
         configs.retain(|c| c.id != agent_id);
-        let removed_config = configs.len() < had_config;
+        drop(configs);
 
-        if removed_config {
-            // Remove from authoritative store when available.
-            self.delete_agent_from_store(&agent_id);
-            drop(configs);
-        } else {
-            drop(configs);
-        }
-
-        if removed_active.is_some() || removed_config {
+        if removed_active.is_some() || removed_config || had_active || had_pending {
             let body = serde_json::json!({ "status": "deleted", "id": agent_id });
             Ok(Self::json_response(&body.to_string(), StatusCode::OK))
         } else {
@@ -7234,6 +7353,7 @@ impl Clone for Gateway {
             agents_config: Arc::clone(&self.agents_config),
             agents: Arc::clone(&self.agents),
             pending_agents: Arc::clone(&self.pending_agents),
+            agent_mutation_lock: Arc::clone(&self.agent_mutation_lock),
             agent_factory: self.agent_factory.clone(),
             session_manager: Arc::clone(&self.session_manager),
             credential_manager: self.credential_manager.clone(),
@@ -7456,11 +7576,7 @@ impl GatewayCronExecutor {
             .with_role(rockbot_config::message::MessageRole::User);
 
         match agent
-            .process_message(
-                session_id,
-                user_message,
-                ProcessMessageOptions::default(),
-            )
+            .process_message(session_id, user_message, ProcessMessageOptions::default())
             .await
         {
             Ok(response) => {

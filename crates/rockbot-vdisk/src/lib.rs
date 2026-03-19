@@ -250,6 +250,20 @@ impl VolumeBackend {
             .checked_add(relative_offset)
             .ok_or_else(|| io::Error::other("absolute offset overflow"))
     }
+
+    fn set_len_locked(&self, guard: &mut VolumeState, len: u64) -> io::Result<()> {
+        let record = guard
+            .manifest
+            .volumes
+            .get_mut(&self.volume_name)
+            .ok_or_else(|| io::Error::other("virtual volume missing from manifest"))?;
+        record.len = len;
+        let manifest = guard.manifest.clone();
+        Self::persist_manifest(&mut guard.file, &manifest)
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        self.logical_len.store(len, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 impl StorageBackend for VolumeBackend {
@@ -295,17 +309,7 @@ impl StorageBackend for VolumeBackend {
             .inner
             .lock()
             .map_err(|_| io::Error::other("virtual disk mutex poisoned"))?;
-        let record = guard
-            .manifest
-            .volumes
-            .get_mut(&self.volume_name)
-            .ok_or_else(|| io::Error::other("virtual volume missing from manifest"))?;
-        record.len = len;
-        let manifest = guard.manifest.clone();
-        Self::persist_manifest(&mut guard.file, &manifest)
-            .map_err(|err| io::Error::other(err.to_string()))?;
-        self.logical_len.store(len, Ordering::Relaxed);
-        Ok(())
+        self.set_len_locked(&mut guard, len)
     }
 
     fn sync_data(&self, _eventual: bool) -> Result<(), io::Error> {
@@ -328,8 +332,7 @@ impl StorageBackend for VolumeBackend {
         guard.file.seek(SeekFrom::Start(absolute))?;
         guard.file.write_all(&encrypted)?;
         if end > self.logical_len() {
-            drop(guard);
-            self.set_len(end)?;
+            self.set_len_locked(&mut guard, end)?;
         }
         Ok(())
     }

@@ -4113,18 +4113,29 @@ The user wants me to explore the codebase. I should start by listing the directo
                                 "Tool '{}' timed out after {}s",
                                 tool_call.function.name, self.config.tool_timeout_secs
                             );
+                            let timeout_message = format!(
+                                "Tool execution timed out after {}s. The operation was cancelled.",
+                                self.config.tool_timeout_secs
+                            );
                             let error_message = Message::tool_result(
                                 tool_call.id.clone(),
                                 tool_call.function.name.clone(),
-                                format!("Tool execution timed out after {}s. The operation was cancelled.", self.config.tool_timeout_secs),
+                                timeout_message.clone(),
                             ).with_session_id(session_id);
+                            tool_results.push(ToolExecutionResult {
+                                tool_name: tool_call.function.name.clone(),
+                                result: ToolResult::Error {
+                                    message: timeout_message.clone(),
+                                    code: None,
+                                    details: None,
+                                },
+                                success: false,
+                                execution_time_ms: tool_start.elapsed().as_millis() as u64,
+                            });
                             if let Some(progress) = progress_tx {
                                 let _ = progress.send(AgentProgressEvent::ToolDone {
                                     tool_name: tool_call.function.name.clone(),
-                                    result_preview: Some(format!(
-                                        "Tool execution timed out after {}s",
-                                        self.config.tool_timeout_secs
-                                    )),
+                                    result_preview: Some(timeout_message),
                                     success: false,
                                     duration_ms: tool_start.elapsed().as_millis() as u64,
                                     locality: Self::tool_locality_for_context(_context),
@@ -4647,7 +4658,8 @@ mod tests {
         ProviderCapabilities, Usage,
     };
     use rockbot_security::{SandboxConfig, SecurityConfig};
-    use rockbot_tools::ToolConfig;
+    use rockbot_security::Capabilities;
+    use rockbot_tools::{Tool, ToolConfig};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4707,6 +4719,21 @@ mod tests {
             .await
             .unwrap(),
         );
+        build_test_agent_with_components(
+            workspace,
+            llm_provider,
+            tool_registry,
+            approval_callback,
+        )
+        .await
+    }
+
+    async fn build_test_agent_with_components(
+        workspace: &std::path::Path,
+        llm_provider: Arc<dyn LlmProvider>,
+        tool_registry: Arc<ToolRegistry>,
+        approval_callback: Option<ApprovalCallback>,
+    ) -> Agent {
         let memory_manager = Arc::new(MemoryManager::new(workspace.join("memory")).await.unwrap());
         let security_manager = Arc::new(
             SecurityManager::new(SecurityConfig {
@@ -4740,6 +4767,42 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    struct HangingTool;
+
+    impl Tool for HangingTool {
+        fn name(&self) -> &str {
+            "hang"
+        }
+
+        fn description(&self) -> &str {
+            "hangs until timeout"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {}
+            })
+        }
+
+        fn required_capabilities(&self) -> Capabilities {
+            Capabilities::new()
+        }
+
+        fn execute(
+            &self,
+            _params: serde_json::Value,
+            _context: rockbot_tools::ToolExecutionContext,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = rockbot_tools::Result<ToolResult>> + Send + '_>,
+        > {
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Ok(ToolResult::text("unexpected completion"))
+            })
+        }
     }
 
     struct FailingStreamingProvider;
@@ -5059,6 +5122,55 @@ mod tests {
 
         assert_eq!(response.choices[0].message.content, "final");
         assert_eq!(provider.attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_tool_timeout_keeps_results_and_messages_aligned() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool_registry = Arc::new(
+            ToolRegistry::new(ToolConfig {
+                profile: "minimal".to_string(),
+                deny: vec![],
+                configs: HashMap::new(),
+            })
+            .await
+            .unwrap(),
+        );
+        tool_registry.register_tool(Arc::new(HangingTool)).await;
+
+        let mut agent = build_test_agent_with_components(
+            temp.path(),
+            Arc::new(MockLlmProvider::new()),
+            tool_registry,
+            None,
+        )
+        .await;
+        agent.config.tool_timeout_secs = 1;
+
+        let response = single_tool_response("hang", "{}");
+        let context = test_processing_context("test-agent:session");
+
+        let (results, messages, handoff) = agent
+            .execute_tool_calls(
+                "test-agent:session",
+                &response,
+                temp.path(),
+                &context,
+                None,
+                &None,
+            )
+            .await
+            .unwrap();
+
+        assert!(handoff.is_none());
+        assert_eq!(results.len(), 1);
+        assert_eq!(messages.len(), 1);
+        assert!(!results[0].success);
+        assert!(matches!(results[0].result, ToolResult::Error { .. }));
+        assert!(messages[0]
+            .extract_text()
+            .unwrap_or_default()
+            .contains("timed out"));
     }
 
     #[test]

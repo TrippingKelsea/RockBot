@@ -2,7 +2,66 @@
 
 use crate::{load_config, ConfigCommands, ConfigInitCommands};
 use anyhow::Result;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
+
+#[derive(Serialize)]
+struct GatewayBootstrapConfig {
+    gateway: GatewayBootstrapSection,
+    pki: PkiBootstrapSection,
+    client: ClientBootstrapSection,
+    security: SecurityBootstrapSection,
+}
+
+#[derive(Serialize)]
+struct GatewayBootstrapSection {
+    bind_host: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    listen_ips: Vec<String>,
+    port: u16,
+    client_port: u16,
+    public: GatewayPublicBootstrapSection,
+}
+
+#[derive(Serialize)]
+struct GatewayPublicBootstrapSection {
+    serve_webapp: bool,
+    serve_ca: bool,
+    enrollment_enabled: bool,
+}
+
+#[derive(Serialize)]
+struct PkiBootstrapSection {
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    pki_dir: String,
+}
+
+#[derive(Serialize)]
+struct ClientBootstrapSection {
+    gateway_host: String,
+    https_port: u16,
+    client_port: u16,
+}
+
+#[derive(Serialize)]
+struct SecurityBootstrapSection {
+    storage: StorageBootstrapSection,
+    roles: RolesBootstrapSection,
+}
+
+#[derive(Serialize)]
+struct StorageBootstrapSection {
+    enabled: bool,
+    mode: String,
+    key_source: String,
+}
+
+#[derive(Serialize)]
+struct RolesBootstrapSection {
+    gateway: bool,
+    vault_provider: bool,
+}
 
 /// Run configuration commands
 pub async fn run(command: &ConfigCommands, config_path: &PathBuf) -> Result<()> {
@@ -111,59 +170,40 @@ async fn init_gateway_config(
         .first()
         .cloned()
         .unwrap_or_else(|| bind_host.to_string());
-    let listen_ips_toml = if listen_ips.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "listen_ips = [{}]\n",
-            listen_ips
-                .iter()
-                .map(|ip| format!("\"{ip}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-
-    let toml = format!(
-        r#"# RockBot gateway bootstrap config
-# Runtime entities such as agents should live in the replicated store, not here.
-
-[gateway]
-bind_host = "{bind_host}"
-{listen_ips}
-port = {https_port}
-client_port = {client_port}
-
-[gateway.public]
-serve_webapp = true
-serve_ca = true
-enrollment_enabled = true
-
-[pki]
-tls_cert = "{tls_cert}"
-tls_key = "{tls_key}"
-pki_dir = "{pki_dir}"
-
-[client]
-gateway_host = "127.0.0.1"
-https_port = {https_port}
-client_port = {client_port}
-
-[security.storage]
-enabled = true
-mode = "encrypted_by_default"
-key_source = "pki_local"
-
-[security.roles]
-gateway = true
-vault_provider = false
-"#,
-        bind_host = resolved_bind_host,
-        listen_ips = listen_ips_toml,
-        tls_cert = cert_path.display(),
-        tls_key = key_path.display(),
-        pki_dir = pki_dir.display()
-    );
+    let toml = toml::to_string_pretty(&GatewayBootstrapConfig {
+        gateway: GatewayBootstrapSection {
+            bind_host: resolved_bind_host.clone(),
+            listen_ips: listen_ips.to_vec(),
+            port: https_port,
+            client_port,
+            public: GatewayPublicBootstrapSection {
+                serve_webapp: true,
+                serve_ca: true,
+                enrollment_enabled: true,
+            },
+        },
+        pki: PkiBootstrapSection {
+            tls_cert: Some(cert_path.display().to_string()),
+            tls_key: Some(key_path.display().to_string()),
+            pki_dir: pki_dir.display().to_string(),
+        },
+        client: ClientBootstrapSection {
+            gateway_host: "127.0.0.1".to_string(),
+            https_port,
+            client_port,
+        },
+        security: SecurityBootstrapSection {
+            storage: StorageBootstrapSection {
+                enabled: true,
+                mode: "encrypted_by_default".to_string(),
+                key_source: "pki_local".to_string(),
+            },
+            roles: RolesBootstrapSection {
+                gateway: true,
+                vault_provider: false,
+            },
+        },
+    })?;
 
     tokio::fs::write(output_path, toml).await?;
 
@@ -205,43 +245,45 @@ async fn init_client_config(
 ) -> Result<()> {
     ensure_output_path(output_path, force).await?;
 
-    let toml = format!(
-        r#"# RockBot client bootstrap config
-# This file only contains connection bootstrap and local security settings.
-
-[gateway]
-bind_host = "127.0.0.1"
-port = {https_port}
-client_port = {client_port}
-
-[gateway.public]
-serve_webapp = false
-serve_ca = false
-enrollment_enabled = false
-
-[client]
-gateway_host = "{gateway_ip}"
-https_port = {https_port}
-client_port = {client_port}
-
-[pki]
-pki_dir = "{pki_dir}"
-
-[security.storage]
-enabled = true
-mode = "encrypted_by_default"
-key_source = "pki_local"
-
-[security.roles]
-gateway = false
-vault_provider = false
-"#,
-        pki_dir = output_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("pki")
-            .display()
-    );
+    let toml = toml::to_string_pretty(&GatewayBootstrapConfig {
+        gateway: GatewayBootstrapSection {
+            bind_host: "127.0.0.1".to_string(),
+            listen_ips: Vec::new(),
+            port: https_port,
+            client_port,
+            public: GatewayPublicBootstrapSection {
+                serve_webapp: false,
+                serve_ca: false,
+                enrollment_enabled: false,
+            },
+        },
+        pki: PkiBootstrapSection {
+            tls_cert: None,
+            tls_key: None,
+            pki_dir: output_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("pki")
+                .display()
+                .to_string(),
+        },
+        client: ClientBootstrapSection {
+            gateway_host: gateway_ip.to_string(),
+            https_port,
+            client_port,
+        },
+        security: SecurityBootstrapSection {
+            storage: StorageBootstrapSection {
+                enabled: true,
+                mode: "encrypted_by_default".to_string(),
+                key_source: "pki_local".to_string(),
+            },
+            roles: RolesBootstrapSection {
+                gateway: false,
+                vault_provider: false,
+            },
+        },
+    })?;
 
     tokio::fs::write(output_path, toml).await?;
 
@@ -286,23 +328,37 @@ mod tests {
             .unwrap();
 
         assert!(output_path.exists());
-        assert!(
-            output_path
-                .parent()
-                .unwrap()
-                .join("pki")
-                .join("certs")
-                .join("gateway.crt")
-                .exists()
-        );
-        assert!(
-            output_path
-                .parent()
-                .unwrap()
-                .join("pki")
-                .join("keys")
-                .join("gateway.key")
-                .exists()
-        );
+        assert!(output_path
+            .parent()
+            .unwrap()
+            .join("pki")
+            .join("certs")
+            .join("gateway.crt")
+            .exists());
+        assert!(output_path
+            .parent()
+            .unwrap()
+            .join("pki")
+            .join("keys")
+            .join("gateway.key")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn test_init_gateway_config_escapes_bind_host_in_toml_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let output_path = temp.path().join("escaped").join("rockbot.toml");
+        let bind_host = "127.0.0.1\"\nmalicious = true";
+
+        init_gateway_config(&output_path, false, bind_host, &[], 8443, 8444)
+            .await
+            .unwrap();
+
+        let written = tokio::fs::read_to_string(&output_path).await.unwrap();
+        let parsed: toml::Value = toml::from_str(&written).unwrap();
+
+        assert_eq!(parsed["gateway"]["bind_host"].as_str(), Some(bind_host));
+        assert_eq!(parsed["gateway"]["port"].as_integer(), Some(8443));
+        assert!(parsed.get("malicious").is_none());
     }
 }

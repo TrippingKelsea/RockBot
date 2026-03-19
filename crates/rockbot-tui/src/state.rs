@@ -3608,19 +3608,6 @@ impl AppState {
             }
 
             Message::VaultStatus(status) => {
-                // Debug: log vault status
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/rockbot_debug.log")
-                {
-                    use std::io::Write;
-                    let _ = writeln!(
-                        f,
-                        "VaultStatus received: initialized={}, locked={}, method={:?}",
-                        status.initialized, status.locked, status.unlock_method
-                    );
-                }
                 self.vault = status;
                 self.vault_loading = false;
             }

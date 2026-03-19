@@ -172,9 +172,8 @@ async fn run_diagnose(config_path: &PathBuf) -> Result<()> {
         if doctor.auto_fix_enabled() {
             println!("\n  Auto-fix is enabled. Applying...");
             let patched = rockbot_doctor::repair::apply_fix(&raw_toml, &fix)?;
-            match patched.parse::<toml::Value>() {
-                Ok(_) => {
-                    tokio::fs::write(config_path, &patched).await?;
+            match validate_and_write_patched_config(config_path, &patched).await {
+                Ok(()) => {
                     println!("  Config updated and verified at {}", config_path.display());
                     doctor.record_successful_fix(&diagnosis, &fix);
                 }
@@ -188,6 +187,29 @@ async fn run_diagnose(config_path: &PathBuf) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+#[cfg(feature = "doctor-ai")]
+async fn validate_and_write_patched_config(config_path: &PathBuf, patched: &str) -> Result<()> {
+    rockbot_config::Config::from_toml(patched)?;
+
+    let parent = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    tokio::fs::create_dir_all(parent).await?;
+
+    let temp_path = parent.join(format!(
+        ".{}.tmp-{}",
+        config_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("rockbot.toml"),
+        uuid::Uuid::new_v4()
+    ));
+
+    tokio::fs::write(&temp_path, patched).await?;
+    tokio::fs::rename(&temp_path, config_path).await?;
     Ok(())
 }
 
@@ -258,13 +280,14 @@ async fn run_storage(config_path: &PathBuf, with_ai: bool) -> Result<()> {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()?;
-        let result = match tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await {
-            Ok(Ok(output)) => Some(Ok((output.status.success(), output.stdout, output.stderr))),
-            Ok(Err(e)) => Some(Err(anyhow::anyhow!("doctor AI worker failed: {e}"))),
-            Err(_) => Some(Err(anyhow::anyhow!(
-                "doctor AI worker timed out after 30 seconds"
-            ))),
-        };
+        let result =
+            match tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await {
+                Ok(Ok(output)) => Some(Ok((output.status.success(), output.stdout, output.stderr))),
+                Ok(Err(e)) => Some(Err(anyhow::anyhow!("doctor AI worker failed: {e}"))),
+                Err(_) => Some(Err(anyhow::anyhow!(
+                    "doctor AI worker timed out after 30 seconds"
+                ))),
+            };
         let _ = stop_tx.send(());
         let _ = spinner.await;
         result
@@ -340,7 +363,9 @@ async fn run_storage_ai_child(config_path: &PathBuf) -> Result<()> {
     use rockbot_doctor::{inspect_storage, DoctorAi};
 
     let report = inspect_storage(config_path);
-    let raw_toml = tokio::fs::read_to_string(config_path).await.unwrap_or_default();
+    let raw_toml = tokio::fs::read_to_string(config_path)
+        .await
+        .unwrap_or_default();
     let doctor_config = try_parse_doctor_config_from_raw(&raw_toml);
     let doctor = DoctorAi::init(doctor_config).await?;
     let analysis = doctor.diagnose_storage_report(&report).await;
@@ -418,4 +443,90 @@ pub fn try_parse_doctor_config_from_raw(raw_toml: &str) -> rockbot_doctor::Docto
         }
     }
     rockbot_doctor::DoctorConfig::default()
+}
+
+#[cfg(all(test, feature = "doctor-ai"))]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_validate_and_write_patched_config_is_atomic_and_validates_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("rockbot.toml");
+        let original = r#"
+[gateway]
+bind_host = "127.0.0.1"
+port = 8080
+client_port = 8081
+
+[agents.defaults]
+workspace = "."
+model = "test-model"
+
+[[agents.list]]
+id = "main"
+
+[tools]
+profile = "standard"
+
+[security.sandbox]
+mode = "tools"
+"#;
+        tokio::fs::write(&config_path, original).await.unwrap();
+
+        let invalid = r#"
+[gateway]
+bind_host = "127.0.0.1"
+port = 0
+client_port = 9091
+
+[agents.defaults]
+workspace = "."
+model = "test-model"
+
+[[agents.list]]
+id = "main"
+
+[tools]
+profile = "standard"
+
+[security.sandbox]
+mode = "tools"
+"#;
+        let err = validate_and_write_patched_config(&config_path, invalid)
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+        assert_eq!(
+            tokio::fs::read_to_string(&config_path).await.unwrap(),
+            original
+        );
+
+        let valid = r#"
+[gateway]
+bind_host = "127.0.0.1"
+port = 9090
+client_port = 9091
+
+[agents.defaults]
+workspace = "."
+model = "test-model"
+
+[[agents.list]]
+id = "main"
+
+[tools]
+profile = "standard"
+
+[security.sandbox]
+mode = "tools"
+"#;
+        validate_and_write_patched_config(&config_path, valid)
+            .await
+            .unwrap();
+        let written = tokio::fs::read_to_string(&config_path).await.unwrap();
+        assert_eq!(written, valid);
+    }
 }

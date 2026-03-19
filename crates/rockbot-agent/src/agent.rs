@@ -2619,6 +2619,7 @@ The user wants me to explore the codebase. I should start by listing the directo
             let mut accumulated_tool_calls: Vec<rockbot_llm::ToolCall> = Vec::new();
             let mut response_id = String::new();
             let mut finish_reason = "stop".to_string();
+            let mut stream_error = false;
 
             while let Ok(maybe_chunk) =
                 tokio::time::timeout(chunk_idle_timeout, stream.next()).await
@@ -2652,16 +2653,33 @@ The user wants me to explore the codebase. I should start by listing the directo
                     }
                     Err(e) => {
                         last_error_message = format!("Stream error: {e}");
+                        stream_error = true;
                         break;
                     }
                 }
             }
 
-            // If we got data, assemble and return
-            if !response_id.is_empty()
+            let received_data = !response_id.is_empty()
                 || !accumulated_text.is_empty()
-                || !accumulated_tool_calls.is_empty()
-            {
+                || !accumulated_tool_calls.is_empty();
+
+            if stream_error {
+                if attempt >= retry_config.max_retries {
+                    break;
+                }
+                let delay =
+                    self.calculate_retry_delay(&retry_config, attempt, &ErrorCategory::Network);
+                warn!(
+                    "LLM streaming attempt {} ended with a stream error after partial data; retrying in {}ms",
+                    attempt + 1,
+                    delay
+                );
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                continue;
+            }
+
+            // If we got data without a stream error, assemble and return
+            if received_data {
                 if attempt > 0 {
                     info!("LLM streaming succeeded after {} retries", attempt);
                 }
@@ -4782,6 +4800,100 @@ mod tests {
         }
     }
 
+    struct RetryAfterPartialStreamProvider {
+        attempts: AtomicUsize,
+    }
+
+    impl RetryAfterPartialStreamProvider {
+        fn new() -> Self {
+            Self {
+                attempts: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for RetryAfterPartialStreamProvider {
+        fn id(&self) -> &str {
+            "retry-after-partial"
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: false,
+                supports_embeddings: false,
+                max_tokens: Some(4000),
+                context_window: 128000,
+            }
+        }
+
+        async fn chat_completion(
+            &self,
+            _request: ChatCompletionRequest,
+        ) -> rockbot_llm::Result<ChatCompletionResponse> {
+            Err(LlmError::ApiError {
+                message: "unused".to_string(),
+            })
+        }
+
+        async fn stream_completion(
+            &self,
+            _request: ChatCompletionRequest,
+        ) -> rockbot_llm::Result<CompletionStream> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            let mut items = vec![Ok(rockbot_llm::StreamingChunk {
+                id: format!("retry-stream-{attempt}"),
+                object: "chat.completion.chunk".to_string(),
+                created: 0,
+                model: "mock".to_string(),
+                choices: vec![rockbot_llm::StreamingChoice {
+                    index: 0,
+                    delta: rockbot_llm::StreamingDelta {
+                        role: None,
+                        content: Some(if attempt == 0 { "partial".to_string() } else { "final".to_string() }),
+                        tool_calls: None,
+                    },
+                    finish_reason: if attempt == 0 {
+                        None
+                    } else {
+                        Some("stop".to_string())
+                    },
+                }],
+            })];
+
+            if attempt == 0 {
+                items.push(Err(LlmError::ApiError {
+                    message: "stream interrupted".to_string(),
+                }));
+            }
+
+            let stream = futures_util::stream::iter(items);
+            Ok(Box::pin(stream))
+        }
+
+        async fn generate_embedding(&self, _text: &str) -> rockbot_llm::Result<Vec<f32>> {
+            Err(LlmError::ApiError {
+                message: "unsupported".to_string(),
+            })
+        }
+
+        async fn list_models(&self) -> rockbot_llm::Result<Vec<rockbot_llm::ModelInfo>> {
+            Ok(vec![])
+        }
+
+        async fn get_model_info(&self, _model_id: &str) -> rockbot_llm::Result<rockbot_llm::ModelInfo> {
+            Err(LlmError::ModelNotFound {
+                model: "mock".to_string(),
+            })
+        }
+
+        async fn is_configured(&self) -> bool {
+            true
+        }
+    }
+
     fn single_tool_response(name: &str, arguments: &str) -> ChatCompletionResponse {
         ChatCompletionResponse {
             id: "resp-1".to_string(),
@@ -4916,6 +5028,37 @@ mod tests {
 
         assert_eq!(context.token_count, expected_tokens);
         assert_eq!(agent.compaction_threshold(), 80);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_retry_discards_partial_failed_attempt() {
+        let temp = tempfile::tempdir().unwrap();
+        let provider = Arc::new(RetryAfterPartialStreamProvider::new());
+        let agent = build_test_agent_with_provider(temp.path(), provider.clone(), None).await;
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let request = ChatCompletionRequest {
+            model: "mock".to_string(),
+            messages: vec![rockbot_llm::Message {
+                role: rockbot_llm::MessageRole::User,
+                content: "retry".to_string(),
+                images: vec![],
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: None,
+            temperature: None,
+            max_tokens: Some(32),
+            stream: true,
+            response_format: None,
+        };
+
+        let response = agent
+            .call_llm_streaming_with_retry(request, &Some(progress_tx))
+            .await
+            .unwrap();
+
+        assert_eq!(response.choices[0].message.content, "final");
+        assert_eq!(provider.attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]

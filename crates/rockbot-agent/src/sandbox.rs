@@ -10,6 +10,28 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+fn parse_command_line(command: &str) -> Result<ParsedCommand, SandboxError> {
+    let parts = shell_words::split(command)
+        .map_err(|e| SandboxError::ExecutionFailed(format!("Invalid command syntax: {e}")))?;
+
+    let Some((program, args)) = parts.split_first() else {
+        return Err(SandboxError::ExecutionFailed(
+            "Command cannot be empty".to_string(),
+        ));
+    };
+
+    Ok(ParsedCommand {
+        program: program.clone(),
+        args: args.to_vec(),
+    })
+}
+
 /// Result of a sandboxed command execution.
 #[derive(Debug, Clone)]
 pub struct SandboxResult {
@@ -57,6 +79,7 @@ pub async fn execute_in_container(
     command: &str,
     timeout: Duration,
 ) -> Result<SandboxResult, SandboxError> {
+    let parsed = parse_command_line(command)?;
     let image = config.image.as_deref().unwrap_or("ubuntu:22.04");
 
     let workspace_str = workspace
@@ -83,16 +106,15 @@ pub async fn execute_in_container(
         "-w",
         "/workspace",
         image,
-        "sh",
-        "-c",
-        command,
     ]);
+    docker_cmd.arg(&parsed.program);
+    docker_cmd.args(&parsed.args);
 
     docker_cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    debug!("Executing in container (image={image}): {command}",);
+    debug!("Executing in container (image={image}): {:?}", parsed);
 
     let child = docker_cmd
         .spawn()
@@ -145,8 +167,10 @@ async fn execute_direct(
     command: &str,
     timeout: Duration,
 ) -> Result<SandboxResult, SandboxError> {
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", command])
+    let parsed = parse_command_line(command)?;
+
+    let mut cmd = Command::new(&parsed.program);
+    cmd.args(&parsed.args)
         .current_dir(workspace)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -213,10 +237,10 @@ mod tests {
     #[tokio::test]
     async fn test_execute_direct_failure() {
         let dir = tempfile::tempdir().unwrap();
-        let result = execute_direct(dir.path(), "exit 42", Duration::from_secs(5))
+        let result = execute_direct(dir.path(), "false", Duration::from_secs(5))
             .await
             .unwrap();
-        assert_eq!(result.exit_code, Some(42));
+        assert_eq!(result.exit_code, Some(1));
     }
 
     #[tokio::test]
@@ -239,5 +263,34 @@ mod tests {
             .unwrap();
         assert_eq!(result.stdout.trim(), "test");
         assert!(!result.containerized);
+    }
+
+    #[test]
+    fn test_parse_command_line_supports_quoted_args() {
+        let parsed = parse_command_line("printf 'hello world'").unwrap();
+        assert_eq!(parsed.program, "printf");
+        assert_eq!(parsed.args, vec!["hello world"]);
+    }
+
+    #[tokio::test]
+    async fn test_execute_direct_does_not_interpret_shell_redirects() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker.txt");
+
+        let result = execute_direct(
+            dir.path(),
+            &format!("printf '%s\\n' safe '>' '{}'", marker.display()),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(0));
+        assert!(!marker.exists(), "shell redirection should not be interpreted");
+        assert!(
+            result.stdout.contains(">\n"),
+            "expected shell metacharacters to remain literal: {}",
+            result.stdout
+        );
     }
 }

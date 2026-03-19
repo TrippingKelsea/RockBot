@@ -366,9 +366,10 @@ pub fn render_chat_messages(
         frame.render_widget(block_with_hint, area);
     }
 
+    let paragraph_scroll = effective_scroll.min(u16::MAX as usize) as u16;
     let paragraph = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .scroll((effective_scroll as u16, 0));
+        .scroll((paragraph_scroll, 0));
 
     frame.render_widget(paragraph, inner);
 

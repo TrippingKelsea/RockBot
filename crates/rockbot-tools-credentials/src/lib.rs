@@ -73,8 +73,9 @@ impl Tool for CredentialVaultTool {
                     }) => Ok(ToolResult::json(serde_json::json!({
                         "status": "ok",
                         "path": path,
-                        "secret": String::from_utf8_lossy(&secret),
-                        "encoding": "utf8",
+                        "secret_preview": mask_secret_preview(&secret),
+                        "secret_length": secret.len(),
+                        "secret_exposed": false,
                         "credential_type": credential_type_name(&credential_type),
                     }))),
                     Ok(CredentialResult::Denied { reason }) => Ok(ToolResult::error(format!(
@@ -111,5 +112,22 @@ fn credential_type_name(kind: &CredentialApplicationType) -> &'static str {
         CredentialApplicationType::BasicAuth { .. } => "basic_auth",
         CredentialApplicationType::ApiKey { .. } => "api_key",
         CredentialApplicationType::Raw => "raw",
+    }
+}
+
+fn mask_secret_preview(secret: &[u8]) -> String {
+    let printable = String::from_utf8_lossy(secret);
+    let visible: String = printable.chars().take(4).collect();
+    format!("{visible}***")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mask_secret_preview;
+
+    #[test]
+    fn secret_preview_masks_remaining_secret() {
+        assert_eq!(mask_secret_preview(b"super-secret-token"), "supe***");
+        assert_eq!(mask_secret_preview(b"abc"), "abc***");
     }
 }

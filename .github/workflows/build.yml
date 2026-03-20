@@ -3,7 +3,8 @@ name: Build
 on:
   push:
     tags:
-      - "v*"
+      - "preview"
+      - "release"
 
 env:
   CARGO_TERM_COLOR: always

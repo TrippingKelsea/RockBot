@@ -3,7 +3,7 @@ name: Preview
 on:
   push:
     tags:
-      - "v*-preview"
+      - "preview"
 
 permissions:
   contents: write

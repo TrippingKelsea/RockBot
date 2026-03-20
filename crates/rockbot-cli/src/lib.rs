@@ -359,6 +359,9 @@ pub enum ClientCertCommands {
 pub enum EnrollCommands {
     /// Create a new enrollment token for remote CSR signing
     Create {
+        /// Optional client label for operator context. Accepted for compatibility with documented flows.
+        #[arg(long)]
+        name: Option<String>,
         /// Authorization role(s) embedded in certificates signed with this token.
         /// May be passed multiple times. If omitted, defaults to `agent`.
         #[arg(long, action = ArgAction::Append)]
@@ -370,6 +373,9 @@ pub enum EnrollCommands {
         /// Maximum number of uses (omit for unlimited)
         #[arg(long)]
         uses: Option<u32>,
+        /// Compatibility flag accepted by documented workflows. Token creation does not set certificate validity.
+        #[arg(long)]
+        days: Option<u32>,
         /// Token expiry duration (e.g. "1h", "24h", "7d")
         #[arg(long)]
         expires: Option<String>,

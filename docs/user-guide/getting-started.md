@@ -9,19 +9,15 @@
 ```bash
 git clone https://github.com/TrippingKelsea/rockbot.git
 cd rockbot
-make release
+make && make install
 ```
 
-The binary is at `./target/release/rockbot`.
+The binary is installed to `~/.local/bin/rockbot`.
 
-The Make targets default to the `enhanced` feature profile:
+Ensure `~/.local/bin` is in your `$PATH`
 
-```bash
-make dev
-make release
-make test
-```
 
+# Shell Completion
 You can also generate shell completions directly from the CLI:
 
 ```bash
@@ -30,23 +26,19 @@ You can also generate shell completions directly from the CLI:
 ./rockbot completion fish
 ```
 
+# Diagnostics
 ```bash
 rockbot --version
 rockbot doctor        # diagnostic checks
 ```
-
-The top-level `rockbot` crate defaults to the `conservative` feature profile:
-Bedrock, Telegram, Signal, and the built-in tool crates. Additional profiles and
-feature bundles are available when you need more providers or infrastructure.
 
 ## Initial Setup
 
 ### Generate Gateway Config
 
 ```bash
-rockbot config init gateway --https-port 18181 --client-port 18182
+rockbot config init gateway
 # Creates ~/.config/rockbot/rockbot.toml
-# Generates TLS certificate at ~/.config/rockbot/gateway.{crt,key}
 ```
 
 This creates a bootstrap-only gateway config and a self-signed TLS
@@ -69,17 +61,35 @@ serve_webapp = true
 serve_ca = true
 enrollment_enabled = true
 
-[pki]
-tls_cert = "/home/you/.config/rockbot/gateway.crt"
-tls_key = "/home/you/.config/rockbot/gateway.key"
-
 [client]
 gateway_host = "127.0.0.1"
 https_port = 18181
 client_port = 18182
 ```
 
-## Running
+
+### Mutual TLS (mTLS)
+
+RockBot uses mTLS for client/server authentication and authorization.
+
+#### Set Up the CA and Certificates
+
+```bash
+# If you are running the repo-local build, use `./rockbot` instead of `rockbot`.
+
+# Initialize a Certificate Authority (valid 10 years)
+rockbot cert ca generate --days 3650
+
+# Generate a gateway certificate
+rockbot cert client generate --name gateway --role gateway \
+  --san localhost --san 127.0.0.1 --days 365
+
+# Install into rockbot.toml (writes [pki] and enables gateway mTLS policy)
+rockbot cert install --name gateway
+
+# Initialize the credential store
+rockbot credentials init
+```
 
 ### Start the Gateway
 
@@ -91,14 +101,44 @@ rockbot gateway run
 
 ### Connect with the TUI
 
+#### Localhost
+
 From the same machine:
 ```bash
 rockbot tui
 ```
 
+### Enroll a Remote Client
+
+Enrollment happens over the public HTTPS listener, so you do not need to
+temporarily disable client-certificate enforcement for the client listener. If
+you do not want browser/bootstrap enrollment exposed, set:
+
+```toml
+[gateway.public]
+enrollment_enabled = false
+```
+
+From the gateway machine:
+```bash
+# Generate a TUI client certificate from the CA
+rockbot cert enroll create --name my-tui --role tui --days 365
+
+# Tokens can embed multiple auth roles:
+rockbot cert enroll create --name my-tui-agent --role client --role tui --role agent --uses 1 --expires 24h
+# Output: Token: <uuid>
+```
+
 From another machine on the network:
 ```bash
-rockbot config init client --gateway-ip 192.168.1.10 --https-port 18181 --client-port 18182
+rockbot config init client --gateway-ip (gateway-ip)
+
+# On the remote client: enroll with the gateway
+rockbot cert enroll submit --name my-tui --psk (token) --ca-fingerprint (sha256-fingerprint) 
+
+# Install into the client's config
+rockbot cert install --name my-tui
+
 rockbot tui
 ```
 
@@ -141,58 +181,6 @@ The page lets you import a client certificate/key bundle into browser storage
 and authenticate to the browser WebSocket control plane without exposing the
 full REST management surface publicly.
 
-## Mutual TLS (mTLS)
-
-For production deployments, use the built-in PKI instead of self-signed
-certificates. This ensures only authorized clients can connect.
-
-### Set Up the CA and Certificates
-
-```bash
-# If you are running the repo-local build, use `./rockbot` instead of `rockbot`.
-
-# Initialize a Certificate Authority (valid 10 years)
-rockbot cert ca generate --days 3650
-
-# Generate a gateway certificate
-rockbot cert client generate --name gateway --role gateway \
-  --san localhost --san 127.0.0.1 --days 365
-
-# Install into rockbot.toml (writes [pki] and enables gateway mTLS policy)
-rockbot cert install --name gateway
-
-# Generate a TUI client certificate
-rockbot cert client generate --name my-tui --role tui --days 365
-```
-
-### Enroll a Remote Client
-
-Enrollment happens over the public HTTPS listener, so you do not need to
-temporarily disable client-certificate enforcement for the client listener. If
-you do not want browser/bootstrap enrollment exposed, set:
-
-```toml
-[gateway.public]
-enrollment_enabled = false
-```
-
-If you need to provision a client on a different machine:
-
-```bash
-# On the CA host: create a one-time enrollment token
-rockbot cert enroll create --role agent --uses 1 --expires 24h
-# Tokens can embed multiple auth roles:
-rockbot cert enroll create --role client --role tui --role agent --uses 1 --expires 24h
-# Output: Token: <uuid>
-
-# On the remote client: enroll with the gateway
-rockbot cert enroll submit \
-  --gateway https://gateway-host:18080 \
-  --psk <token> --name remote-agent --role agent
-
-# Install into the client's config
-rockbot cert install --name remote-agent
-```
 
 ### View and Manage Certificates
 
@@ -208,7 +196,7 @@ See `docs/architecture/pki.md` for the full PKI reference.
 
 ## Remote Tool Execution
 
-Build with the `remote-exec` feature to let the gateway dispatch tool calls
+Build with the `remote-exec` (default) feature to let the gateway dispatch tool calls
 (file reads, shell commands) to your local machine:
 
 ```bash
@@ -294,7 +282,7 @@ rockbot cert client rotate --name gateway --san localhost --days 365 --backup
 
 **Vault won't unlock:**
 ```bash
-# If you forgot your password, recreate the vault
+# If you forgot your password or lost the vault key, you'll need to recreate the vault
 rm -rf ~/.local/share/rockbot/credentials
 rockbot credentials init
 ```

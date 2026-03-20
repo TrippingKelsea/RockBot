@@ -743,9 +743,11 @@ async fn cmd_info(cert_path: &Path) -> Result<()> {
 async fn run_enroll(command: &EnrollCommands, config_path: &Path) -> Result<()> {
     match command {
         EnrollCommands::Create {
+            name,
             role,
             cert_role,
             uses,
+            days,
             expires,
         } => {
             let dir = resolve_pki_dir_from_config(config_path).await?;
@@ -763,12 +765,18 @@ async fn run_enroll(command: &EnrollCommands, config_path: &Path) -> Result<()> 
 
             println!("Enrollment token created:");
             println!("  Token: {token}");
+            if let Some(name) = name {
+                println!("  Name: {name}");
+            }
             println!("  Cert role: {primary_role}");
             println!("  Roles: {}", all_roles.join(", "));
             if let Some(n) = uses {
                 println!("  Uses:  {n}");
             } else {
                 println!("  Uses:  unlimited");
+            }
+            if let Some(days) = days {
+                println!("  Requested cert validity hint: {days} day(s)");
             }
             if let Some(d) = expires {
                 println!("  Expires: {d}");

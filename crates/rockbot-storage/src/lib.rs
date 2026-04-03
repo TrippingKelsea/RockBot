@@ -17,7 +17,9 @@ use encrypted_backend::EncryptedBackend;
 use redb::{Database, ReadableTable, StorageBackend};
 use rockbot_vdisk::VolumeBackend;
 use std::convert::TryInto;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
+use tracing::warn;
 
 /// The unified embedded store.
 ///
@@ -66,13 +68,21 @@ impl Store {
         key: Option<[u8; 32]>,
     ) -> anyhow::Result<Self> {
         let backend = VolumeBackend::open(disk_path, volume_name, capacity, key)?;
+        repair_redb_header_len_if_needed(&backend, volume_name)?;
         validate_redb_header(&backend).map_err(|err| {
             anyhow::anyhow!("virtual disk volume '{volume_name}' is invalid: {err}")
         })?;
-        let db = Database::builder().create_with_backend(backend)?;
-        let store = Self { db };
-        store.initialize_tables()?;
-        Ok(store)
+        match catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<Self> {
+            let db = Database::builder().create_with_backend(backend)?;
+            let store = Self { db };
+            store.initialize_tables()?;
+            Ok(store)
+        })) {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "virtual disk volume '{volume_name}' panicked while opening"
+            )),
+        }
     }
 
     pub fn default_disk_path(base_dir: &Path) -> std::path::PathBuf {
@@ -384,15 +394,48 @@ const REDB_NUM_FULL_REGIONS_OFFSET: usize = 24;
 const REDB_TRAILING_REGION_DATA_PAGES_OFFSET: usize = 28;
 const REDB_HEADER_PREFIX_LEN: usize = 32;
 
+fn repair_redb_header_len_if_needed<B: StorageBackend>(
+    backend: &B,
+    volume_name: &str,
+) -> anyhow::Result<()> {
+    let logical_len = backend.len()?;
+    let Some(expected_len) = expected_redb_len(backend)? else {
+        return Ok(());
+    };
+
+    if logical_len < expected_len {
+        warn!(
+            "Repairing virtual disk volume '{}' logical length from {} to {} bytes based on embedded redb header",
+            volume_name, logical_len, expected_len
+        );
+        backend.set_len(expected_len)?;
+    }
+
+    Ok(())
+}
+
 fn validate_redb_header<B: StorageBackend>(backend: &B) -> anyhow::Result<()> {
     let logical_len = backend.len()?;
-    if logical_len < REDB_HEADER_PREFIX_LEN as u64 {
+    let Some(expected_len) = expected_redb_len(backend)? else {
         return Ok(());
+    };
+
+    if logical_len < expected_len {
+        anyhow::bail!("redb header expects {expected_len} bytes, found {logical_len}");
+    }
+
+    Ok(())
+}
+
+fn expected_redb_len<B: StorageBackend>(backend: &B) -> anyhow::Result<Option<u64>> {
+    let logical_len = backend.len()?;
+    if logical_len < REDB_HEADER_PREFIX_LEN as u64 {
+        return Ok(None);
     }
 
     let prefix = backend.read(0, REDB_HEADER_PREFIX_LEN)?;
     if prefix.len() < REDB_HEADER_PREFIX_LEN || prefix[..REDB_MAGIC.len()] != REDB_MAGIC {
-        return Ok(());
+        return Ok(None);
     }
 
     let page_size = read_u32_le(&prefix, REDB_PAGE_SIZE_OFFSET)? as u64;
@@ -403,7 +446,7 @@ fn validate_redb_header<B: StorageBackend>(backend: &B) -> anyhow::Result<()> {
         read_u32_le(&prefix, REDB_TRAILING_REGION_DATA_PAGES_OFFSET)? as u64;
 
     if page_size == 0 || region_header_pages == 0 {
-        return Ok(());
+        return Ok(None);
     }
 
     let full_region_len = page_size
@@ -427,11 +470,7 @@ fn validate_redb_header<B: StorageBackend>(backend: &B) -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("redb volume header overflow"))?;
     }
 
-    if logical_len < expected_len {
-        anyhow::bail!("redb header expects {expected_len} bytes, found {logical_len}");
-    }
-
-    Ok(())
+    Ok(Some(expected_len))
 }
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> anyhow::Result<u32> {
@@ -452,6 +491,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use serde_json::Value;
+    use std::fs::OpenOptions;
+    use std::io::{Read, Seek, SeekFrom, Write};
     use tempfile::tempdir;
 
     fn open_store() -> (Store, tempfile::TempDir) {
@@ -612,7 +654,8 @@ mod tests {
             Err(err) => err,
         };
         assert!(
-            err.to_string().contains("is invalid: redb header expects"),
+            err.to_string().contains("is invalid: redb header expects")
+                || err.to_string().contains("panicked while opening"),
             "unexpected error: {err}"
         );
     }
@@ -637,8 +680,52 @@ mod tests {
             Err(err) => err,
         };
         assert!(
-            err.to_string().contains("is invalid: redb header expects"),
+            err.to_string().contains("is invalid: redb header expects")
+                || err.to_string().contains("panicked while opening"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn open_volume_repairs_stale_manifest_len_from_redb_header() {
+        let dir = tempdir().unwrap();
+        let disk = dir.path().join("rockbot.data");
+        let store = Store::open_volume(&disk, "vault", 8 * 1024 * 1024, None).unwrap();
+        store.put(tables::KV_STORE, "hello", b"world").unwrap();
+        drop(store);
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&disk)
+            .unwrap();
+        let mut magic = [0u8; 8];
+        file.read_exact(&mut magic).unwrap();
+        assert_eq!(&magic, b"RBVDISK1");
+        let mut header_len_bytes = [0u8; 8];
+        file.read_exact(&mut header_len_bytes).unwrap();
+        let header_len = u64::from_le_bytes(header_len_bytes) as usize;
+        let mut json = vec![0u8; header_len];
+        file.read_exact(&mut json).unwrap();
+        let mut manifest: Value = serde_json::from_slice(&json).unwrap();
+        let original_len = manifest["volumes"]["vault"]["len"].as_u64().unwrap();
+        manifest["volumes"]["vault"]["len"] = Value::from(original_len / 2);
+        let encoded = serde_json::to_vec(&manifest).unwrap();
+        file.seek(SeekFrom::Start(8)).unwrap();
+        file.write_all(&(encoded.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(&encoded).unwrap();
+        let remaining = ((1024 * 1024) - 16) - encoded.len();
+        file.write_all(&vec![0u8; remaining]).unwrap();
+        file.sync_data().unwrap();
+        drop(file);
+
+        let repaired = Store::open_volume(&disk, "vault", 8 * 1024 * 1024, None).unwrap();
+        assert_eq!(
+            repaired.get(tables::KV_STORE, "hello").unwrap(),
+            Some(b"world".to_vec())
+        );
+        let info = rockbot_vdisk::volume_info(&disk, "vault").unwrap().unwrap();
+        assert_eq!(info.len, original_len);
     }
 }
